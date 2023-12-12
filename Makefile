@@ -20,7 +20,7 @@ FC=gfortran
 # FFLAGS= -cpp -fPIC -I $(MODDIR) -m64 -Wall -finline-functions -ffast-math -fno-strength-reduce -fomit-frame-pointer -falign-functions=2 -O3
 # FFLAGS= -cpp -fPIC -I $(MODDIR) -m64 -Wall -finline-functions -fno-strength-reduce -fomit-frame-pointer -falign-functions=2 -O3
 # For Linux
-FFLAGS= -cpp -fPIC -I $(MODDIR) -m64 -mfpmath=sse -Wall -finline-functions -fno-strength-reduce -fomit-frame-pointer -falign-functions=2  -O3
+FFLAGS= -cpp -fPIC -I $(MODDIR) -m64 -Wall -finline-functions -fno-strength-reduce -fomit-frame-pointer -falign-functions=2  -O3
 
 
 all : $(PROG)
