@@ -195,6 +195,11 @@ function call_kraken(nm, frq, nl, note1, b, nc, ssp, note2, bsig, sspHS, clh, rn
     return cg, cp, kr_real, kr_imag, zm, modes
 end
 
+"""
+    pf = pf_signal(env, ranges, zs, zr; T=2, fs=1000, n_modes=41)
+
+
+"""
 function pf_signal(env, ranges, zs, zr; T=2, fs=1000, n_modes=41)
     freqs = range(1, fs / 2; step=1 / T)
     rfft_freqs = rfftfreq(T * fs, fs)
@@ -261,13 +266,13 @@ function pf_adiabatic(freq, envs, ranges, zs, zr; n_modes=41)
 
     ## Compute pressure(ω)
     rho0 = 1000  # density of water (kg/m³)
-    Q = im * exp(-1im * pi / 4) / (rho0 * sqrt(8pi * ranges[end]))
-
+    Q = 1im*exp(-1im*π/4) / (rho0*sqrt(8pi*ranges[end]))
     _, zs_ind = findmin(abs.(zm .- zs))
     _, zr_ind = findmin(abs.(zm .- zr))
 
-    ϕ_zs = modes[1][zs_ind]
-    ϕ_zr = modes[end][zr_ind]
+    ϕ_zs = modes[1][zs_ind[1], :]
+    # println(size(ϕ_zs))
+    ϕ_zr = modes[end][zr_ind[1], :]
 
     pressure_f = Q * ϕ_zs .* ϕ_zr .* exp.(-im * krs_m_integral) ./ sqrt.(vec(krs[end])) .|>
                  fillnan |> sum
