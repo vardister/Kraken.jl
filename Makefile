@@ -17,9 +17,10 @@ FC=gfortran
 # -march=v8.6-A
 
 # For MacOS
-FFLAGS= -cpp -fPIC -I $(MODDIR)  -march=armv8.6-a -m64 -Wall -finline-functions -ffast-math -fno-strength-reduce -fomit-frame-pointer -falign-functions=2 -O3
+# FFLAGS= -cpp -fPIC -I $(MODDIR) -m64 -Wall -finline-functions -ffast-math -fno-strength-reduce -fomit-frame-pointer -falign-functions=2 -O3
+# FFLAGS= -cpp -fPIC -I $(MODDIR) -m64 -Wall -finline-functions -fno-strength-reduce -fomit-frame-pointer -falign-functions=2 -O3
 # For Linux
-# FFLAGS= -cpp -fPIC -I $(MODDIR)  -march=amdfam10 -m64 -mfpmath=sse -Wall -finline-functions -ffast-math -fno-strength-reduce -fomit-frame-pointer -falign-functions=2  -O3
+FFLAGS= -cpp -fPIC -I $(MODDIR) -m64 -mfpmath=sse -Wall -finline-functions -ffast-math -fno-strength-reduce -fomit-frame-pointer -falign-functions=2  -O3
 
 
 all : $(PROG)
