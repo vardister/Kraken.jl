@@ -261,9 +261,10 @@ function pf_adiabatic(freq, envs, ranges, zs, zr; n_modes=41)
     ## Interpolate wavenumbers in range for each mode
     krs_m = vcat(krs...)  # make krs_m be length(ranges) x length(modes)
     krs_m_interp = [linear_interpolation(ranges, col) for col in eachcol(krs_m)]
-    krs_m_integral = [quadgk(krs_m_interp[i], 0, ranges[end])[1]
+    krs_m_integral = [quadgk(krs_m_interp[i], ranges[1], ranges[end])[1]
                       for i in eachindex(krs_m_interp)]
 
+    # println(krs_m_integral)
     ## Compute pressure(ω)
     rho0 = 1000  # density of water (kg/m³)
     Q = 1im*exp(-1im*π/4) / (rho0*sqrt(8pi*ranges[end]))
@@ -271,7 +272,6 @@ function pf_adiabatic(freq, envs, ranges, zs, zr; n_modes=41)
     _, zr_ind = findmin(abs.(zm .- zr))
 
     ϕ_zs = modes[1][zs_ind[1], :]
-    # println(size(ϕ_zs))
     ϕ_zr = modes[end][zr_ind[1], :]
 
     pressure_f = Q * ϕ_zs .* ϕ_zr .* exp.(-im * krs_m_integral) ./ sqrt.(vec(krs[end])) .|>
