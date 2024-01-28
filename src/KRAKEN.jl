@@ -7,4 +7,7 @@ module KRAKEN
 	export pf_adiabatic
 	export pf_adiabatic_signal
 	export pf_signal
+	
+	include("sus_signature.jl")
+	export wilson_charge_jb
 end
