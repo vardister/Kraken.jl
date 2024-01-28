@@ -247,7 +247,7 @@ function pf_adiabatic(freq, envs, ranges, zs, zr; n_modes=41)
     krs = []
     modes = []
     zm = Vector{Float64}
-    @showprogress for (i, env) in enumerate(envs)
+    for (i, env) in enumerate(envs)
         res = kraken(env, freq; n_modes=n_modes)
         kr = res["kr_real"] + 1im * res["kr_imag"]
         push!(krs, kr)
