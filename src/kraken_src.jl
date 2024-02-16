@@ -10,7 +10,7 @@ libpath = @__DIR__
 fillnan(x) = isnan(x) ? zero(x) : x
 
 """
-`env = Env(ssp, sspHS, bottom, n_receivers, z_receivers)`
+`env = Env(ssp, sspHS, bottom, n_krak, z_krak)`
 
 Creates an underwater environment in the form of a sound speed profile (`ssp`), a
 half-space sound speed profile (`sspHS`), and a bottom profile (`bottom`).
@@ -20,9 +20,9 @@ The environment is used to compute the propagation of sound waves using KRAKEN.
 Required arguments:
 - `ssp`: sound speed profile
 - `sspHS`: half-space sound speed profile
-- `bottom`: bottom profile
-- `n_receivers`: number of receivers
-- `z_receivers`: depth of receivers
+- `b`: bottom profile
+- `n_krak`: number of receivers
+- `z_krak`: depth of receivers
 
 
 Optional keywords:
@@ -30,8 +30,8 @@ Optional keywords:
 - `note1`: note for the sound speed profile (default: "NVW")
 - `note2`: note for the half-space sound speed profile (default: "A")
 - `bsig`: bottom interfacial roughness (default: 0)
-- `n_sources`: number of sources (default: 1)
-- `z_sources`: depth of sources (default: 500)
+- `n_sr`: number of sources (default: 1)
+- `z_sr`: depth of sources (default: 500)
 - `n_bc`: number of boundary conditions (default: size(ssp, 1))
 """
 @with_kw struct Env
@@ -44,13 +44,13 @@ Optional keywords:
 
     ssp::Matrix{Float64}
     sspHS::Matrix{Float64}
-    bottom::Matrix{Float64}
+    b::Matrix{Float64}
 
-    n_sources::Int = 1
-    z_sources::Float64 = 500
+    n_sr::Int = 1
+    z_sr::Float64 = 500
 
-    n_receivers::Int
-    z_receivers::Matrix{Float64}
+    n_krak::Int
+    z_krak::Matrix{Float64}
     n_bc::Int = size(ssp, 1)
 end
 
@@ -78,23 +78,48 @@ Optional keywords:
 """
 function env_builder(; hw=71.0, cw=1471.0, ρw=1.0, αw=0.0, h1=10.0, c1=1500.0,
     ρ1=1.6, α1=0.025, cb=1900.0, ρb=2.0, αb=0.25, type="1layer_constant")
-    d0 = hw
-    d1 = hw + h1
 
-    b0 = [0.0 0.0 d0]
-    ssp0 = [0.0 cw 0.0 ρw αw 0.0
-        d0 cw 0.0 ρw αw 0.0]
+    if type == "1layer_constant"
+        d0 = hw
+        d1 = hw + h1
 
-    b1 = [0.0 0.0 d1]
-    ssp1 = [d0 c1 0.0 ρ1 α1 0.0
-        d1 c1 0.0 ρ1 α1 0.0]
+        b0 = [0.0 0.0 d0]
+        ssp0 = [0.0 cw 0.0 ρw αw 0.0
+            d0 cw 0.0 ρw αw 0.0]
 
-    ssp_bhs = [d1 cb 0.0 ρb αb 0.0]
-    ssp_ths = [0.0 343.0 0.0 0.00121 0.0 0.0]
+        b1 = [0.0 0.0 d1]
+        ssp1 = [d0 c1 0.0 ρ1 α1 0.0
+            d1 c1 0.0 ρ1 α1 0.0]
 
-    ssp = [ssp0; ssp1]
-    sspHS = [ssp_ths; ssp_bhs]
-    b = [b0; b1]
+        ssp_bhs = [d1 cb 0.0 ρb αb 0.0]
+        ssp_ths = [0.0 343.0 0.0 0.00121 0.0 0.0]
+
+        ssp = [ssp0; ssp1]
+        sspHS = [ssp_ths; ssp_bhs]
+        b = [b0; b1]
+    elseif type == "1layer_constant_variable_ssp"
+        d0 = hw
+        d1 = hw + h1
+
+        b0 = [0.0 0.0 d0]
+        ssp0 = [0.0 cw[1] 0.0 ρw αw 0.0
+                20.0 cw[2] 0.0 ρw αw 0.0
+                40.0 cw[2] 0.0 ρw αw 0.0
+                d0  cw[3] 0.0 ρw αw 0.0]
+
+        b1 = [0.0 0.0 d1]
+        ssp1 = [d0 c1 0.0 ρ1 α1 0.0
+                d1 c1 0.0 ρ1 α1 0.0]
+
+        ssp_bhs = [d1 cb 0.0 ρb αb 0.0]
+        ssp_ths = [0.0 343.0 0.0 0.00121 0.0 0.0]
+
+        ssp = [ssp0; ssp1]
+        sspHS = [ssp_ths; ssp_bhs]
+        b = [b0; b1]
+    else
+        error("type not recognized")
+    end
 
     return ssp, b, sspHS
 end
@@ -125,13 +150,13 @@ function kraken(env::Env,
     end
 
     c_low_high = [c_low c_high]
-    @unpack n_layers, note1, n_bc, note2, bsig, ssp, sspHS, bottom, n_sources, z_sources, n_receivers, z_receivers = env
+    @unpack n_layers, note1, n_bc, note2, bsig, ssp, sspHS, b, n_sr, z_sr, n_krak, z_krak = env
 
     cg, cp, kr_real, kr_imag, zm, modes = call_kraken(n_modes,
         freq,
         n_layers,
         [UInt8(x) for x in env.note1],
-        bottom,
+        b,
         n_bc,
         ssp,
         [UInt8(x) for x in env.note2],
@@ -139,10 +164,10 @@ function kraken(env::Env,
         sspHS,
         c_low_high,
         range_max,
-        n_sources,
-        z_sources,
-        n_receivers,
-        z_receivers)
+        n_sr,
+        z_sr,
+        n_krak,
+        z_krak)
     return Dict("cg" => cg,
         "cp" => cp,
         "kr_real" => kr_real,

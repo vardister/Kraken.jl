@@ -10,4 +10,8 @@ module KRAKEN
 	
 	include("sus_signature.jl")
 	export wilson_charge_jb
+
+	# Plotting functions
+	include("kraken_plots.jl")
+	export plot_modes
 end
