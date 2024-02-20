@@ -225,7 +225,7 @@ end
 
 
 """
-function pf_signal(env, ranges, zs, zr; T=2, fs=1000, n_modes=41)
+function pf_signal(env, ranges, zs, zr; T=2, fs=1000, n_modes=41, t0_offset=0.2)
     freqs = range(1, fs / 2; step=1 / T)
     rfft_freqs = rfftfreq(T * fs, fs)
 
@@ -243,7 +243,7 @@ function pf_signal(env, ranges, zs, zr; T=2, fs=1000, n_modes=41)
         ϕ_zr = ϕ[zr_ind[1], :]
         # println(size(ϕ_zs))
         for (rr, r) in enumerate(ranges)
-            t0 = r / cw - 0.2  # align window correctly in time
+            t0 = r / cw - t0_offset  # align window correctly in time
             Q = 1im*exp(-1im*pi/4) / (rho0*sqrt(8π*r))
             pf = @. Q*ϕ_zs*ϕ_zr*exp(-im*kr*r)/sqrt(kr)
             pf = fillnan.(pf)
@@ -305,7 +305,7 @@ function pf_adiabatic(freq, envs, ranges, zs, zr; n_modes=41)
 end
 
 """
-    pf_adiabatic_signal(envs, ranges, zs, zr; T=2, fs=1000, n_modes=41)
+    pf_adiabatic_signal(envs, ranges, zs, zr; T=2, fs=1000, n_modes=41, t0_offset=0.2)
 
     Calculate the pressure field at a given receiver depth `zr` from a source at `zs` 
     and using the adiabatic approximation for a range-dependent environment.
@@ -321,12 +321,12 @@ end
     - `fs`: sampling frequency (Hz) (default: 1000)
     - `n_modes`: number of modes (default: 41)
 """
-function pf_adiabatic_signal(envs, ranges, zs, zr; T=2, fs=1000, n_modes=41)
+function pf_adiabatic_signal(envs, ranges, zs, zr; T=2, fs=1000, n_modes=41, t0_offset=0.2)
     freqs = range(1, fs / 2; step=1 / T)
     rfft_freqs = rfftfreq(T * fs, fs)
 
     cw = envs[1].ssp[1, 2]
-    t0 = ranges[end] / cw - 0.2  # align window correctly in time
+    t0 = ranges[end] / cw - t0_offset  # align window correctly in time
     pf_signal = zeros(ComplexF64, length(rfft_freqs))
     for freq in freqs
         pf = pf_adiabatic(freq, envs, ranges, zs, zr; n_modes=n_modes)
