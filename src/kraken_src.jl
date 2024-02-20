@@ -320,6 +320,7 @@ end
     - `T`: duration of the signal (sec) (default: 2)
     - `fs`: sampling frequency (Hz) (default: 1000)
     - `n_modes`: number of modes (default: 41)
+    - `t0_offset`: the signal offset from the beginning of the time window
 """
 function pf_adiabatic_signal(envs, ranges, zs, zr; T=2, fs=1000, n_modes=41, t0_offset=0.2)
     freqs = range(1, fs / 2; step=1 / T)
