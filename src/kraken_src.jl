@@ -77,7 +77,7 @@ Optional keywords:
     - "1layer_constant": 1 layer, constant sound speed
 """
 function env_builder(; hw=71.0, cw=1471.0, ρw=1.0, αw=0.0, h1=10.0, c1=1500.0,
-    ρ1=1.6, α1=0.025, cb=1900.0, ρb=2.0, αb=0.25, type="1layer_constant")
+    ρ1=1.6, α1=0.05, cb=1900.0, ρb=2.0, αb=0.25, type="1layer_constant")
 
     if type == "1layer_constant"
         d0 = hw
