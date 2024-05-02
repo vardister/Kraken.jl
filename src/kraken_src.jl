@@ -39,7 +39,7 @@ Optional keywords:
 
     note1::String = "NVW"
 
-    note2::String = "A"
+    note2::String = "A" 
     bsig::Int = 0 # bottom interfacial roughness
 
     ssp::Matrix{Float64}
@@ -80,6 +80,7 @@ function env_builder(; hw=71.0, cw=1471.0, ρw=1.0, αw=0.0, h1=10.0, c1=1500.0,
     ρ1=1.6, α1=0.05, cb=1900.0, ρb=2.0, αb=0.25, type="1layer_constant")
 
     if type == "1layer_constant"
+        @assert length(cw) == 1
         d0 = hw
         d1 = hw + h1
 
@@ -98,14 +99,15 @@ function env_builder(; hw=71.0, cw=1471.0, ρw=1.0, αw=0.0, h1=10.0, c1=1500.0,
         sspHS = [ssp_ths; ssp_bhs]
         b = [b0; b1]
     elseif type == "1layer_constant_variable_ssp"
+        @assert length(cw) == 4
         d0 = hw
         d1 = hw + h1
 
         b0 = [0.0 0.0 d0]
         ssp0 = [0.0 cw[1] 0.0 ρw αw 0.0
                 20.0 cw[2] 0.0 ρw αw 0.0
-                40.0 cw[2] 0.0 ρw αw 0.0
-                d0  cw[3] 0.0 ρw αw 0.0]
+                40.0 cw[3] 0.0 ρw αw 0.0
+                d0  cw[4] 0.0 ρw αw 0.0]
 
         b1 = [0.0 0.0 d1]
         ssp1 = [d0 c1 0.0 ρ1 α1 0.0
@@ -326,7 +328,7 @@ function pf_adiabatic_signal(envs, ranges, zs, zr; T=2, fs=1000, n_modes=41, t0_
     freqs = range(1, fs / 2; step=1 / T)
     rfft_freqs = rfftfreq(T * fs, fs)
 
-    cw = envs[1].ssp[1, 2]
+    cw = maximum(envs[end].ssp[:, 2])
     t0 = ranges[end] / cw - t0_offset  # align window correctly in time
     pf_signal = zeros(ComplexF64, length(rfft_freqs))
     for freq in freqs
