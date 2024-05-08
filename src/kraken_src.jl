@@ -233,7 +233,7 @@ function pf_signal(env, ranges, zs, zr; T=2, fs=1000, n_modes=41, t0_offset=0.2)
 
     rho0 = 1000  # density of water (kg/m³)
     cw = env.ssp[1, 2]
-    pf_signal = zeros(ComplexF64, length(ranges), length(rfft_freqs))
+    pf_sig = zeros(ComplexF64, length(ranges), length(rfft_freqs))
     for freq in freqs
         res = kraken(env, freq; n_modes=n_modes)
         kr = res["kr_real"] + 1im * res["kr_imag"] |> vec
@@ -252,10 +252,10 @@ function pf_signal(env, ranges, zs, zr; T=2, fs=1000, n_modes=41, t0_offset=0.2)
             pf = sum(pf)
             pf_shifted = pf * exp(2im * pi * freq * t0)
             ind = findfirst(rfft_freqs .== freq)
-            pf_signal[rr, ind] = pf_shifted
+            pf_sig[rr, ind] = pf_shifted
         end
     end
-    return pf_signal
+    return pf_sig
 end
 """
     pf_adiabatic(freq, envs, ranges, zs, zr; n_modes = 41)
