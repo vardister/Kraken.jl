@@ -6,7 +6,7 @@ using Distributed
 using SharedArrays
 addprocs(4)
 @everywhere using KRAKEN
-using GLMakie
+using CairoMakie
 using BenchmarkTools
 
 @everywhere function main(freq)

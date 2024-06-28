@@ -1,5 +1,5 @@
 using KRAKEN
-using GLMakie
+using CairoMakie
 
 frq = 15.0
 nm = 5
