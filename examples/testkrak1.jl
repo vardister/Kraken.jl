@@ -126,12 +126,12 @@ nz = nsr + nrc
 
 env_temp = Env(
     ssp = ssp,
-    bottom = b,
+    b = b,
     sspHS = sspHS,
-    n_receivers = nrc,
-    z_receivers = zrc,
-    z_sources = zsr,
-    n_sources = nsr,
+    n_krak = nrc,
+    z_krak = zrc,
+    z_sr = zsr,
+    n_sr = nsr,
 )
 
 res = kraken(env_temp, frq; n_modes = nm)
