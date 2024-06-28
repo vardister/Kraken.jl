@@ -2,10 +2,10 @@
 Same as testkrak1.jl but with multi-threading enabled. This is a test to see if the multi-threading is working correctly with Kraken and if it is faster than the single-threaded version. Also, how to use it with `ccall`?
 """
 
-using Distributed
-using SharedArrays
-addprocs(4)
+using Distributed # to get `pmap` and `@everywhere`
 @everywhere using KRAKEN
+
+
 using CairoMakie
 using BenchmarkTools
 
@@ -23,14 +23,13 @@ zrc = [0.0 hw]
 
 env_temp = Env(
     ssp = ssp,
-    bottom = b,
+    b = b,
     sspHS = sspHS,
-    n_receivers = nrc,
-    z_receivers = zrc,
-    z_sources = zsr,
-    n_sources = nsr,
+    n_krak = nrc,
+    z_krak = zrc,
+    z_sr = zsr,
+    n_sr = nsr,
 )
-println(myid())
 
 return kraken(env_temp, freq; n_modes=nm)
 end

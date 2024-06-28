@@ -1,8 +1,7 @@
 using Parameters
 using DSP
-using ProgressMeter
-using Interpolations
-using QuadGK
+using Interpolations # To be used with adiabatic approximation
+using QuadGK  # To be used for adiabatic approximatin
 using FFTW
 
 libpath = @__DIR__
