@@ -3,6 +3,7 @@ module KRAKEN
 
 	export kraken
 	export Env
+	export EnvKRAKEN
 	export env_builder
 	export pf_adiabatic
 	export pf_adiabatic_signal

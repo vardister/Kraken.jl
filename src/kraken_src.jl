@@ -33,7 +33,11 @@ Optional keywords:
 - `z_sr`: depth of sources (default: 500)
 - `n_bc`: number of boundary conditions (default: size(ssp, 1))
 """
-@with_kw struct Env
+
+abstract type KRAKENEnv end
+
+
+@with_kw struct Env <: KRAKENEnv
     n_layers::Int = 2
 
     note1::String = "NVW"
@@ -45,16 +49,42 @@ Optional keywords:
     sspHS::Matrix{Float64}
     b::Matrix{Float64}
 
-    n_sr::Int = 1
-    z_sr::Float64 = 500
+    n_source::Int = 1
+    z_source::Float64 = 500
 
     n_krak::Int
     z_krak::Matrix{Float64}
     n_bc::Int = size(ssp, 1)
 end
 
+struct EnvKRAKEN <: KRAKENEnv
+    n_layers::Int
+    note1::String
+    note2::String 
+    bsig::Int# bottom interfacial roughness
+
+    ssp::Matrix{Float64}
+    sspHS::Matrix{Float64}
+    b::Matrix{Float64}
+
+    n_source::Int
+    z_source::Float64
+
+    n_krak::Int
+    z_krak::Matrix{Float64}
+    n_bc::Int
+
+    function EnvKRAKEN(ssp, b, sspHS, z_krak, n_krak, z_source; note1="NVW", note2="A", bsig=0)
+        n_layers = size(b, 1)
+        n_source = length(z_source)
+        # n_krak = length(z_krak)
+        n_bc = size(ssp, 1)
+        return new(n_layers, note1, note2, bsig, ssp, sspHS, b, n_source, z_source, n_krak, z_krak, n_bc)
+    end
+end
+
 """
-    ssp, b, sspHS = env_builder(; hw = 71.0, cw = 1471.0, ρw = 1.0, αw = 0.0, h1 = 10.0, c1 = 1500.0,
+            n_zr = 1
         ρ1 = 1.6, α1 = 0.025, cb = 1900.0, ρb = 2.0, αb = 0.25, type = "1layer_constant")
 
 Helper function to build an underwater environment for use with creating an Env object.
@@ -140,7 +170,7 @@ Optional keywords:
 - `c_low`: minimum sound speed (default: 0)
 - `c_high`: maximum sound speed (default: maximum of SSP and SSPHS)
 """
-function kraken(env::Env,
+function kraken(env::KRAKENEnv,
     freq=15.0;
     n_modes=5,
     range_max=5e3,
@@ -151,7 +181,7 @@ function kraken(env::Env,
     end
 
     c_low_high = [c_low c_high]
-    @unpack n_layers, note1, n_bc, note2, bsig, ssp, sspHS, b, n_sr, z_sr, n_krak, z_krak = env
+    @unpack n_layers, note1, n_bc, note2, bsig, ssp, sspHS, b, n_source, z_source, n_krak, z_krak = env
 
     cg, cp, kr_real, kr_imag, zm, modes = call_kraken(n_modes,
         freq,
@@ -165,8 +195,8 @@ function kraken(env::Env,
         sspHS,
         c_low_high,
         range_max,
-        n_sr,
-        z_sr,
+        n_source,
+        z_source,
         n_krak,
         z_krak)
     return Dict("cg" => cg,
@@ -222,7 +252,7 @@ function call_kraken(nm, frq, nl, note1, b, nc, ssp, note2, bsig, sspHS, clh, rn
 end
 
 """
-    pf = pf_signal(env, ranges, zs, zr; T=2, fs=1000, n_modes=41)
+    pf = pf_signal(env, ranges, zs, zr; T=2, fs=1000, n_modes=41, t0_offset=0.2)
 
 
 """
