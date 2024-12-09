@@ -1,7 +1,5 @@
 using DrWatson
-
 using NamedArrays
-# include("src_normalmodes.jl")
 
 ### Standard Pekeris
 # function pekeris_test_env()
