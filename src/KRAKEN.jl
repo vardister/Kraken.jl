@@ -15,4 +15,16 @@ module KRAKEN
 	# Plotting functions
 	include("kraken_plots.jl")
 	export plot_modes
+
+
+
+	### New Julia implementation
+	include("src_standard_environments.jl")
+	include("kraken_core.jl")
+
+
+	export one_layer_test_dict_KRAKEN, one_layer_test_dict, pekeris_test_dict
+	export SampledSSP, SampledDensity
+	export UnderwaterEnv, AcousticProblemProperties
+	export prepare_vectors, bisection, solve_for_kr, inverse_iteration, det_sturm, kraken_jl
 end
