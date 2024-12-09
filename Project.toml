@@ -1,7 +1,7 @@
 name = "KRAKEN"
 uuid = "269dd85f-649c-4475-a373-cd87bf6afec3"
 authors = ["Ariel Vardi"]
-version = "1.1.0-DEV"
+version = "1.2.0-DEV"
 
 [deps]
 BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
