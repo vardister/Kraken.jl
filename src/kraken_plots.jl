@@ -17,11 +17,12 @@ end
 
 
 # Usage
-if is_headless()
-    using CairoMakie
-else
-    using GLMakie
-end
+# if is_headless()
+#     using CairoMakie
+# else
+#     using GLMakie
+# end
+using CairoMakie
 
 
 function plot_modes(res::Dict, ssp; modes = 1:10)

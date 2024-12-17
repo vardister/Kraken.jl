@@ -8,6 +8,18 @@ libpath = @__DIR__
 
 fillnan(x) = isnan(x) ? zero(x) : x
 
+
+###########################################################################################
+# ABSTRACT TYPES 
+###########################################################################################
+
+abstract type KRAKENEnv end
+
+
+###########################################################################################
+# STRUCTS
+###########################################################################################
+
 """
 `env = Env(ssp, sspHS, bottom, n_krak, z_krak)`
 
@@ -33,34 +45,10 @@ Optional keywords:
 - `z_sr`: depth of sources (default: 500)
 - `n_bc`: number of boundary conditions (default: size(ssp, 1))
 """
-
-abstract type KRAKENEnv end
-
-
-@with_kw struct Env <: KRAKENEnv
-    n_layers::Int = 2
-
-    note1::String = "NVW"
-
-    note2::String = "A" 
-    bsig::Int = 0 # bottom interfacial roughness
-
-    ssp::Matrix{Float64}
-    sspHS::Matrix{Float64}
-    b::Matrix{Float64}
-
-    n_source::Int = 1
-    z_source::Float64 = 500
-
-    n_krak::Int
-    z_krak::Matrix{Float64}
-    n_bc::Int = size(ssp, 1)
-end
-
 struct EnvKRAKEN <: KRAKENEnv
     n_layers::Int
     note1::String
-    note2::String 
+    note2::String
     bsig::Int# bottom interfacial roughness
 
     ssp::Matrix{Float64}
@@ -71,16 +59,25 @@ struct EnvKRAKEN <: KRAKENEnv
     z_source::Float64
 
     n_krak::Int
-    z_krak::Matrix{Float64}
+    z_krak::Array{Float64, 1}
     n_bc::Int
+end
 
-    function EnvKRAKEN(ssp, b, sspHS, z_krak, n_krak, z_source; note1="NVW", note2="A", bsig=0)
-        n_layers = size(b, 1)
-        n_source = length(z_source)
-        # n_krak = length(z_krak)
-        n_bc = size(ssp, 1)
-        return new(n_layers, note1, note2, bsig, ssp, sspHS, b, n_source, z_source, n_krak, z_krak, n_bc)
+function EnvKRAKEN(
+        ssp, b, sspHS, z_krak, z_source; note1 = "NVW", note2 = "A", bsig = 0, z_step = 1.0)
+    n_layers = size(b, 1)
+    n_source = length(z_source)
+    n_krak = length(range(z_krak[1], z_krak[2]; step = z_step))
+    n_bc = size(ssp, 1)
+
+    if ssp[1, 4] > 500.025  # if ever I use an ssp that conforms to SI units
+        ssp[:, 4] /= 1000.0
     end
+    if sspHS[2, 4] > 500.025
+        sspHS[:, 4] /= 1000.0
+    end
+    return EnvKRAKEN(n_layers, note1, note2, bsig, ssp, sspHS, b,
+        n_source, z_source, n_krak, z_krak, n_bc)
 end
 
 """
@@ -105,9 +102,8 @@ Optional keywords:
 
     - "1layer_constant": 1 layer, constant sound speed
 """
-function env_builder(; hw=71.0, cw=1471.0, ρw=1.0, αw=0.0, h1=10.0, c1=1500.0,
-    ρ1=1.6, α1=0.05, cb=1900.0, ρb=2.0, αb=0.25, type="1layer_constant")
-
+function env_builder(; hw = 71.0, cw = 1471.0, ρw = 1.0, αw = 0.0, h1 = 10.0, c1 = 1500.0,
+        ρ1 = 1.6, α1 = 0.05, cb = 1900.0, ρb = 2.0, αb = 0.25, type = "1layer_constant")
     if type == "1layer_constant"
         @assert length(cw) == 1
         d0 = hw
@@ -115,11 +111,11 @@ function env_builder(; hw=71.0, cw=1471.0, ρw=1.0, αw=0.0, h1=10.0, c1=1500.0,
 
         b0 = [0.0 0.0 d0]
         ssp0 = [0.0 cw 0.0 ρw αw 0.0
-            d0 cw 0.0 ρw αw 0.0]
+                d0 cw 0.0 ρw αw 0.0]
 
         b1 = [0.0 0.0 d1]
         ssp1 = [d0 c1 0.0 ρ1 α1 0.0
-            d1 c1 0.0 ρ1 α1 0.0]
+                d1 c1 0.0 ρ1 α1 0.0]
 
         ssp_bhs = [d1 cb 0.0 ρb αb 0.0]
         ssp_ths = [0.0 343.0 0.0 0.00121 0.0 0.0]
@@ -136,7 +132,7 @@ function env_builder(; hw=71.0, cw=1471.0, ρw=1.0, αw=0.0, h1=10.0, c1=1500.0,
         ssp0 = [0.0 cw[1] 0.0 ρw αw 0.0
                 20.0 cw[2] 0.0 ρw αw 0.0
                 40.0 cw[3] 0.0 ρw αw 0.0
-                d0  cw[4] 0.0 ρw αw 0.0]
+                d0 cw[4] 0.0 ρw αw 0.0]
 
         b1 = [0.0 0.0 d1]
         ssp1 = [d0 c1 0.0 ρ1 α1 0.0
@@ -171,11 +167,11 @@ Optional keywords:
 - `c_high`: maximum sound speed (default: maximum of SSP and SSPHS)
 """
 function kraken(env::KRAKENEnv,
-    freq=15.0;
-    n_modes=5,
-    range_max=5e3,
-    c_low=0.0,
-    c_high=nothing)
+        freq = 15.0;
+        n_modes = 5,
+        range_max = 5e3,
+        c_low = 0.0,
+        c_high = nothing)
     if c_high === nothing
         c_high = maximum([maximum(env.ssp[:, 2]), maximum(env.sspHS[:, 2])])
     end
@@ -232,7 +228,8 @@ Required arguments:
 - `zrc`: depth of receivers
 
 """
-function call_kraken(nm, frq, nl, note1, b, nc, ssp, note2, bsig, sspHS, clh, rng, nsr, zsr, nrc, zrc)
+function call_kraken(
+        nm, frq, nl, note1, b, nc, ssp, note2, bsig, sspHS, clh, rng, nsr, zsr, nrc, zrc)
     nz = nsr + nrc
 
     cg = zeros(1, nm)
@@ -244,10 +241,13 @@ function call_kraken(nm, frq, nl, note1, b, nc, ssp, note2, bsig, sspHS, clh, rn
 
     ccall((:kraken_, "$libpath/kraken.dylib"),
         Nothing,
-        (Ref{Int}, Ref{Float64}, Ref{Int}, Ref{UInt8}, Ref{Float64}, Ref{Int}, Ref{Float64}, Ref{UInt8}, Ref{Float64},
-            Ref{Float64}, Ref{Float64}, Ref{Float64}, Ref{Int}, Ref{Float64}, Ref{Int}, Ref{Float64}, Ref{Int}, Ref{Float64},
+        (Ref{Int}, Ref{Float64}, Ref{Int}, Ref{UInt8}, Ref{Float64},
+            Ref{Int}, Ref{Float64}, Ref{UInt8}, Ref{Float64},
+            Ref{Float64}, Ref{Float64}, Ref{Float64}, Ref{Int}, Ref{Float64},
+            Ref{Int}, Ref{Float64}, Ref{Int}, Ref{Float64},
             Ref{Float64}, Ref{Float64}, Ref{Float64}, Ref{Float64}, Ref{Float64}),
-        nm, frq, nl, note1, b, nc, ssp, note2, bsig, sspHS, clh, rng, nsr, zsr, nrc, zrc, nz, cg, cp, kr_real, kr_imag, zm, modes)
+        nm, frq, nl, note1, b, nc, ssp, note2, bsig, sspHS, clh, rng,
+        nsr, zsr, nrc, zrc, nz, cg, cp, kr_real, kr_imag, zm, modes)
     return cg, cp, kr_real, kr_imag, zm, modes
 end
 
@@ -256,15 +256,15 @@ end
 
 
 """
-function pf_signal(env, ranges, zs, zr; T=2, fs=1000, n_modes=41, t0_offset=0.2)
-    freqs = range(1, fs / 2; step=1 / T)
+function pf_signal(env, ranges, zs, zr; T = 2, fs = 1000, n_modes = 41, t0_offset = 0.2)
+    freqs = range(1, fs / 2; step = 1 / T)
     rfft_freqs = rfftfreq(T * fs, fs)
 
     rho0 = 1000  # density of water (kg/m³)
     cw = env.ssp[1, 2]
     pf_sig = zeros(ComplexF64, length(ranges), length(rfft_freqs))
     for freq in freqs
-        res = kraken(env, freq; n_modes=n_modes)
+        res = kraken(env, freq; n_modes = n_modes)
         kr = res["kr_real"] + 1im * res["kr_imag"] |> vec
         ϕ = res["modes"]
 
@@ -275,8 +275,8 @@ function pf_signal(env, ranges, zs, zr; T=2, fs=1000, n_modes=41, t0_offset=0.2)
         # println(size(ϕ_zs))
         for (rr, r) in enumerate(ranges)
             t0 = r / cw - t0_offset  # align window correctly in time
-            Q = 1im*exp(-1im*pi/4) / (rho0*sqrt(8π*r))
-            pf = @. Q*ϕ_zs*ϕ_zr*exp(-im*kr*r)/sqrt(kr)
+            Q = 1im * exp(-1im * pi / 4) / (rho0 * sqrt(8π * r))
+            pf = @. Q * ϕ_zs * ϕ_zr * exp(-im * kr * r) / sqrt(kr)
             pf = fillnan.(pf)
             pf = sum(pf)
             pf_shifted = pf * exp(2im * pi * freq * t0)
@@ -299,12 +299,12 @@ Required arguments:
 - `zr`: receiver depth (m)
 
 """
-function pf_adiabatic(freq, envs, ranges, zs, zr; n_modes=41)
+function pf_adiabatic(freq, envs, ranges, zs, zr; n_modes = 41)
     krs = []
     modes = []
     zm = Vector{Float64}
     for (i, env) in enumerate(envs)
-        res = kraken(env, freq; n_modes=n_modes)
+        res = kraken(env, freq; n_modes = n_modes)
         kr = res["kr_real"] + 1im * res["kr_imag"]
         push!(krs, kr)
         push!(modes, res["modes"])
@@ -323,7 +323,7 @@ function pf_adiabatic(freq, envs, ranges, zs, zr; n_modes=41)
     # println(krs_m_integral)
     ## Compute pressure(ω)
     rho0 = 1000  # density of water (kg/m³)
-    Q = 1im*exp(-1im*π/4) / (rho0*sqrt(8pi*ranges[end]))
+    Q = 1im * exp(-1im * π / 4) / (rho0 * sqrt(8pi * ranges[end]))
     _, zs_ind = findmin(abs.(zm .- zs))
     _, zr_ind = findmin(abs.(zm .- zr))
 
@@ -353,15 +353,16 @@ end
     - `n_modes`: number of modes (default: 41)
     - `t0_offset`: the signal offset from the beginning of the time window
 """
-function pf_adiabatic_signal(envs, ranges, zs, zr; T=2, fs=1000, n_modes=41, t0_offset=0.2)
-    freqs = range(1, fs / 2; step=1 / T)
+function pf_adiabatic_signal(
+        envs, ranges, zs, zr; T = 2, fs = 1000, n_modes = 41, t0_offset = 0.2)
+    freqs = range(1, fs / 2; step = 1 / T)
     rfft_freqs = rfftfreq(T * fs, fs)
 
     cw = maximum(envs[end].ssp[:, 2])
     t0 = ranges[end] / cw - t0_offset  # align window correctly in time
     pf_signal = zeros(ComplexF64, length(rfft_freqs))
     for freq in freqs
-        pf = pf_adiabatic(freq, envs, ranges, zs, zr; n_modes=n_modes)
+        pf = pf_adiabatic(freq, envs, ranges, zs, zr; n_modes = n_modes)
         pf_shifted = pf * exp(2im * pi * freq * t0)
         ind = findfirst(rfft_freqs .== freq)
         pf_signal[ind] = pf_shifted
