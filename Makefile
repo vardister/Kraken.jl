@@ -1,7 +1,7 @@
 PROG = kraken
 
-OBJDIR = obj
-MODDIR = mod
+OBJDIR = src_fortran/obj
+MODDIR = src_fortran/mod
 SRCDIR = src_fortran
 
 # N.B. If you change the compiler or compiler options, you need to also

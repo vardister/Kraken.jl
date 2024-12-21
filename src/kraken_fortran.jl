@@ -10,7 +10,7 @@ fillnan(x) = isnan(x) ? zero(x) : x
 
 
 ###########################################################################################
-# ABSTRACT TYPES 
+# ABSTRACT TYPES
 ###########################################################################################
 
 abstract type KRAKENEnv end
@@ -21,7 +21,7 @@ abstract type KRAKENEnv end
 ###########################################################################################
 
 """
-`env = Env(ssp, sspHS, bottom, n_krak, z_krak)`
+`env = Env(ssp, sspHS, bottom, z_krak, z_source; n_layers=2, note1="NVW", note2="A", bsig=0, z_step=1.0)`
 
 Creates an underwater environment in the form of a sound speed profile (`ssp`), a
 half-space sound speed profile (`sspHS`), and a bottom profile (`bottom`).
@@ -169,7 +169,7 @@ Optional keywords:
 function kraken(env::KRAKENEnv,
         freq = 15.0;
         n_modes = 5,
-        range_max = 5e3,
+        range_max = 1e4,
         c_low = 0.0,
         c_high = nothing)
     if c_high === nothing
@@ -338,7 +338,7 @@ end
 """
     pf_adiabatic_signal(envs, ranges, zs, zr; T=2, fs=1000, n_modes=41, t0_offset=0.2)
 
-    Calculate the pressure field at a given receiver depth `zr` from a source at `zs` 
+    Calculate the pressure field at a given receiver depth `zr` from a source at `zs`
     and using the adiabatic approximation for a range-dependent environment.
 
     Required arguments:
