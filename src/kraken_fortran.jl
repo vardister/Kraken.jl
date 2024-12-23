@@ -1,6 +1,6 @@
 using Parameters
 using DSP
-using Interpolations # To be used with adiabatic approximation
+using DataInterpolations # To be used with adiabatic approximation
 using QuadGK  # To be used for adiabatic approximatin
 using FFTW
 
@@ -316,7 +316,7 @@ function pf_adiabatic(freq, envs, ranges, zs, zr; n_modes = 41)
 
     ## Interpolate wavenumbers in range for each mode
     krs_m = vcat(krs...)  # make krs_m be length(ranges) x length(modes)
-    krs_m_interp = [linear_interpolation(ranges, col) for col in eachcol(krs_m)]
+    krs_m_interp = [LinearInterpolation(col, ranges) for col in eachcol(krs_m)]
     krs_m_integral = [quadgk(krs_m_interp[i], ranges[1], ranges[end])[1]
                       for i in eachindex(krs_m_interp)]
 
