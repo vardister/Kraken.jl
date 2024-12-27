@@ -4,7 +4,6 @@ module KRAKEN
 include("kraken_core.jl")
 
 include("kraken_pekeris.jl")
-export PekerisUnderwaterEnv
 
 ### Legacy Fortran implementation
 include("kraken_fortran.jl")

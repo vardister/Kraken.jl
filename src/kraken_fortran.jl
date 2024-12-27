@@ -1,4 +1,4 @@
-using Parameters
+# using Parameters
 using DSP
 using DataInterpolations # To be used with adiabatic approximation
 using QuadGK  # To be used for adiabatic approximatin
@@ -8,6 +8,14 @@ libpath = @__DIR__
 
 fillnan(x) = isnan(x) ? zero(x) : x
 
+# set filepath to the KRAKEN library depending on the OS
+if Sys.isapple()
+    libpath = joinpath(libpath, "kraken.dylib")
+elseif Sys.islinux()
+    libpath = joinpath(libpath, "kraken.so")
+else
+    error("OS not supported")
+end
 
 ###########################################################################################
 # ABSTRACT TYPES
@@ -239,7 +247,7 @@ function call_kraken(
     zm = zeros(nz, 1)
     modes = zeros(nz, nm)
 
-    ccall((:kraken_, "$libpath/kraken.dylib"),
+    ccall((:kraken_, "$libpath"),
         Nothing,
         (Ref{Int}, Ref{Float64}, Ref{Int}, Ref{UInt8}, Ref{Float64},
             Ref{Int}, Ref{Float64}, Ref{UInt8}, Ref{Float64},
