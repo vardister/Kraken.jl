@@ -6,6 +6,9 @@ using UnPack
 using Integrals
 using DataInterpolations: LinearInterpolation, CubicSpline
 
+## Debugging
+using Infiltrator
+
 # Exports
 export SampledSSP, SampledDensity
 export UnderwaterEnv, AcousticProblemProperties, KRAKENFortranEnv
@@ -207,8 +210,8 @@ end
 
 ### Prepare vectors
 
-a_element(c, ρ, f, h) = (-2 + h^2 * (2pi * f / c)^2) / (h * ρ)
-e_element(ρ, h) = 1 / (h * ρ)
+a_element(c, ρ, f, h) = @. (-2 + h^2 * (2pi * f / c)^2) / (h * ρ)
+e_element(ρ, h) = @. 1 / (h * ρ)
 
 function get_g(kr, env::UnderwaterEnv, props::AcousticProblemProperties)
 	g = sqrt(kr^2 - (2pi * props.freq / env.cb)^2) / env.ρb
@@ -232,7 +235,8 @@ end
 function prepare_vectors(env::UnderwaterEnv, props::AcousticProblemProperties)
 	Ntotal = sum(props.Nz_vec)
 	Ni = prepend!(accumulate(+, props.Nz_vec), 0)
-	a_vec = zeros(eltype(env.cb), Ntotal)
+	#TODO: create vector that generalizes well to different types
+	a_vec = zeros(eltype(props.Δz_vec), Ntotal)
 	e_vec = similar(a_vec)
 	scaling_factor = similar(a_vec)
 	for i in eachindex(props.zn_vec)
@@ -241,8 +245,8 @@ function prepare_vectors(env::UnderwaterEnv, props::AcousticProblemProperties)
 		cn = env.c.f(zn)
 		ρn = env.ρ.f(zn)
 
-		a_vec[(Ni[i]+1):Ni[i+1]] .= a_element.(cn, ρn, props.freq, Δz)
-		e_vec[(Ni[i]+1):Ni[i+1]] .= e_element.(env.ρ.f(zn), Δz)
+		a_vec[(Ni[i]+1):Ni[i+1]] .= a_element(cn, ρn, props.freq, Δz)
+		e_vec[(Ni[i]+1):Ni[i+1]] .= e_element(ρn, Δz)
 
 		scaling_factor[(Ni[i]+1):Ni[i+1]] .= e_vec[(Ni[i]+1):Ni[i+1]] .* (Δz^2)
 	end
@@ -462,7 +466,7 @@ function inverse_iteration(kr, env, props, a_vec, e_vec, scaling; tol = 1e-3, ve
 
 	local kr_new
 	g = get_g(kr_try, env, props)
-	# d_vec = similar(a_vec)
+	d_vec = similar(a_vec)
 	a_vec[1:(end-1)] .= a_vec[1:(end-1)] .- λ_try[1:(end-1)]
 	a_vec[end] = 0.5 * a_vec[end] - λ_try[end] - g
 
@@ -496,14 +500,18 @@ function inverse_iteration(kr, env, props, a_vec, e_vec, scaling; tol = 1e-3, ve
 end
 
 function inverse_iteration(kr_vec::Vector, env, props, a_vec, e_vec, scaling; kws...)
-	zn = Iterators.flatten(props.zn_vec) # it's all iterators joined together
-	zn = collect(zn)
-	modes = zeros(eltype(kr_vec), length(zn) + 1, length(kr_vec))
-	kr_vec_new = similar(kr_vec)
-	for (i, kr) in enumerate(kr_vec)
-		kr_vec_new[i], modes[:, i] = inverse_iteration(kr, env, props, a_vec, e_vec, scaling; kws...)
-	end
-	return kr_vec, modes
+    # Flatten and collect the iterator into a new vector
+    zn = collect(Iterators.flatten(props.zn_vec))
+
+    # Initialize containers
+    results = [inverse_iteration(kr, env, props, a_vec, e_vec, scaling; kws...) for kr in kr_vec]
+    
+    # Extract kr_vec_new and modes from the results
+    kr_vec_new = [result[1] for result in results]
+    modes = hcat([result[2] for result in results]...)
+
+    # Return the new kr_vec and modes
+    return kr_vec_new, modes
 end
 
 ### Full KRAKEN solve with Richardson's Extrapolation
@@ -547,7 +555,7 @@ function kraken_jl(
 	krs_coarse, ψ = inverse_iteration(krs, env, props_all[1], a_vec, e_vec, λ_scaling)
 	# If we want only one mesh calculation (n_meshes = 1), return the result
 	if n_meshes == 1
-		return NormalModeSolution(krs_new, ψ, env, props)
+		return NormalModeSolution(krs_coarse, ψ, env, props_all[1])
 	end
 
 	# Richardson Extrapolation from here on out if n_mesh > 1
