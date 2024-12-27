@@ -454,49 +454,40 @@ function integral_trapz(y, x)
 end
 
 function inverse_iteration(kr, env, props, a_vec, e_vec, scaling; tol = 1e-3, verbose = false)
-	@unpack Nz_vec, zn_vec = props
-	zn = Iterators.flatten(zn_vec) # it's all iterators joined together
-	zn = collect(zn)
-	ρn = env.ρ.f(zn)
-	N = sum(Nz_vec)
-	kr_try = kr - 1e3 * eps(kr)
-	λ_try = kr_try^2 .* scaling
-	w0 = normalize(ones(eltype(kr), N))
-	w1 = similar(w0)
+    @unpack Nz_vec, zn_vec = props
+    zn = collect(Iterators.flatten(zn_vec))
+    ρn = env.ρ.f(zn)
+    N = sum(Nz_vec)
+    kr_try = kr - 1e3 * eps(kr)
+    λ_try = kr_try^2 .* scaling
+    w0 = normalize(ones(eltype(kr), N))
 
-	local kr_new
-	g = get_g(kr_try, env, props)
-	d_vec = similar(a_vec)
-	a_vec[1:(end-1)] .= a_vec[1:(end-1)] .- λ_try[1:(end-1)]
-	a_vec[end] = 0.5 * a_vec[end] - λ_try[end] - g
+    g = get_g(kr_try, env, props)
+    d_vec = vcat([a_vec[i] - λ_try[i] for i in 1:N-1], [0.5 * a_vec[end] - λ_try[end] - g])
 
-	A = SymTridiagonal(a_vec, e_vec[2:end])
-	for ii in 1:200
-		w1 .= A \ w0
-		# Improve the estimate of the wavenumber
-		_, m = findmax(abs.(w1))
-		kr_new = w0[m] / w1[m] + kr_try
-		w1 ./= norm(w1)
-		if norm(abs.(w1) .- abs.(w0)) < tol
-			verbose && println("Took $ii iterations to converge")
-			break
-		end
-		w0 .= w1
-	end
-	if w0[1] < 0
-		w0 .*= -1
-	end
-	# normalize the mode
-	amp1 = integral_trapz(abs2.(w0) ./ ρn, zn)
-	amp2 = w0[end]^2 / (2 * env.ρb * sqrt(kr_new^2 - (2pi * props.freq / env.cb)^2))
-	w0 .= w0 ./ sqrt(amp1 + amp2)
-	prepend!(w0, 0.0)
+    A = SymTridiagonal(d_vec, e_vec[2:end])
 
-	# restore the matrix to its original form
-	a_vec[1:(end-1)] .+= λ_try[1:(end-1)]
-	a_vec[end] = 2 * (a_vec[end] + λ_try[end] + g)
+    kr_new = kr
+    for ii in 1:200
+        w1 = A \ w0
+        _, m = findmax(abs.(w1))
+        kr_new = w0[m] / w1[m] + kr_try
+        w1_normalized = w1 ./ norm(w1)
+        if norm(abs.(w1_normalized) .- abs.(w0)) < tol
+            verbose && println("Took $ii iterations to converge")
+            break
+        end
+        w0 = w1_normalized
+    end
 
-	return kr_new, w0
+    w0_final = ifelse(w0[1] < 0, w0 .* -1, w0)
+
+    amp1 = integral_trapz(abs2.(w0_final) ./ ρn, zn)
+    amp2 = w0_final[end]^2 / (2 * env.ρb * sqrt(kr_new^2 - (2pi * props.freq / env.cb)^2))
+    w0_normalized = w0_final ./ sqrt(amp1 + amp2)
+    w0_prepended = vcat(0.0, w0_normalized)
+
+    return kr_new, w0_prepended
 end
 
 function inverse_iteration(kr_vec::Vector, env, props, a_vec, e_vec, scaling; kws...)
