@@ -4,7 +4,6 @@ using Statistics
 using NonlinearSolve
 using UnPack
 using Integrals
-using LinearSolve
 using DataInterpolations: LinearInterpolation, CubicSpline
 
 # Exports
@@ -19,7 +18,6 @@ export prepare_vectors, bisection, solve_for_kr, inverse_iteration, det_sturm, k
 abstract type SoundSpeedProfile end
 abstract type SampledSSP <: SoundSpeedProfile end
 
-
 """
 Sound speed profile based on measurements at discrete depths.
 """
@@ -28,14 +26,15 @@ struct SampledSSP1D{T1,T2,T3} <: SampledSSP
 	c::Vector{T2}
 	interp::Symbol
 	f::T3
+	function SampledSSP1D(depth, c, interp::Symbol)
+		f =
+			interp === :smooth ? CubicSpline(c, depth) :
+			interp === :linear ? LinearInterpolation(c, depth) :
+			throw(ArgumentError("Unknown interpolation. Choose from :linear or :smooth"))
+		return new{eltype(depth),eltype(depth),typeof(f)}(-depth, c, interp, f)
+	end
 end
-function SampledSSP1D(depth, c, interp::Symbol)
-	f =
-		interp === :smooth ? CubicSpline(c, depth) :
-		interp === :linear ? LinearInterpolation(c, depth) :
-		throw(ArgumentError("Unknown interpolation. Choose from :linear or :smooth"))
-	return SampledSSP1D{eltype(depth),eltype(depth),typeof(f)}(-depth, c, interp, f)
-end
+
 
 """
 Constructor for `SampledSSP1D`.
@@ -95,7 +94,7 @@ function KRAKENFortranEnv(ssp, layers, sspHS)
 	return KRAKENFortranEnv{eltype(ssp)}(ssp, layers, sspHS)
 end
 
-function Base.show(io::IO, sspinfo::KRAKENFortranEnv{T}) where T
+function Base.show(io::IO, sspinfo::KRAKENFortranEnv{T}) where {T}
 	print(io, "KRAKENFortranEnv{$T}")
 end
 
@@ -103,7 +102,7 @@ end
 """
 Underwater environment containing the sound speed profile and density profile.
 """
-struct UnderwaterEnv{T1<:SoundSpeedProfile, T2<:DensityProfile, T3<:Real}
+struct UnderwaterEnv{T1<:SoundSpeedProfile,T2<:DensityProfile,T3<:Real}
 	c::T1
 	ρ::T2
 	cb::T3
@@ -121,18 +120,10 @@ function UnderwaterEnv(ssp, layers, sspHS)
 	layer_thickness = get_thickness(layers)
 	layer_depth = layers[:, 3]
 	depth = ssp[end, 1]
-	return UnderwaterEnv{typeof(c),typeof(ρ), typeof(cb)}(
-		c,
-		ρ,
-		cb,
-		ρb,
-		layer_thickness,
-		layer_depth,
-		depth,
-	)
+	return UnderwaterEnv{typeof(c),typeof(ρ),typeof(cb)}(c, ρ, cb, ρb, layer_thickness, layer_depth, depth)
 end
 
-function UnderwaterEnv(krak_ssp::KRAKENFortranEnv{T}) where T
+function UnderwaterEnv(krak_ssp::KRAKENFortranEnv{T}) where {T}
 	c = SampledSSP(krak_ssp.ssp[:, 1], krak_ssp.ssp[:, 2])
 	ρ = SampledDensity(krak_ssp.ssp[:, 1], krak_ssp.ssp[:, 4])
 	ρb = krak_ssp.sspHS[2, 4]
@@ -140,10 +131,10 @@ function UnderwaterEnv(krak_ssp::KRAKENFortranEnv{T}) where T
 	layer_thickness = get_thickness(krak_ssp.layers)
 	layer_depth = krak_ssp.layers[:, 3]
 	depth = krak_ssp.ssp[end, 1]
-	return UnderwaterEnv{typeof(c),typeof(ρ), T}(c, ρ, cb, ρb, layer_thickness, layer_depth, depth)
+	return UnderwaterEnv{typeof(c),typeof(ρ),T}(c, ρ, cb, ρb, layer_thickness, layer_depth, depth)
 end
 
-function Base.show(io::IO, sspinfo::UnderwaterEnv{T1, T2, T3}) where {T1, T2, T3}
+function Base.show(io::IO, sspinfo::UnderwaterEnv{T1,T2,T3}) where {T1,T2,T3}
 	print(io, "UnderwaterEnv{$T1, $T2, $T3}")
 end
 
@@ -220,31 +211,28 @@ a_element(c, ρ, f, h) = (-2 + h^2 * (2pi * f / c)^2) / (h * ρ)
 e_element(ρ, h) = 1 / (h * ρ)
 
 function get_g(kr, env::UnderwaterEnv, props::AcousticProblemProperties)
-	@unpack cb, ρb = env
-	@unpack freq = props
-	g = sqrt(kr^2 - (2pi * freq / cb)^2) / ρb
+	g = sqrt(kr^2 - (2pi * props.freq / env.cb)^2) / env.ρb
 	return g
 end
 
-# moving_average(vec, len) = [mean(vec[i:(i + len - 1)]) for i in 1:(length(vec) - len + 1)]
-function moving_average(vs, n)
+#TODO: make this compiler friends
+function moving_average!(vs, n)
 	vs[1:end-n+1] .= [sum(@view vs[i:(i+n-1)]) / n for i in 1:(length(vs)-(n-1))]
 	return nothing
 end
 
-function moving_average!(vec, len)
-	for i in 1:(length(vec)-len+1)
-		vec[i] = mean(vec[i:(i+len-1)])
-	end
-	return nothing
-end
+# #TODO: make this compiler friends
+# function moving_average!(vec, len)
+# 	for i in 1:(length(vec)-len+1)
+# 		vec[i] = mean(vec[i:(i+len-1)])
+# 	end
+# 	return nothing
+# end
 
-function prepare_vectors(env, props)
-	@unpack c, ρ, ρb, cb = env
-	@unpack freq, zn_vec, Δz_vec, Nz_vec = props
-	Ntotal = sum(Nz_vec)
-	Ni = prepend!(accumulate(+, Nz_vec), 0)
-	a_vec = zeros(eltype(cb), Ntotal)
+function prepare_vectors(env::UnderwaterEnv, props::AcousticProblemProperties)
+	Ntotal = sum(props.Nz_vec)
+	Ni = prepend!(accumulate(+, props.Nz_vec), 0)
+	a_vec = zeros(eltype(env.cb), Ntotal)
 	e_vec = similar(a_vec)
 	scaling_factor = similar(a_vec)
 	for i in eachindex(props.zn_vec)
@@ -253,7 +241,7 @@ function prepare_vectors(env, props)
 		cn = env.c.f(zn)
 		ρn = env.ρ.f(zn)
 
-		a_vec[(Ni[i]+1):Ni[i+1]] .= a_element.(cn, ρn, freq, Δz)
+		a_vec[(Ni[i]+1):Ni[i+1]] .= a_element.(cn, ρn, props.freq, Δz)
 		e_vec[(Ni[i]+1):Ni[i+1]] .= e_element.(env.ρ.f(zn), Δz)
 
 		scaling_factor[(Ni[i]+1):Ni[i+1]] .= e_vec[(Ni[i]+1):Ni[i+1]] .* (Δz^2)
@@ -262,13 +250,13 @@ function prepare_vectors(env, props)
 	if length(props.zn_vec) > 1
 		loc = 0
 		for i in 1:(length(props.zn_vec)-1)
-			loc += Nz_vec[i]
+			loc += props.Nz_vec[i]
 			a_vec[loc] = 0.5 * (a_vec[loc] + a_vec[loc+1])
 		end
 	end
-	moving_average(scaling_factor, 2)
+
+	moving_average!(scaling_factor, 2)
 	scaling_factor[end] = e_vec[end] * props.Δz_vec[end]^2 / 2
-	# λ_scaling = append!(moving_average(scaling_factor, 2), e_vec[end] * props.Δz_vec[end]^2 / 2)
 	return a_vec, e_vec, scaling_factor
 end
 
@@ -291,20 +279,16 @@ end
 Calculate the Sturm sequence for the acoustic problem.
 """
 function det_sturm(kr, env, props, a_vec, e_vec, λ_scaling; stop_at_k = nothing, return_det = false)
-	# If A is 1x1, no need to calculate determinant
+	local p2, p1, p0
 	mode_count = 0
-
-	@unpack Nz_vec, Δz_vec, zn_vec = props
-	@unpack ρ = env
 	g = get_g(kr, env, props)
 
-	local p2, p1, p0
 	# Calculate the Sturm Sequence.
 	k = 1
 	p0 = 0.0
 	p1 = 1.0
-	for i in eachindex(Nz_vec)
-		Nz = Nz_vec[i]
+	for i in eachindex(props.Nz_vec)
+		Nz = props.Nz_vec[i]
 
 		for j in 1:Nz
 			a = a_vec[k]
@@ -312,7 +296,7 @@ function det_sturm(kr, env, props, a_vec, e_vec, λ_scaling; stop_at_k = nothing
 			λ = kr^2 * λ_scaling[k]
 			k += 1
 			# If we reached the last element of the last layer
-			if (i == length(Nz_vec)) && (j == Nz)
+			if (i == length(props.Nz_vec)) && (j == Nz)
 				p2 = (λ - (0.5 * a - g)) * p1 - e^2 * p0
 				s = scale_const(p1, p2)
 				p1 *= s
@@ -354,11 +338,9 @@ end
 Solve the acoustic problem using bisection method.
 """
 function bisection(env, props, a_vec, e_vec, λ_scaling; verbose = false)
-	@unpack freq, zn_vec = props
-	@unpack c, cb = env
-	ω = 2pi * freq
-	kr_max = maximum(ω ./ c.c)
-	kr_min = ω / cb
+	ω = 2pi * props.freq
+	kr_max = maximum(ω ./ env.c.c)
+	kr_min = ω / env.cb
 	kr_min, kr_max = promote(kr_min, kr_max)
 	n_max = first(det_sturm(kr_min, env, props, a_vec, e_vec, λ_scaling))
 	if n_max == 0
@@ -608,7 +590,6 @@ function kraken_jl(
 
 	return NormalModeSolution(rich_krs[1:M], ψ, env, props_all[1])
 end
-
 
 
 struct NormalModeSolution{T1,T2}
