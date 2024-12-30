@@ -1,0 +1,4 @@
+[deps]
+DocStringExtensions = "ffbed154-4ef7-542d-bbb7-c09d3a79fcae"
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+KRAKEN = "269dd85f-649c-4475-a373-cd87bf6afec3"
