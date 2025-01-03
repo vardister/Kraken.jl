@@ -268,7 +268,7 @@ function pf_signal(env, ranges, zs, zr; T = 2, fs = 1000, n_modes = 41, t0_offse
     freqs = range(1, fs / 2; step = 1 / T)
     rfft_freqs = rfftfreq(T * fs, fs)
 
-    rho0 = 1000  # density of water (kg/m³)
+    rho0 = 1.0  # density of water (gr/cm³) - used by FORTRAN version
     cw = env.ssp[1, 2]
     pf_sig = zeros(ComplexF64, length(ranges), length(rfft_freqs))
     for freq in freqs
@@ -330,7 +330,7 @@ function pf_adiabatic(freq, envs, ranges, zs, zr; n_modes = 41)
 
     # println(krs_m_integral)
     ## Compute pressure(ω)
-    rho0 = 1000  # density of water (kg/m³)
+    rho0 = 1  # density of water (gr/cm³) - used by FORTRAN version
     Q = 1im * exp(-1im * π / 4) / (rho0 * sqrt(8pi * ranges[end]))
     _, zs_ind = findmin(abs.(zm .- zs))
     _, zr_ind = findmin(abs.(zm .- zr))
