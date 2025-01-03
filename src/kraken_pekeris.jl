@@ -3,8 +3,9 @@ using UnPack
 using StaticArrays
 using Infiltrator
 using DocStringExtensions
+import NaNMath as nm
 
-export PekerisUnderwaterEnv, find_kr, get_modal_function, pressure_f
+export PekerisUnderwaterEnv, find_kr, get_modal_function, pressure_f, find_spans
 
 """
 	PekerisUnderwaterEnv
@@ -28,16 +29,16 @@ export PekerisUnderwaterEnv, find_kr, get_modal_function, pressure_f
 	env = PekerisUnderwaterEnv(1500.0, 1600.0, 1000.0, 2000.0, 100.0)
 	```
 """
-struct PekerisUnderwaterEnv{T1<:Real}
+struct PekerisUnderwaterEnv{T1<:Real, T2<:Real, T3<:Real, T4<:Real, T5<:Real}
 	c1::T1
-	cb::T1
-	ρ1::T1
-	ρb::T1
-	depth::T1
+	cb::T2
+	ρ1::T3
+	ρb::T4
+	depth::T5
 
-	function PekerisUnderwaterEnv(c1::T1, cb, ρ1, ρb, depth) where {T1}
+	function PekerisUnderwaterEnv(c1::T1, cb::T2, ρ1::T3, ρb::T4, depth::T5) where {T1, T2, T3, T4, T5}
 		@assert cb > c1 "Bottom sound speed must be greater than water sound speed"
-		new{T1}(c1, cb, ρ1, ρb, depth)
+		new{T1, T2, T3, T4, T5}(c1, cb, ρ1, ρb, depth)
 	end
 end
 
@@ -61,11 +62,16 @@ function find_kr(env::PekerisUnderwaterEnv, freq, p; n_points = 2_000, method = 
 	kr_min, kr_max = extrema([ω / env.c1, ω / env.cb])
 	# p = SA[env.c1, env.cb, env.ρ1, env.ρb, env.depth]
 	func(kr, p) =
-		@. tan(sqrt((ω / p[1])^2 - kr^2) * p[5]) + (p[4] / p[3]) * sqrt((ω / p[1])^2 - kr^2) / sqrt(kr^2 - (ω / p[2])^2)
+		@. nm.tan(nm.sqrt((ω / p[1])^2 - kr^2) * p[5]) + (p[4] / p[3]) * nm.sqrt((ω / p[1])^2 - kr^2) / nm.sqrt(kr^2 - (ω / p[2])^2)
 
 	kr_try = range(kr_min + eps(kr_min), kr_max - eps(kr_min); length = n_points)
 	kr0 = find_spans(func, kr_try, p)
-	prob = NonlinearProblem(func, kr0, p)
+	# kr0 = [0.39380573744004627, 0.4028554311353545, 0.40996684021864305, 0.4149566134428289, 0.41790332991380486]
+	# @show kr0
+	if isempty(kr0)
+		return Vector{eltype(kr_min)}()
+	end
+	prob = NonlinearProblem{false}(func, kr0, p)
 	sol = solve(prob, method)
 	return reverse(sol.u)
 end
@@ -84,12 +90,12 @@ end
     - `Vector{eltype(x)}`: The spans.
 """
 function find_spans(func, x, p)
-	idxes = [i for i in 1:(length(x)-1) if (func(x[i], p) > 0 && func(x[i+1], p) < 0)]
-	if isempty(idxes)
-		return Vector{eltype(x)}()
-	end
-	spans = [mean((x[i], x[i+1])) for i in idxes]
-	return spans
+    idxes = [i for i in 1:(length(x) - 1) if (func(x[i], p) > 0 && func(x[i + 1], p) < 0)]
+    if isempty(idxes)
+        return Vector{eltype(p)}()
+    end
+    spans = [mean((x[i], x[i + 1])) for i in idxes]
+    return spans
 end
 
 """
