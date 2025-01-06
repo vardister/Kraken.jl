@@ -6,6 +6,9 @@ using UnPack
 using Integrals
 using DataInterpolations: LinearInterpolation, CubicSpline
 
+### Docs
+using DocStringExtensions
+
 ## Debugging
 using Infiltrator
 
@@ -16,37 +19,41 @@ export prepare_vectors, bisection, solve_for_kr, inverse_iteration, det_sturm, k
 
 
 ### Main Types
-
 ### Sound Speed Profile
 abstract type SoundSpeedProfile end
 abstract type SampledSSP <: SoundSpeedProfile end
 
 """
-Sound speed profile based on measurements at discrete depths.
+$(TYPEDEF)
+Sound speed profile based on measurements at discrete depths `z` in meters and sound speed `c` in m/s.
 """
 struct SampledSSP1D{T1,T2,T3} <: SampledSSP
 	z::Vector{T1}
 	c::Vector{T2}
-	interp::Symbol
+	type::Symbol
 	f::T3
-	function SampledSSP1D(depth, c, interp::Symbol)
+	function SampledSSP1D(depth, c, type::Symbol)
 		f =
-			interp === :smooth ? CubicSpline(c, depth) :
-			interp === :linear ? LinearInterpolation(c, depth) :
+			type === :smooth ? CubicSpline(c, depth) :
+			type === :linear ? LinearInterpolation(c, depth) :
 			throw(ArgumentError("Unknown interpolation. Choose from :linear or :smooth"))
-		return new{eltype(depth),eltype(depth),typeof(f)}(-depth, c, interp, f)
+		return new{eltype(depth),eltype(depth),typeof(f)}(-depth, c, type, f)
 	end
 end
 
 
 """
+$(SIGNATURE)
 Constructor for `SampledSSP1D`.
+
+	Create a sound speed profile based on measurements at discrete depths `z` in meters and sound speed `c` in m/s.
+	Two options for interpolation are available: `:linear` and `:smooth`.
 """
 SampledSSP(depth, c) = SampledSSP1D(depth, c, :linear)
-SampledSSP(depth, c, interp::Symbol) = SampledSSP1D(depth, c, interp)
+SampledSSP(depth, c, type::Symbol) = SampledSSP1D(depth, c, type)
 
 function Base.show(io::IO, ρint::SampledSSP1D{T1,T2,T3}) where {T1,T2,T3}
-	print(io, "SampledSSP1D{", T1, ",", T2, ",", ρint.interp, "}(", length(ρint.z), " points)")
+	print(io, "SampledSSP1D{", T1, ",", T2, ",", ρint.type, "}(", length(ρint.z), " points)")
 end
 
 ### Density Profile
@@ -54,56 +61,66 @@ abstract type DensityProfile end
 abstract type SampledDensity <: DensityProfile end
 
 """
-Density profile based on measurements at discrete depths.
-
-# Fields
-- `z::Vector`: Depths at which the density is measured.
-- `ρ::Vector`: Density values at the depths.
-- `interp::Symbol`: Interpolation method used.
-- `f::Function`: Interpolation function.
+$(TYPEDEF)
+Density profile based on measurements at discrete depths `z` in meters and density `ρ` in kg/m³.
 """
 struct SampledDensity1D{T1,T2,T3} <: SampledDensity
 	z::Vector{T1}
 	ρ::Vector{T2}
-	interp::Symbol
+	type::Symbol
 	f::T3
-	function SampledDensity1D(depth, ρ, interp)
+	function SampledDensity1D(depth, ρ, type)
 		f =
-			interp === :smooth ? CubicSpline(ρ, depth; extrapolate = true) :
-			interp === :linear ? LinearInterpolation(ρ, depth; extrapolate = true) :
+			type === :smooth ? CubicSpline(ρ, depth; extrapolate = true) :
+			type === :linear ? LinearInterpolation(ρ, depth; extrapolate = true) :
 			throw(ArgumentError("Unknown interpolation. Choose from :linear or :smooth"))
-		return new{eltype(depth),eltype(ρ),typeof(f)}(-depth, ρ, interp, f)
+		return new{eltype(depth),eltype(ρ),typeof(f)}(-depth, ρ, type, f)
 	end
 end
 
+"""
+$(SIGNATURE)
+Constructor for `SampledDensity1D`.
+
+	Create a density profile based on measurements at discrete depths `z` in meters and density `ρ` in kg/m³.
+	Two options for interpolation are available: `:linear` and `:smooth`.
+"""
 SampledDensity(depth, ρ) = SampledDensity1D(depth, ρ, :linear)
-SampledDensity(depth, ρ, interp::Symbol) = SampledDensity1D(depth, ρ, interp)
+SampledDensity(depth, ρ, type::Symbol) = SampledDensity1D(depth, ρ, type)
 
 function Base.show(io::IO, ρint::SampledDensity1D{T1,T2,T3}) where {T1,T2,T3}
-	print(io, "SampledDensity1D{", T1, ",", T2, ",", ρint.interp, "}(", length(ρint.z), " points)")
+	print(io, "SampledDensity1D{", T1, ",", T2, ",", ρint.type, "}(", length(ρint.z), " points)")
 end
+
+
 
 ### Underwater Environment
 
-
-struct KRAKENFortranEnv{T<:Real}
+"""
+$(TYPEDEF)
+Underater environment used for running the FORTRAN version of KRAKEN.
+"""
+struct UnderwaterEnvFORTRAN{T<:Real}
 	ssp::Matrix{T}
 	layers::Matrix{T}
 	sspHS::Matrix{T}
 end
 
-function KRAKENFortranEnv(ssp, layers, sspHS)
+function UnderwaterEnvFORTRAN(ssp, layers, sspHS)
 	ssp, layers, sspHS = promote(ssp, layers, sspHS)
-	return KRAKENFortranEnv{eltype(ssp)}(ssp, layers, sspHS)
+	return UnderwaterEnvFORTRAN{eltype(ssp)}(ssp, layers, sspHS)
 end
 
-function Base.show(io::IO, sspinfo::KRAKENFortranEnv{T}) where {T}
-	print(io, "KRAKENFortranEnv{$T}")
+function Base.show(io::IO, sspinfo::UnderwaterEnvFORTRAN{T}) where {T}
+	print(io, "UnderwaterEnvFORTRAN{$T}")
 end
+
 
 
 """
 Underwater environment containing the sound speed profile and density profile.
+
+$(TYPEDEF)
 """
 struct UnderwaterEnv{T1<:SoundSpeedProfile,T2<:DensityProfile,T3<:Real}
 	c::T1
@@ -115,6 +132,16 @@ struct UnderwaterEnv{T1<:SoundSpeedProfile,T2<:DensityProfile,T3<:Real}
 	depth::T3
 end
 
+
+"""
+Constructor for `UnderwaterEnv`.
+
+
+
+# Arguments
+
+
+"""
 function UnderwaterEnv(ssp, layers, sspHS)
 	c = SampledSSP(ssp[:, 1], ssp[:, 2])
 	ρ = SampledDensity(ssp[:, 1], ssp[:, 4])
@@ -126,7 +153,7 @@ function UnderwaterEnv(ssp, layers, sspHS)
 	return UnderwaterEnv{typeof(c),typeof(ρ),typeof(cb)}(c, ρ, cb, ρb, layer_thickness, layer_depth, depth)
 end
 
-function UnderwaterEnv(krak_ssp::KRAKENFortranEnv{T}) where {T}
+function UnderwaterEnv(krak_ssp::UnderwaterEnvFORTRAN{T}) where {T}
 	c = SampledSSP(krak_ssp.ssp[:, 1], krak_ssp.ssp[:, 2])
 	ρ = SampledDensity(krak_ssp.ssp[:, 1], krak_ssp.ssp[:, 4])
 	ρb = krak_ssp.sspHS[2, 4]
@@ -140,6 +167,10 @@ end
 function Base.show(io::IO, sspinfo::UnderwaterEnv{T1,T2,T3}) where {T1,T2,T3}
 	print(io, "UnderwaterEnv{$T1, $T2, $T3}")
 end
+
+
+
+
 
 ### Functions that convert SSP information (similar to KRAKEN) to environment and problem structs
 function get_thickness(layers::Matrix{<:Real})
@@ -207,6 +238,11 @@ struct AcousticProblemProperties{T<:Real,T2<:Real}
 		return new{eltype(freq),eltype(Δz_vec)}(freq, Nz_vec, Δz_vec, zn_vec)
 	end
 end
+
+function Base.show(io::IO, props::AcousticProblemProperties{T,T2}) where {T,T2}
+	print(io, "AcousticProblemProperties{", T, ",", T2, "}(", length(props.Nz_vec), " layers)")
+end
+
 
 ### Prepare vectors
 
@@ -465,7 +501,7 @@ function inverse_iteration(kr, env, props, a_vec, e_vec, scaling; tol = 1e-3, ve
     g = get_g(kr_try, env, props)
     d_vec = vcat([a_vec[i] - λ_try[i] for i in 1:N-1], [0.5 * a_vec[end] - λ_try[end] - g])
 
-    A = SymTridiagonal(d_vec, e_vec[2:end])
+    A = Tridiagonal(e_vec[2:end], d_vec, e_vec[2:end])
 
     kr_new = kr
     for ii in 1:200
@@ -491,10 +527,7 @@ function inverse_iteration(kr, env, props, a_vec, e_vec, scaling; tol = 1e-3, ve
 end
 
 function inverse_iteration(kr_vec::Vector, env, props, a_vec, e_vec, scaling; kws...)
-    # Flatten and collect the iterator into a new vector
-    zn = collect(Iterators.flatten(props.zn_vec))
-
-    # Initialize containers
+	# Initialize containers
     results = [inverse_iteration(kr, env, props, a_vec, e_vec, scaling; kws...) for kr in kr_vec]
     
     # Extract kr_vec_new and modes from the results
@@ -587,7 +620,7 @@ function kraken_jl(
 		krs_old = krs_new
 	end
 
-	return NormalModeSolution(rich_krs[1:M], ψ, env, props_all[1])
+	return NormalModeSolution(rich_krs[1:M], ψ[:, 1:M], env, props_all[1])
 end
 
 
