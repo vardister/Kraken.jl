@@ -1,5 +1,5 @@
 using KRAKEN
-using GLMakie
+using CairoMakie
 
 frq=3:100
 nm = 20
