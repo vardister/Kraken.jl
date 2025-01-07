@@ -2,6 +2,7 @@
 using LinearAlgebra
 using Statistics
 using NonlinearSolve
+using LinearSolve
 using UnPack
 using Integrals
 using DataInterpolations: LinearInterpolation, CubicSpline
@@ -543,12 +544,12 @@ end
 ### Solve for kr
 
 """
-    find_kr(env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; method=NewtonRaphson(), kwargs...)
+    find_kr(env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; method=ITP(), kwargs...)
 
 Find the roots of the acoustic problem.
 """
 function find_kr(env::UnderwaterEnv, props::AcousticProblemProperties,
-    cache::AcousticProblemCache; method = NewtonRaphson(), kwargs...)
+    cache::AcousticProblemCache; method = ITP(), kwargs...)
   krs = Vector{eltype(cache.a_vec)}()
   kr_spans = bisection(env, props, cache)
   if isnothing(kr_spans)
@@ -564,13 +565,11 @@ end
 """
 Solve for the roots of the acoustic problem.
 """
-function solve_for_kr(span, env, props, cache; method = NewtonRaphson(), kwargs...)
+function solve_for_kr(span, env, props, cache; method = ITP(), kwargs...)
   function f(u, p)
-    return det_sturm(u, env, props, cache; return_det = true, scale=false)
+    return det_sturm(u, env, props, cache; return_det = true, scale=true)
   end
-  kr_mid = mean(span)
-  prob = NonlinearProblem{false}(f, kr_mid)
-  # prob = IntervalNonlinearProblem{false}(f, span)
+  prob = IntervalNonlinearProblem{false}(f, span)
   sol = solve(prob, method; kwargs...)
   return sol # sol.u is the solution itself
 end
@@ -584,8 +583,8 @@ function integral_trapz(y, x)
 end
 
 function inverse_iteration(kr, env::UnderwaterEnv, props::AcousticProblemProperties,
-    cache::AcousticProblemCache; tol = 1e-3, verbose = false)
-  zn = collect(Iterators.flatten(props.zn_vec))
+    cache::AcousticProblemCache; tol = 0.1, verbose = false)
+  zn = vcat(props.zn_vec...)
   ρn = density(env.ρ, zn)
   N = sum(props.Nz_vec)
   kr_try = kr - 1e3 * eps(kr)
@@ -600,33 +599,41 @@ function inverse_iteration(kr, env::UnderwaterEnv, props::AcousticProblemPropert
 
   # Create the tridiagonal matrix
   A = Tridiagonal(cache.e_vec[2:end], cache.a_vec, cache.e_vec[2:end])
-
   kr_new = kr
+  # prob = LinearProblem(A, w0)
+  # linsolve = init(prob)
   for ii in 1:200
+  	# if ii >1
+  	# 	println(ii)
+  	# end
+    # w1 .= solve!(linsolve, LinearSolve.LUFactorization()).u
     w1 .= A \ w0
     _, m = findmax(abs.(w1))
     kr_new = w0[m] / w1[m] + kr_try
-    w1_normalized = w1 ./ norm(w1)
-    if norm(abs.(w1_normalized) .- abs.(w0)) < tol
+    w1 .= w1 ./ norm(w1)
+    if norm(abs.(w1) .- abs.(w0)) < tol
       verbose && println("Took $ii iterations to converge")
+      w0 .= w1
       break
     end
-    w0 = w1_normalized
+    w0 .= w1
+    # linsolve.b = w0
   end
 
-  w0_final = ifelse(w0[1] < 0, w0 .* -1, w0)
+  w0 = ifelse(w0[1] < 0, w0 .* -1, w0)
 
-  amp1 = integral_trapz(abs2.(w0_final) ./ ρn, zn)
-  amp2 = w0_final[end]^2 / (2 * env.ρb * sqrt(kr_new^2 - (2pi * props.freq / env.cb)^2))
-  w0_normalized = w0_final ./ sqrt(amp1 + amp2)
-  w0_prepended = vcat(0.0, w0_normalized)
+  amp1 = integral_trapz(abs2.(w0) ./ ρn, zn)
+  amp2 = w0[end]^2 / (2 * env.ρb * sqrt(kr_new^2 - (2pi * props.freq / env.cb)^2))
+  w0 .= w0 ./ sqrt(amp1 + amp2)
 
   # Reset the cache
   cache.a_vec[1:(end - 1)] .+= λ_try[1:(end - 1)]
   cache.a_vec[end] = 2 * (cache.a_vec[end] + λ_try[end] + g)
-  return kr_new, w0_prepended
+  return kr_new, vcat(0.0, w0)
 end
 
+
+### Full KRAKEN solve with Richardson's Extrapolation
 function inverse_iteration(
     kr_vec::Vector, env::UnderwaterEnv, props::AcousticProblemProperties,
     cache::AcousticProblemCache; kws...)
@@ -655,10 +662,10 @@ function kraken_jl(
     freq;
     n_meshes = 5,
     rmax = 10_000,
-    method = NewtonRaphson(),
+    method = ITP(),
     dont_break = false,
-    abstol = 0.01,
-    reltol = 0.01
+    abstol = 1e6,
+    reltol = 1e6
 )
   # First mesh first
   local rich_krs
@@ -677,6 +684,7 @@ function kraken_jl(
     env, props_all[1], cache;
     method = method, abstol = abstol, reltol = reltol
   )
+  @infiltrate
   if isempty(krs)
     return NormalModeSolution(krs, Matrix{eltype(krs)}(undef, 0, 0), env, props_all[1])
   end
