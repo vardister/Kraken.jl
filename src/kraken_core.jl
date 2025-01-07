@@ -14,8 +14,8 @@ using Infiltrator
 
 # Exports
 export SampledSSP, SampledDensity
-export UnderwaterEnv, AcousticProblemProperties, KRAKENFortranEnv
-export prepare_vectors,
+export UnderwaterEnv, AcousticProblemProperties, UnderwaterEnvFORTRAN
+export AcousticProblemCache,
        bisection, solve_for_kr, inverse_iteration, det_sturm, kraken_jl, find_kr
 
 ### Main Types
@@ -24,7 +24,6 @@ abstract type SoundSpeedProfile end
 abstract type SampledSSP <: SoundSpeedProfile end
 
 """
-$(TYPEDEF)
 Sound speed profile based on measurements at discrete depths `z` in meters and sound speed `c` in m/s.
 """
 struct SampledSSP1D{T1, T2, T3} <: SampledSSP
@@ -45,7 +44,9 @@ struct SampledSSP1D{T1, T2, T3} <: SampledSSP
 end
 
 """
-$(SIGNATURE)
+    SampledSSP(depth, c)
+    SampledSSP(depth, c, type::Symbol)
+
 Constructor for `SampledSSP1D`.
 
 	Create a sound speed profile based on measurements at discrete depths `z` in meters and sound speed `c` in m/s.
@@ -235,12 +236,12 @@ This process is dependent on the frequency `f`.
 - `env::UnderwaterEnv`: Underwater environment struct.
 - `f::Real`: Frequency of the acoustic problem.
 - `n_per_wavelength::Int=20`: Number of mesh points per wavelength.
-- `ipower::Int=1`: factor of the mesh spacing.
+- `factor::Int=1`: factor of the mesh spacing.
 """
 function get_Nz_vec(env::UnderwaterEnv, freq; n_per_wavelength = 20, factor = 1)
   ω = 2π * freq
   @assert ω>0 "Frequency must be greater than 0"
-  @assert maximum(env.c) < env.cb
+  @assert maxsoundspeed(env.c) < env.cb
   kr_max = ω / env.cb  # here we assume the bottom half-space sound speed is highest
   Nz_vec = zeros(Int, length(env.h_vec))
   Δz_vec = zeros(eltype(env.h_vec), length(env.h_vec))
@@ -265,13 +266,13 @@ Get the depth vector for each layer of the underwater environment according to t
  and mesh spacing `Δz_vec`.
 """
 function get_z_vec(env::UnderwaterEnv, Nz_vec, Δz_vec)
-  zn_all = zeros(typeof(env.layer_depth), length(Nz_vec))
+  zn_all = Vector{typeof(env.layer_depth)}(undef, length(Nz_vec))
   z0 = 0.0
   for (i, Nz) in enumerate(Nz_vec)
     Δz = Δz_vec[i]
     z_layer = env.layer_depth[i]
     zn = range(z0 + Δz, z_layer, Nz)
-    zn_all[i] = zn
+    zn_all[i] = collect(zn)
     z0 = z_layer
   end
   return zn_all
@@ -348,7 +349,7 @@ mutable struct AcousticProblemCache{T}
 end
 
 """
-	prepare_vectors(env::UnderwaterEnv, props::AcousticProblemProperties)
+	AcousticProblemCache(env::UnderwaterEnv, props::AcousticProblemProperties)
 
 Prepare the vectors `a_vec`, `e_vec`, and `scaling_factor` for the acoustic problem. Return an `AcousticProblemCache` struct.
 """
@@ -426,7 +427,7 @@ function det_sturm(
     for j in 1:Nz
       a = cache.a_vec[k]
       e = cache.e_vec[k]
-      λ = kr^2 * λ_scaling[k]
+      λ = kr^2 * cache.λ_scaling[k]
       k += 1
       # If we reached the last element of the last layer
       if (i == length(props.Nz_vec)) && (j == Nz)
@@ -543,14 +544,13 @@ Find the roots of the acoustic problem.
 """
 function find_kr(env::UnderwaterEnv, props::AcousticProblemProperties,
     cache::AcousticProblemCache; method = ITP(), kwargs...)
-  krs = Vector{eltype(a_vec)}()
+  krs = Vector{eltype(cache.a_vec)}()
   kr_spans = bisection(env, props, cache)
   if isnothing(kr_spans)
     return krs
   end
   for span in eachrow(kr_spans)
-    sol = solve_for_kr(
-      span, env, props, a_vec, e_vec, λ_scaling; method = method, kwargs...)
+    sol = solve_for_kr(span, env, props, cache; method = method, kwargs...)
     push!(krs, sol[1])
   end
   return krs
@@ -559,7 +559,7 @@ end
 """
 Solve for the roots of the acoustic problem.
 """
-function solve_for_kr(span, env, props, a_vec, e_vec, λ_scaling; method = ITP(), kwargs...)
+function solve_for_kr(span, env, props, cache; method = ITP(), kwargs...)
   function f(u, p)::eltype(span)
     return det_sturm(u, env, props, cache; return_det = true)
   end
@@ -659,12 +659,12 @@ function kraken_jl(
     freq = float(freq)
   end
   # generate all problem properties for every mesh
-  props_all = [AcousticProblemProperties(env, freq; ipower = 2^(i - 1)) for i in 1:n_meshes]
+  props_all = [AcousticProblemProperties(env, freq; factor = 2^(i - 1)) for i in 1:n_meshes]
   h_meshes = [h_extrap(props_all[i].Δz_vec[1], n_meshes) for i in 1:n_meshes]
   h_meshes = hcat(h_meshes...)' # transpose
 
   # First Mesh (i_power = 1)
-  cache = prepare_vectors(env, props_all[1])
+  cache = AcousticProblemCache(env, props_all[1])
   krs = find_kr(
     env, props_all[1], cache;
     method = method, abstol = abstol, reltol = reltol
@@ -691,8 +691,8 @@ function kraken_jl(
   krs_old = krs_coarse
   for i_power in 2:n_meshes
     factor = 2^(i_power - 1)
-    props_new = AcousticProblemProperties(env, freq; ipower = factor)
-    cache = prepare_vectors(env, props_new)
+    props_new = AcousticProblemProperties(env, freq; factor = factor)
+    cache = AcousticProblemCache(env, props_new)
     krs_new = find_kr(env, props_new, cache; method = method)
     if length(krs_new) < M
       M = length(krs_new)
@@ -725,7 +725,7 @@ end
 
 struct NormalModeSolution{T1, T2}
   kr::T1
-  ψ::T2
+  modes::T2
   env::UnderwaterEnv
   props::AcousticProblemProperties
   function NormalModeSolution(kr, modes, env, props)
