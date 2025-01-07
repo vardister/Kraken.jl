@@ -5,6 +5,7 @@ using NonlinearSolve
 using UnPack
 using Integrals
 using DataInterpolations: LinearInterpolation, CubicSpline
+import NaNMath as nm
 
 ### Docs
 using DocStringExtensions
@@ -328,7 +329,7 @@ e_element(ρ, h) = @. 1 / (h * ρ)
 Get the value of `g` for the bottom half-space finite-difference element.
 """
 function get_g(kr, env::UnderwaterEnv, props::AcousticProblemProperties)
-  g = sqrt(kr^2 - (2pi * props.freq / env.cb)^2) / env.ρb
+  g = nm.sqrt(kr^2 - (2pi * props.freq / env.cb)^2) / env.ρb
   return g
 end
 
@@ -413,7 +414,7 @@ finite difference matrix.
 """
 function det_sturm(
     kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache;
-    stop_at_k = nothing, return_det = false)
+    stop_at_k = nothing, return_det = false, scale=true)
   local p2, p1, p0
   mode_count = 0
   g = get_g(kr, env, props)
@@ -432,9 +433,11 @@ function det_sturm(
       # If we reached the last element of the last layer
       if (i == length(props.Nz_vec)) && (j == Nz)
         p2 = (λ - (0.5 * a - g)) * p1 - e^2 * p0
-        s = scale_const(p1, p2)
-        p1 *= s
-        p2 *= s
+        if scale
+        	s = scale_const(p1, p2)
+        	p1 *= s
+        	p2 *= s
+        end
         if p1 * p2 < 0
           mode_count += 1
         end
@@ -442,9 +445,11 @@ function det_sturm(
         # Else, we're in the middle of the layers
         p2 = (λ - a) * p1 - e^2 * p0
         # rescale the sequence
-        s = scale_const(p1, p2)
-        p1 *= s
-        p2 *= s
+        if scale
+        	s = scale_const(p1, p2)
+        	p1 *= s
+        	p2 *= s
+        end
         # count the modes
         if p1 * p2 < 0
           mode_count += 1
@@ -538,12 +543,12 @@ end
 ### Solve for kr
 
 """
-    find_kr(env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; method=ITP(), kwargs...)
+    find_kr(env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; method=NewtonRaphson(), kwargs...)
 
 Find the roots of the acoustic problem.
 """
 function find_kr(env::UnderwaterEnv, props::AcousticProblemProperties,
-    cache::AcousticProblemCache; method = ITP(), kwargs...)
+    cache::AcousticProblemCache; method = NewtonRaphson(), kwargs...)
   krs = Vector{eltype(cache.a_vec)}()
   kr_spans = bisection(env, props, cache)
   if isnothing(kr_spans)
@@ -559,12 +564,14 @@ end
 """
 Solve for the roots of the acoustic problem.
 """
-function solve_for_kr(span, env, props, cache; method = ITP(), kwargs...)
-  function f(u, p)::eltype(span)
-    return det_sturm(u, env, props, cache; return_det = true)
+function solve_for_kr(span, env, props, cache; method = NewtonRaphson(), kwargs...)
+  function f(u, p)
+    return det_sturm(u, env, props, cache; return_det = true, scale=false)
   end
-  prob = IntervalNonlinearProblem{false}(f, span)
-  sol = solve(prob, method, kwargs...)
+  kr_mid = mean(span)
+  prob = NonlinearProblem{false}(f, kr_mid)
+  # prob = IntervalNonlinearProblem{false}(f, span)
+  sol = solve(prob, method; kwargs...)
   return sol # sol.u is the solution itself
 end
 
@@ -584,6 +591,7 @@ function inverse_iteration(kr, env::UnderwaterEnv, props::AcousticProblemPropert
   kr_try = kr - 1e3 * eps(kr)
   λ_try = kr_try^2 .* cache.λ_scaling
   w0 = normalize(ones(eltype(kr), N))
+  w1 = similar(w0)
 
   # Initialize the cache
   g = get_g(kr_try, env, props)
@@ -595,7 +603,7 @@ function inverse_iteration(kr, env::UnderwaterEnv, props::AcousticProblemPropert
 
   kr_new = kr
   for ii in 1:200
-    w1 = A \ w0
+    w1 .= A \ w0
     _, m = findmax(abs.(w1))
     kr_new = w0[m] / w1[m] + kr_try
     w1_normalized = w1 ./ norm(w1)
@@ -647,7 +655,7 @@ function kraken_jl(
     freq;
     n_meshes = 5,
     rmax = 10_000,
-    method = ITP(),
+    method = NewtonRaphson(),
     dont_break = false,
     abstol = 0.01,
     reltol = 0.01
