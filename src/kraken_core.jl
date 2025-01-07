@@ -595,14 +595,14 @@ function inverse_iteration(kr, env::UnderwaterEnv, props::AcousticProblemPropert
   # Initialize the cache
   g = get_g(kr_try, env, props)
   cache.a_vec[end] = 0.5 * cache.a_vec[end] - λ_try[end] - g
-  cache.a_vec[1:(end - 1)] .= cache.a_vec[1:(end - 1)] .- λ_try[1:(end - 1)]
+  cache.a_vec[1:(end - 1)] .-= λ_try[1:(end - 1)]
 
   # Create the tridiagonal matrix
   A = Tridiagonal(cache.e_vec[2:end], cache.a_vec, cache.e_vec[2:end])
   kr_new = kr
   # prob = LinearProblem(A, w0)
   # linsolve = init(prob)
-  for ii in 1:200
+  for ii in 1:50
   	# if ii >1
   	# 	println(ii)
   	# end
@@ -624,7 +624,7 @@ function inverse_iteration(kr, env::UnderwaterEnv, props::AcousticProblemPropert
 
   amp1 = integral_trapz(abs2.(w0) ./ ρn, zn)
   amp2 = w0[end]^2 / (2 * env.ρb * sqrt(kr_new^2 - (2pi * props.freq / env.cb)^2))
-  w0 .= w0 ./ sqrt(amp1 + amp2)
+  w0 ./= sqrt(amp1 + amp2)
 
   # Reset the cache
   cache.a_vec[1:(end - 1)] .+= λ_try[1:(end - 1)]
