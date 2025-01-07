@@ -186,6 +186,39 @@ function Base.show(io::IO, ::UnderwaterEnv{T1,T2,T3}) where {T1,T2,T3}
   return print(io, "UnderwaterEnv{$T1, $T2, $T3}")
 end
 
+### Sound Speed and Density Functions to extract values from profiles at a give depth from profiles
+"""
+    soundspeed(ssp::SoundSpeedProfile, x, y, z)
+
+Get sound speed at location (`x`, `y`, `z`). If a sound speed profile is range
+independent, `x` and `y` may be ignored. `z` is generally negative, since the
+sea surface is the datum and z-axis points upwards.
+"""
+function soundspeed end
+
+soundspeed(ssp::SampledSSP1D, z) = ssp.f(z)
+
+"""
+	maxsoundspeed(ssp::SoundSpeedProfile)
+
+Get the maximum sound speed from the sound speed profile.
+"""
+function maxsoundspeed end
+
+maxsoundspeed(ssp::SampledSSP1D) = maximum(ssp.c)
+
+"""
+	density(ρ::DensityProfile, x, y, z)
+
+Get density at location (`x`, `y`, `z`). If a density profile is range
+independent, `x` and `y` may be ignored. `z` is generally negative, since the
+sea surface is the datum and z-axis points upwards.
+"""
+function density end
+
+density(ρ::SampledDensity1D, z) = ρ.f(z)
+
+### Finite Difference Scheme
 ### Functions that convert SSP information (similar to KRAKEN) to environment and problem structs
 function get_thickness(layers::Matrix{<:Real})
   a = prepend!(layers[:, 3], 0.0)
@@ -193,66 +226,88 @@ function get_thickness(layers::Matrix{<:Real})
 end
 
 """
-	get_Nz_vec(env, f; n_per_wavelength = 20, ipower = 1) -> Nz_vec, Δz_vec
+    get_Nz_vec(env::UnderwaterEnv, freq; n_per_wavelength=20, factor=1)
 
 Get the number of mesh points and the mesh spacing for each layer of the `env` for building the finite-difference scheme.
 This process is dependent on the frequency `f`.
-"""
-function get_Nz_vec(env, freq; n_per_wavelength=20, ipower=1)
-  @unpack h_vec, cb, c = env
-  ω = 2π * freq
-  all_c = vcat(c.c, cb)
-  kr_max = maximum(ω ./ all_c)
-  Nz_vec = Int[]
-  Δz_vec = Vector{eltype(h_vec)}()
 
-  for h in h_vec
-    Δz_power = ipower # Initial mesh multiplier
-    n_per_wavelength = n_per_wavelength # The number of depth mesh points in a wavelength
+# Arguments
+- `env::UnderwaterEnv`: Underwater environment struct.
+- `f::Real`: Frequency of the acoustic problem.
+- `n_per_wavelength::Int=20`: Number of mesh points per wavelength.
+- `ipower::Int=1`: factor of the mesh spacing.
+"""
+function get_Nz_vec(env::UnderwaterEnv, freq; n_per_wavelength=20, factor=1)
+  ω = 2π * freq
+  @assert ω > 0 "Frequency must be greater than 0"
+  @assert maximum(env.c) < env.cb
+  kr_max = ω / env.cb  # here we assume the bottom half-space sound speed is highest
+  Nz_vec = zeros(Int, length(env.h_vec))
+  Δz_vec = zeros(eltype(env.h_vec), length(env.h_vec))
+
+  for (i, h) in enumerate(env.h_vec)
     Lmin = 2π / kr_max # The lowest wavelength available in the problem
     # 20 points per wavelength. h_power is for richardson extrapolation
     Δz = (Lmin / n_per_wavelength)
-    Nz = ceil(Int, h / Δz) * Δz_power
+    Nz = ceil(Int, h / Δz) * factor
     Nz = max(10, Nz) # Minimum of 10 points
     Δz_new = h / Nz
-    push!(Nz_vec, Nz)
-    push!(Δz_vec, Δz_new)
+    Nz_vec[i] = Nz
+    Δz_vec[i] = Δz_new
   end
   return Nz_vec, Δz_vec
 end
 
+"""
+    get_z_vec(env::UnderwaterEnv, Nz_vec, Δz_vec)
+
+Get the depth vector for each layer of the underwater environment according to the number of mesh points `Nz_vec`
+ and mesh spacing `Δz_vec`.
+"""
 function get_z_vec(env::UnderwaterEnv, Nz_vec, Δz_vec)
-  @unpack layer_depth = env
-  zn_all = Vector{typeof(layer_depth)}()
+  zn_all = zeros(typeof(env.layer_depth), length(Nz_vec))
   z0 = 0.0
   for (i, Nz) in enumerate(Nz_vec)
     Δz = Δz_vec[i]
-    z_layer = layer_depth[i]
+    z_layer = env.layer_depth[i]
     zn = range(z0 + Δz, z_layer, Nz)
-    push!(zn_all, zn)
+    zn_all[i] = zn
     z0 = z_layer
   end
   return zn_all
 end
 
+"""
+	AcousticProblemProperties(env::UnderwaterEnv, freq; factor=1, n_per_wavelength=20)
+
+Properties of the acoustic problem based on the underwater environment `env` and frequency `freq`.
+`factor` is a factor for the mesh spacing and `n_per_wavelength` is the number of mesh points per wavelength.
+"""
 struct AcousticProblemProperties{T<:Real,T2<:Real}
   freq::T
   Nz_vec::Vector{Int}
   Δz_vec::Vector{T2}
   zn_vec::Vector{Vector{T2}}
+end
 
-  function AcousticProblemProperties(
-    env::UnderwaterEnv, freq; ipower::Int=1, n_per_wavelength=20
-  )
-    if freq isa Int
-      freq = float(freq)
-      println("I did it!")
-    end
-    Nz_vec, Δz_vec = get_Nz_vec(env, freq; ipower=ipower, n_per_wavelength=n_per_wavelength)
-    zn_vec = get_z_vec(env, Nz_vec, Δz_vec)
+"""
+    AcousticProblemProperties(env::UnderwaterEnv, freq; factor::Int=1, n_per_wavelength=20)
 
-    return new{eltype(freq),eltype(Δz_vec)}(freq, Nz_vec, Δz_vec, zn_vec)
+Get the properties of the acoustic problem based on the underwater environment `env` and frequency `freq`.
+"""
+function AcousticProblemProperties(
+  env::UnderwaterEnv, freq; factor::Int=1, n_per_wavelength=20
+)
+  if freq isa Int
+    freq = float(freq)
+    println("I did it!")
   end
+  Nz_vec, Δz_vec = get_Nz_vec(env, freq; factor=factor, n_per_wavelength=n_per_wavelength)
+  zn_vec = get_z_vec(env, Nz_vec, Δz_vec)
+
+  return AcousticProblemProperties{eltype(freq),eltype(Δz_vec)}(
+    freq, Nz_vec, Δz_vec, zn_vec
+  )
 end
 
 function Base.show(io::IO, props::AcousticProblemProperties{T,T2}) where {T,T2}
@@ -261,17 +316,21 @@ function Base.show(io::IO, props::AcousticProblemProperties{T,T2}) where {T,T2}
   )
 end
 
-### Prepare vectors
-
+### Prepare vectors for the finite difference scheme
 a_element(c, ρ, f, h) = @. (-2 + h^2 * (2pi * f / c)^2) / (h * ρ)
 e_element(ρ, h) = @. 1 / (h * ρ)
 
+"""
+	get_g(kr, env::UnderwaterEnv, props::AcousticProblemProperties)
+
+Get the value of `g` for the bottom half-space finite-difference element.
+"""
 function get_g(kr, env::UnderwaterEnv, props::AcousticProblemProperties)
   g = sqrt(kr^2 - (2pi * props.freq / env.cb)^2) / env.ρb
   return g
 end
 
-#TODO: make this compiler friends
+### Bisection and Sturm's Sequence
 function moving_average!(vs, n)
   vs[1:(end - n + 1)] .= [
     sum(@view vs[i:(i + n - 1)]) / n for i in 1:(length(vs) - (n - 1))
@@ -279,14 +338,11 @@ function moving_average!(vs, n)
   return nothing
 end
 
-# #TODO: make this compiler friends
-# function moving_average!(vec, len)
-# 	for i in 1:(length(vec)-len+1)
-# 		vec[i] = mean(vec[i:(i+len-1)])
-# 	end
-# 	return nothing
-# end
+"""
+	prepare_vectors(env::UnderwaterEnv, props::AcousticProblemProperties)
 
+Prepare the vectors `a_vec`, `e_vec`, and `scaling_factor` for the acoustic problem.
+"""
 function prepare_vectors(env::UnderwaterEnv, props::AcousticProblemProperties)
   Ntotal = sum(props.Nz_vec)
   Ni = prepend!(accumulate(+, props.Nz_vec), 0)
@@ -297,8 +353,8 @@ function prepare_vectors(env::UnderwaterEnv, props::AcousticProblemProperties)
   for i in eachindex(props.zn_vec)
     zn = props.zn_vec[i]
     Δz = props.Δz_vec[i]
-    cn = env.c.f(zn)
-    ρn = env.ρ.f(zn)
+    cn = soundspeed(env.c, zn)
+    ρn = density(env.ρ, zn)
 
     a_vec[(Ni[i] + 1):Ni[i + 1]] .= a_element(cn, ρn, props.freq, Δz)
     e_vec[(Ni[i] + 1):Ni[i + 1]] .= e_element(ρn, Δz)
@@ -319,6 +375,21 @@ function prepare_vectors(env::UnderwaterEnv, props::AcousticProblemProperties)
   return a_vec, e_vec, scaling_factor
 end
 
+"""
+	AcousticProblemCache(a_vec, e_vec, λ_scaling)
+
+Cache for the acoustic problem vectors.
+"""
+mutable struct AcousticProblemCache{T}
+  a_vec::T
+  e_vec::T
+  λ_scaling::T
+end
+
+function Base.show(io::IO, ::AcousticProblemCache{T}) where {T}
+  return print(io, "AcousticProblemCache{$T}")
+end
+
 ### Bisection and Sturm's Sequence
 
 # Function to scale the Sturm sequence
@@ -334,11 +405,13 @@ function scale_const(p1, p2, Φ=1e20, Γ=1e-20)
 end
 
 """
+  det_sturm(kr, env, props, a_vec, e_vec, λ_scaling; stop_at_k=nothing, return_det=false)
+
 Calculate the Sturm sequence for the acoustic problem.
+returns the number of modes found if `return_det=false`, otherwise returns the determinant of the 
+finite difference matrix.
 """
-function det_sturm(
-  kr, env, props, a_vec, e_vec, λ_scaling; stop_at_k=nothing, return_det=false
-)
+function det_sturm(kr, env, props, a_vec, e_vec, λ_scaling; stop_at_k=nothing, return_det=false)
   local p2, p1, p0
   mode_count = 0
   g = get_g(kr, env, props)
@@ -349,7 +422,6 @@ function det_sturm(
   p1 = 1.0
   for i in eachindex(props.Nz_vec)
     Nz = props.Nz_vec[i]
-
     for j in 1:Nz
       a = a_vec[k]
       e = e_vec[k]
@@ -395,7 +467,9 @@ function det_sturm(
 end
 
 """
-Solve the acoustic problem using bisection method.
+  bisection(env, props, a_vec, e_vec, λ_scaling; verbose=false)
+
+Bisection method to find the intervals where the roots (wavenumbers) lie.
 """
 function bisection(env, props, a_vec, e_vec, λ_scaling; verbose=false)
   ω = 2pi * props.freq
@@ -460,28 +534,18 @@ end
 ### Solve for kr
 
 """
+    find_kr(env::UnderwaterEnv, props::AcousticProblemProperties, a_vec, e_vec, λ_scaling; method=ITP(), kwargs...)
+
 Find the roots of the acoustic problem.
 """
-function find_kr(
-  env::UnderwaterEnv,
-  props::AcousticProblemProperties,
-  a_vec,
-  e_vec,
-  λ_scaling;
-  method=ITP(),
-  kwargs...,
-)
-  @unpack freq = props
+function find_kr(env::UnderwaterEnv, props::AcousticProblemProperties, a_vec, e_vec, λ_scaling; method=ITP(), kwargs...)
   krs = Vector{eltype(a_vec)}()
-
   kr_spans = bisection(env, props, a_vec, e_vec, λ_scaling)
   if isnothing(kr_spans)
     return krs
   end
-
   for span in eachrow(kr_spans)
     sol = solve_for_kr(span, env, props, a_vec, e_vec, λ_scaling; method=method, kwargs...)
-    # push!(krs, sol.minimizer)
     push!(krs, sol[1])
   end
   return krs
