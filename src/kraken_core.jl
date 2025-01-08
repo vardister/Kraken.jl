@@ -663,8 +663,8 @@ function kraken_jl(
         rmax = 10_000,
         method = ITP(),
         dont_break = false,
-        abstol = 1e6,
-        reltol = 1e6
+        abstol = 1e-6,
+        reltol = 1e-6
 )
     # First mesh first
     local rich_krs
