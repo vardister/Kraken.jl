@@ -242,7 +242,7 @@ This process is dependent on the frequency `f`.
 """
 function get_Nz_vec(env::UnderwaterEnv, freq; n_per_wavelength = 20, factor = 1)
     ω = 2π * freq
-    @assert ω>0 "Frequency must be greater than 0"
+    @assert ω>=0 "Frequency must be non-negative"
     @assert maxsoundspeed(env.c) < env.cb
     kr_max = ω / env.cb  # here we assume the bottom half-space sound speed is highest
     Nz_vec = zeros(Int, length(env.h_vec))
@@ -683,7 +683,6 @@ function kraken_jl(
         env, props_all[1], cache;
         method = method, abstol = abstol, reltol = reltol
     )
-    @infiltrate
     if isempty(krs)
         return NormalModeSolution(krs, Matrix{eltype(krs)}(undef, 0, 0), env, props_all[1])
     end
