@@ -13,5 +13,12 @@ end
 
 
 @testset "kraken_core.jl" begin
-    
+    ssp, layers, sspHS = pekeris_test_dict_KRAKEN()
+    env = UnderwaterEnv(ssp, layers, sspHS)
+    props = AcousticProblemProperties(env, 100.0)
+    cache = AcousticProblemCache(env, props)
+    krs = find_kr(env, props, cache)
+    krs = round.(krs, digits=6)
+    # test the first 5 values of krs for the known pekeris waveguide
+    @test all((krs .- [0.417908, 0.414964, 0.409971, 0.40286, 0.39383]) .< 1e4)
 end

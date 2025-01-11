@@ -31,17 +31,10 @@ Sound speed profile based on measurements at discrete depths `z` in meters and s
 struct SampledSSP1D{T1, T2, T3} <: SampledSSP
     z::Vector{T1}
     c::Vector{T2}
-    type::Symbol
     f::T3
-    function SampledSSP1D(depth, c, type::Symbol)
-        f = if type === :smooth
-            CubicSpline(c, depth)
-        elseif type === :linear
-            LinearInterpolation(c, depth)
-        else
-            throw(ArgumentError("Unknown interpolation. Choose from :linear or :smooth"))
-        end
-        return new{eltype(depth), eltype(depth), typeof(f)}(-depth, c, type, f)
+    function SampledSSP1D(depth, c, f)
+        interp = f(c, depth; extrapolate=true)
+        return new{eltype(depth), eltype(c), typeof(interp)}(-depth, c, interp)
     end
 end
 
@@ -54,7 +47,7 @@ Constructor for `SampledSSP1D`.
 	Create a sound speed profile based on measurements at discrete depths `z` in meters and sound speed `c` in m/s.
 	Two options for interpolation are available: `:linear` and `:smooth`.
 """
-SampledSSP(depth, c) = SampledSSP1D(depth, c, :linear)
+SampledSSP(depth, c) = SampledSSP1D(depth, c, LinearInterpolation)
 SampledSSP(depth, c, type::Symbol) = SampledSSP1D(depth, c, type)
 
 function Base.show(io::IO, ρint::SampledSSP1D{T1, T2, T3}) where {T1, T2, T3}
@@ -74,17 +67,11 @@ Density profile based on measurements at discrete depths `z` in meters and densi
 struct SampledDensity1D{T1, T2, T3} <: SampledDensity
     z::Vector{T1}
     ρ::Vector{T2}
-    type::Symbol
     f::T3
-    function SampledDensity1D(depth, ρ, type)
-        f = if type === :smooth
-            CubicSpline(ρ, depth; extrapolate = true)
-        elseif type === :linear
-            LinearInterpolation(ρ, depth; extrapolate = true)
-        else
-            throw(ArgumentError("Unknown interpolation. Choose from :linear or :smooth"))
-        end
-        return new{eltype(depth), eltype(ρ), typeof(f)}(-depth, ρ, type, f)
+    # Constructor for Type inputs
+    function SampledDensity1D(depth, ρ, f)
+        interp = f(ρ, depth; extrapolate=true)
+        return new{eltype(depth), eltype(ρ), typeof(interp)}(-depth, ρ, interp)
     end
 end
 
@@ -96,7 +83,7 @@ Constructor for `SampledDensity1D`.
 Create a density profile based on measurements at discrete depths `z` in meters and density `ρ` in kg/m³.
 Two options for interpolation are available: `:linear` and `:smooth`.
 """
-SampledDensity(depth, ρ) = SampledDensity1D(depth, ρ, :linear)
+SampledDensity(depth, ρ) = SampledDensity1D(depth, ρ, LinearInterpolation)
 SampledDensity(depth, ρ, type::Symbol) = SampledDensity1D(depth, ρ, type)
 
 function Base.show(io::IO, ρint::SampledDensity1D{T1, T2, T3}) where {T1, T2, T3}
@@ -161,7 +148,7 @@ function UnderwaterEnv(ssp, layers, sspHS)
     cb = sspHS[2, 2]
     layer_thickness = get_thickness(layers)
     layer_depth = layers[:, 3]
-    depth = ssp[end, 1]
+    depth = layers[end, 3]
     return UnderwaterEnv{typeof(c), typeof(ρ), typeof(cb)}(
         c, ρ, cb, ρb, layer_thickness, layer_depth, depth
     )
@@ -224,7 +211,7 @@ density(ρ::SampledDensity1D, z) = ρ.f(z)
 ### Finite Difference Scheme
 ### Functions that convert SSP information (similar to KRAKEN) to environment and problem structs
 function get_thickness(layers::Matrix{<:Real})
-    a = prepend!(layers[:, 3], 0.0)
+    a = vcat(0.0, layers[:, 3]...)
     return a[2:end] - a[1:(end - 1)]
 end
 
@@ -359,7 +346,8 @@ function AcousticProblemCache(env::UnderwaterEnv, props::AcousticProblemProperti
     Ntotal = sum(props.Nz_vec)
     Ni = prepend!(accumulate(+, props.Nz_vec), 0)
     #TODO: create vector that generalizes well to different types
-    a_vec = zeros(eltype(props.Δz_vec), Ntotal)
+    T = promote_type(eltype(env.c.c), eltype(env.ρ.ρ), typeof(env.cb))
+    a_vec = zeros(T, Ntotal)
     e_vec = similar(a_vec)
     scaling_factor = similar(a_vec)
     for i in eachindex(props.zn_vec)
@@ -413,9 +401,22 @@ Calculate the Sturm sequence for the acoustic problem.
 returns the number of modes found if `return_det=false`, otherwise returns the determinant of the 
 finite difference matrix.
 """
-function det_sturm(
+function det_sturm_modes(kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache)
+    return det_sturm(kr, env, props, cache; return_det = false)
+end
+
+function det_sturm_val(kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache)
+    return det_sturm(kr, env, props, cache; return_det = true)
+end
+
+"""
+    det_sturm(
         kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache;
         stop_at_k = nothing, return_det = false, scale = true)
+"""
+function det_sturm(
+        kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache;
+        stop_at_k = nothing, scale = true)
     local p2, p1, p0
     mode_count = 0
     g = get_g(kr, env, props)
@@ -458,20 +459,12 @@ function det_sturm(
                 p0 = p1
                 p1 = p2
                 if stop_at_k !== nothing && k == stop_at_k
-                    if return_det
-                        return p2
-                    else
-                        mode_count
-                    end
+                    p2, mode_count
                 end
             end
         end
     end
-    if return_det
-        return p2
-    else
-        return mode_count
-    end
+    return p2, mode_count
 end
 
 """
@@ -480,17 +473,16 @@ end
 
 Bisection method to find the intervals where the roots (wavenumbers) lie.
 """
-function bisection(env::UnderwaterEnv, props::AcousticProblemProperties,
-        cache::AcousticProblemCache; verbose = false)
+function bisection(env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache)
     ω = 2pi * props.freq
     kr_max = maximum(ω ./ env.c.c)
     kr_min = ω / env.cb
     kr_min, kr_max = promote(kr_min, kr_max)
-    n_max = first(det_sturm(kr_min, env, props, cache))
+    n_max = first(det_sturm_modes(kr_min, env, props, cache))
     if n_max == 0
         return nothing
     end
-    n_min = first(det_sturm(kr_max, env, props, cache))
+    n_min = first(det_sturm_modes(kr_max, env, props, cache))
 
     # Initialize arrays
     kLeft = fill(kr_min, n_max + 1)
@@ -499,42 +491,44 @@ function bisection(env::UnderwaterEnv, props::AcousticProblemProperties,
     # Main loop
     k1 = kr_min
     k2 = kr_max
-    for mm in 1:(n_max - 1)
-        ii = 0
-        if kLeft[mm] == kr_min
-            k2 = kRight[mm]
-            k1 = max(maximum(kLeft[(mm + 1):end]), kr_min)
+    if n_max > 1
+        for mm in 1:(n_max - 1)
+            # ii = 0
+            if kLeft[mm] == kr_min
+                k2 = kRight[mm]
+                k1 = max(maximum(kLeft[(mm + 1):end]), kr_min)
 
-            for _ in 1:50
-                ii += 1
-                kmid = sqrt(mean([k1^2, k2^2]))
-                nmid = det_sturm(kmid, env, props, cache)
-                Δn = nmid - n_min
+                for _ in 1:50
+                    # ii += 1
+                    kmid = sqrt(mean([k1^2, k2^2]))
+                    nmid = det_sturm_modes(kmid, env, props, cache)
+                    Δn = nmid - n_min
 
-                if Δn < mm
-                    k2 = kmid
-                    kRight[mm] = kmid
-                else
-                    k1 = kmid
-                    if kRight[Δn + 1] >= kmid
-                        kRight[Δn + 1] = kmid
+                    if Δn < mm
+                        k2 = kmid
+                        kRight[mm] = kmid
+                    else
+                        k1 = kmid
+                        if kRight[Δn + 1] >= kmid
+                            kRight[Δn + 1] = kmid
+                        end
+                        if kLeft[Δn] <= kmid
+                            kLeft[Δn] = kmid
+                        end
                     end
-                    if kLeft[Δn] <= kmid
-                        kLeft[Δn] = kmid
-                    end
-                end
 
-                if kLeft[mm] != kr_min # if the the min wavenumber changed, we're done
-                    verbose && println("Mode $mm: Took $ii iterations")
-                    break
+                    if kLeft[mm] != kr_min # if the the min wavenumber changed, we're done
+                        # verbose && println("Mode $mm: Took $ii iterations")
+                        break
+                    end
                 end
             end
         end
     end
     intervals = [kLeft[1:(end - 1)] kRight[1:(end - 1)]]
     if !isempty(intervals)
-        intervals[end, 1] += eps(kr_min) # to avoid solvers to get complex roots
-        intervals[1, 2] -= eps(kr_min) # to avoid solvers to get complex roots
+        # intervals[end, 1] += eps(kr_min) # to avoid solvers to get complex roots
+        # intervals[1, 2] -= eps(kr_min) # to avoid solvers to get complex roots
     else
         println("Wavenumber intervals are empty!")
     end
@@ -567,7 +561,7 @@ Solve for the roots of the acoustic problem.
 """
 function solve_for_kr(span, env, props, cache; method = ITP(), kwargs...)
     function f(u, p)
-        return det_sturm(u, env, props, cache; return_det = true, scale = true)
+        return det_sturm_val(u, env, props, cache)
     end
     prob = IntervalNonlinearProblem{false}(f, span)
     sol = solve(prob, method; kwargs...)
