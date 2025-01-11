@@ -478,11 +478,11 @@ function bisection(env::UnderwaterEnv, props::AcousticProblemProperties, cache::
     kr_max = maximum(ω ./ env.c.c)
     kr_min = ω / env.cb
     kr_min, kr_max = promote(kr_min, kr_max)
-    n_max = first(det_sturm_modes(kr_min, env, props, cache))
+    n_max = last(det_sturm(kr_min, env, props, cache))
     if n_max == 0
         return nothing
     end
-    n_min = first(det_sturm_modes(kr_max, env, props, cache))
+    n_min = last(det_sturm(kr_max, env, props, cache))
 
     # Initialize arrays
     kLeft = fill(kr_min, n_max + 1)
@@ -501,7 +501,7 @@ function bisection(env::UnderwaterEnv, props::AcousticProblemProperties, cache::
                 for _ in 1:50
                     # ii += 1
                     kmid = sqrt(mean([k1^2, k2^2]))
-                    nmid = det_sturm_modes(kmid, env, props, cache)
+                    nmid = last(det_sturm(kmid, env, props, cache))
                     Δn = nmid - n_min
 
                     if Δn < mm
@@ -561,7 +561,7 @@ Solve for the roots of the acoustic problem.
 """
 function solve_for_kr(span, env, props, cache; method = ITP(), kwargs...)
     function f(u, p)
-        return det_sturm_val(u, env, props, cache)
+        return first(det_sturm(u, env, props, cache))
     end
     prob = IntervalNonlinearProblem{false}(f, span)
     sol = solve(prob, method; kwargs...)
