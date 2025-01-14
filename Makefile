@@ -60,10 +60,17 @@ $(PROG) : $(MOD) $(OBJ)
 	@echo "Building Kraken"
 	@echo " "
 	@echo " "
-
-ifeq ($(shell uname), Linux)
-	gfortran $(OBJ) -shared -o ./src/kraken.so
-else ifeq ($(shell uname), Darwin)
-	gfortran $(OBJ) -shared -o ./src/kraken.dylib
+	@echo "Detected platform: "
+ifeq ($(OS), Windows_NT)
+	@echo "Windows"
+	gfortran $(OBJ) -shared -o ./src/kraken.dll
+else
+	@echo $(shell uname)
+	@echo "Building shared library for KRAKEN"
+    ifeq ($(shell uname), Linux)
+        gfortran $(OBJ) -shared -o ./src/kraken.so
+    else ifeq ($(shell uname), Darwin)
+        gfortran $(OBJ) -shared -o ./src/kraken.dylib
+    endif
 endif
 	make clean

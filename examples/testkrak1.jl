@@ -1,4 +1,5 @@
-using KRAKEN
+include("../src/KRAKEN.jl")
+using .KRAKEN
 using CairoMakie
 
 frq = 15.0
@@ -112,7 +113,7 @@ rng = 5000000.0
 nsr = 1
 zsr = 500.0
 nrc = 500
-zrc = [0.0 5300.0]
+zrc = [0.0, 5300.0]
 
 b = [b1; b2]
 ssp = [ssp1; ssp2]
@@ -124,20 +125,18 @@ sspHS = [sspTHS; sspBHS]
 
 nz = nsr + nrc
 
-env_temp = Env(
-    ssp = ssp,
-    b = b,
-    sspHS = sspHS,
-    n_krak = nrc,
-    z_krak = zrc,
-    z_sr = zsr,
-    n_sr = nsr,
+env_temp = EnvKRAKEN(
+    ssp,
+    b,
+    sspHS,
+    zrc,
+    zsr,
 )
 
 res = kraken(env_temp, frq; n_modes = nm)
 
 
-f = Figure()
+f = Figure();
 
 ax1 = Axis(
     f[1, 1],
