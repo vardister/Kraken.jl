@@ -1,4 +1,5 @@
-using KRAKEN
+include("../src/KRAKEN.jl")
+using .KRAKEN
 using CairoMakie
 
 frq = 150.0
