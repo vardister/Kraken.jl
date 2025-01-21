@@ -57,15 +57,15 @@ end
     # Returns
     - `Vector{Real}`: The horizontal wavenumbers.
 """
-function find_kr(env::PekerisUnderwaterEnv, freq, p; n_points = 2_000, method = NewtonRaphson())
-	ω = 2π * freq
+function find_kr(env::PekerisUnderwaterEnv, f; n_points = 2_000, method = NewtonRaphson())
+	ω = 2π * f
 	kr_min, kr_max = extrema([ω / env.c1, ω / env.cb])
-	# p = SA[env.c1, env.cb, env.ρ1, env.ρb, env.depth]
+	p = SA[env.c1, env.cb, env.ρ1, env.ρb, env.depth]
 	func(kr, p) =
-		@. nm.tan(nm.sqrt((ω / p[1])^2 - kr^2) * p[5]) + (p[4] / p[3]) * nm.sqrt((ω / p[1])^2 - kr^2) / nm.sqrt(kr^2 - (ω / p[2])^2)
+		@. nm.tan(nm.sqrt((ω / env.c1)^2 - kr^2) * env.depth) + (env.ρb / env.ρ1) * nm.sqrt((ω / env.c1)^2 - kr^2) / nm.sqrt(kr^2 - (ω / env.cb)^2)
 
 	kr_try = range(kr_min + eps(kr_min), kr_max - eps(kr_min); length = n_points)
-	kr0 = find_spans(func, kr_try, p)
+	kr0 = find_spans(func, kr_try, p) |> collect
 	# kr0 = [0.39380573744004627, 0.4028554311353545, 0.40996684021864305, 0.4149566134428289, 0.41790332991380486]
 	# @show kr0
 	if isempty(kr0)
@@ -94,8 +94,7 @@ function find_spans(func, x, p)
     if isempty(idxes)
         return Vector{eltype(p)}()
     end
-    spans = [mean((x[i], x[i + 1])) for i in idxes]
-    return spans
+    return (mean((x[i], x[i + 1])) for i in idxes)
 end
 
 """
