@@ -346,7 +346,7 @@ function AcousticProblemCache(env::UnderwaterEnv, props::AcousticProblemProperti
     Ntotal = sum(props.Nz_vec)
     Ni = prepend!(accumulate(+, props.Nz_vec), 0)
     #TODO: create vector that generalizes well to different types
-    T = promote_type(eltype(env.c.c), eltype(env.ρ.ρ), typeof(env.cb))
+    T = promote_type(eltype(env.c.c), eltype(env.ρ.ρ), typeof(env.cb), typeof(props.freq))
     a_vec = zeros(T, Ntotal)
     e_vec = similar(a_vec)
     scaling_factor = similar(a_vec)
@@ -393,21 +393,6 @@ function scale_const(p1, p2, Φ = 1e20, Γ = 1e-20)
     end
 end
 
-"""
-    det_sturm(kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; 
-										stop_at_k=nothing, return_det=false)
-
-Calculate the Sturm sequence for the acoustic problem.
-returns the number of modes found if `return_det=false`, otherwise returns the determinant of the 
-finite difference matrix.
-"""
-function det_sturm_modes(kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache)
-    return det_sturm(kr, env, props, cache; return_det = false)
-end
-
-function det_sturm_val(kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache)
-    return det_sturm(kr, env, props, cache; return_det = true)
-end
 
 """
     det_sturm(
@@ -464,7 +449,7 @@ function det_sturm(
             end
         end
     end
-    return p2, mode_count
+    return (det=p2, mode_num=mode_count)
 end
 
 """
@@ -564,7 +549,7 @@ function solve_for_kr(span, env, props, cache; method = ITP(), kwargs...)
         return first(det_sturm(u, env, props, cache))
     end
     prob = IntervalNonlinearProblem{false}(f, span)
-    sol = solve(prob, method; kwargs...)
+    sol = solve(prob, NewtonRaphson(); kwargs...)
     return sol # sol.u is the solution itself
 end
 
