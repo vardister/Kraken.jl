@@ -1,8 +1,11 @@
 using NamedArrays
 
 
-# There are 4 overall cases to test
-export pekeris_test_dict_KRAKEN, one_layer_test_dict_KRAKEN, one_layer_slope_test_dict_KRAKEN, two_layer_slope_test_dict_KRAKEN
+export pekeris_test_dict_KRAKEN
+export one_layer_test_dict_KRAKEN
+export one_layer_slope_test_dict_KRAKEN
+export two_layer_slope_test_dict_KRAKEN
+export munk_test_dict_KRAKEN
 
 
 ### Standard Pekeris
@@ -84,8 +87,7 @@ function one_layer_test_dict_KRAKEN(
     sspHS = [0.0 343.0 0.0 0.00121 0.0 0.0
              z1 cb 0.0 ρb αb 0.0]
 
-    env_dict = Dict(:ssp => ssp, :layers => layers, :sspHS => sspHS, :freq => freq)
-    return env_dict
+    return ssp, layers, sspHS
 end
 
 ### Standard 1-layey model with slope in sound speed
@@ -169,4 +171,34 @@ function two_layer_slope_test_dict_KRAKEN(;
              z2 cb 0.0 ρb αb 0.0]
 
     return Dict(:ssp => ssp, :layers => layers, :sspHS => sspHS, :freq => freq)
+end
+
+
+function munk_test_dict_KRAKEN()
+    function c(z)
+        ϵ = 0.00737
+        zhat = 2 * (z - 1300.0) / 1300
+        1500.0 * (1.0 + ϵ * (zhat - 1.0 + exp(-zhat)))
+    end
+
+    # Water column
+    ρ0 = 1000.0
+    α0 = 0.0
+    # bottom half-space
+    αb = 0.0
+    ρb = 1500.0
+    cb = 1600.0
+
+    # other
+    freq = 100.0
+    z0 = 0.0
+    zvec = 0:100:5000
+    cvec = c.(zvec)
+
+    ssp = hcat([[x[1], x[2], 0.0, ρ0, α0, 0.0] for x in zip(zvec, cvec)]...) |> transpose
+    sspHS = [0.0 343.0 0.0 0.00121 0.0 0.0
+             zvec[end] cb 0.0 ρb αb 0.0]
+    layers = [0.0 0.0 zvec[end]]
+
+    return ssp, layers, sspHS
 end
