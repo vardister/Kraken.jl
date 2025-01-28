@@ -1,7 +1,7 @@
 ### Load packages
 using LinearAlgebra
 using Statistics
-using NonlinearSolve
+using Roots
 using LinearSolve
 using UnPack
 using Integrals
@@ -17,8 +17,7 @@ using Infiltrator
 # Exports
 export SampledSSP, SampledDensity
 export UnderwaterEnv, AcousticProblemProperties, UnderwaterEnvFORTRAN
-export AcousticProblemCache,
-       bisection, solve_for_kr, inverse_iteration, det_sturm, kraken_jl, find_kr
+export AcousticProblemCache, bisection, solve_for_kr, inverse_iteration, det_sturm, kraken_jl, find_kr, get_g
 
 ### Main Types
 ### Sound Speed Profile
@@ -28,19 +27,19 @@ abstract type SampledSSP <: SoundSpeedProfile end
 """
 Sound speed profile based on measurements at discrete depths `z` in meters and sound speed `c` in m/s.
 """
-struct SampledSSP1D{T1, T2, T3} <: SampledSSP
+struct SampledSSP1D{T1,T2,T3} <: SampledSSP
     z::Vector{T1}
     c::Vector{T2}
     f::T3
     function SampledSSP1D(depth, c, f)
         interp = f(c, depth; extrapolate=true)
-        return new{eltype(depth), eltype(c), typeof(interp)}(-depth, c, interp)
+        return new{eltype(depth),eltype(c),typeof(interp)}(-depth, c, interp)
     end
 end
 
 """
-    SampledSSP(depth, c)
-    SampledSSP(depth, c, type::Symbol)
+	SampledSSP(depth, c)
+	SampledSSP(depth, c, type::Symbol)
 
 Constructor for `SampledSSP1D`.
 
@@ -50,10 +49,8 @@ Constructor for `SampledSSP1D`.
 SampledSSP(depth, c) = SampledSSP1D(depth, c, LinearInterpolation)
 SampledSSP(depth, c, type::Symbol) = SampledSSP1D(depth, c, type)
 
-function Base.show(io::IO, ρint::SampledSSP1D{T1, T2, T3}) where {T1, T2, T3}
-    return print(
-        io, "SampledSSP1D{", T1, ",", T2, ",", ρint.type, "}(", length(ρint.z), " points)"
-    )
+function Base.show(io::IO, ρint::SampledSSP1D{T1,T2,T3}) where {T1,T2,T3}
+    return print(io, "SampledSSP1D{", T1, ",", T2, ",", ρint.type, "}(", length(ρint.z), " points)")
 end
 
 ### Density Profile
@@ -64,19 +61,19 @@ abstract type SampledDensity <: DensityProfile end
 $(TYPEDEF)
 Density profile based on measurements at discrete depths `z` in meters and density `ρ` in kg/m³.
 """
-struct SampledDensity1D{T1, T2, T3} <: SampledDensity
+struct SampledDensity1D{T1,T2,T3} <: SampledDensity
     z::Vector{T1}
     ρ::Vector{T2}
     f::T3
     # Constructor for Type inputs
     function SampledDensity1D(depth, ρ, f)
         interp = f(ρ, depth; extrapolate=true)
-        return new{eltype(depth), eltype(ρ), typeof(interp)}(-depth, ρ, interp)
+        return new{eltype(depth),eltype(ρ),typeof(interp)}(-depth, ρ, interp)
     end
 end
 
 """
-    SampledDensity(depth, ρ)
+	SampledDensity(depth, ρ)
 
 Constructor for `SampledDensity1D`.
 
@@ -86,10 +83,8 @@ Two options for interpolation are available: `:linear` and `:smooth`.
 SampledDensity(depth, ρ) = SampledDensity1D(depth, ρ, LinearInterpolation)
 SampledDensity(depth, ρ, type::Symbol) = SampledDensity1D(depth, ρ, type)
 
-function Base.show(io::IO, ρint::SampledDensity1D{T1, T2, T3}) where {T1, T2, T3}
-    return print(
-        io, "SampledDensity1D{", T1, ",", T2, ",", ρint.type, "}(", length(ρint.z), " points)"
-    )
+function Base.show(io::IO, ρint::SampledDensity1D{T1,T2,T3}) where {T1,T2,T3}
+    return print(io, "SampledDensity1D{", T1, ",", T2, ",", ρint.type, "}(", length(ρint.z), " points)")
 end
 
 ### Underwater Environment
@@ -97,18 +92,18 @@ end
 """
 Underater environment used for running the FORTRAN version of KRAKEN.
 """
-struct UnderwaterEnvFORTRAN{T <: Real}
+struct UnderwaterEnvFORTRAN{T<:Real}
     ssp::Matrix{T}
     layers::Matrix{T}
     sspHS::Matrix{T}
 end
 
 """
-    UnderwaterEnvFORTRAN(ssp, layers, sspHS)
+	UnderwaterEnvFORTRAN(ssp, layers, sspHS)
 
 Constructor for `UnderwaterEnvFORTRAN`.
 The input matrices are the same as the matrices used in the FORTRAN version of KRAKEN.
-These are the sound speed profile `ssp`, the layer information `layers`, and the sound speed profile 
+These are the sound speed profile `ssp`, the layer information `layers`, and the sound speed profile
 at the surface and bottom half-space `sspHS`.
 """
 function UnderwaterEnvFORTRAN(ssp, layers, sspHS)
@@ -123,7 +118,7 @@ end
 """
 Underwater environment containing the sound speed profile and density profile.
 """
-struct UnderwaterEnv{T1 <: SoundSpeedProfile, T2 <: DensityProfile, T3 <: Real}
+struct UnderwaterEnv{T1<:SoundSpeedProfile,T2<:DensityProfile,T3<:Real}
     c::T1
     ρ::T2
     cb::T3
@@ -134,11 +129,11 @@ struct UnderwaterEnv{T1 <: SoundSpeedProfile, T2 <: DensityProfile, T3 <: Real}
 end
 
 """
-    UnderwaterEnv(ssp, layers, sspHS)
+	UnderwaterEnv(ssp, layers, sspHS)
 
 Constructor for `UnderwaterEnv`.
 
-Create an underwater environment based on the sound speed profile `ssp`, the layer information `layers`, and the sound speed profile 
+Create an underwater environment based on the sound speed profile `ssp`, the layer information `layers`, and the sound speed profile
 at the surface and bottom half-space `sspHS`.
 """
 function UnderwaterEnv(ssp, layers, sspHS)
@@ -149,13 +144,11 @@ function UnderwaterEnv(ssp, layers, sspHS)
     layer_thickness = get_thickness(layers)
     layer_depth = layers[:, 3]
     depth = layers[end, 3]
-    return UnderwaterEnv{typeof(c), typeof(ρ), typeof(cb)}(
-        c, ρ, cb, ρb, layer_thickness, layer_depth, depth
-    )
+    return UnderwaterEnv{typeof(c),typeof(ρ),typeof(cb)}(c, ρ, cb, ρb, layer_thickness, layer_depth, depth)
 end
 
 """
-    UnderwaterEnv(krak_ssp::UnderwaterEnvFORTRAN{T}) where {T}
+	UnderwaterEnv(krak_ssp::UnderwaterEnvFORTRAN{T}) where {T}
 
 Constructor for `UnderwaterEnv` using the `UnderwaterEnvFORTRAN` struct.
 """
@@ -167,18 +160,16 @@ function UnderwaterEnv(krak_ssp::UnderwaterEnvFORTRAN{T}) where {T}
     layer_thickness = get_thickness(krak_ssp.layers)
     layer_depth = krak_ssp.layers[:, 3]
     depth = krak_ssp.ssp[end, 1]
-    return UnderwaterEnv{typeof(c), typeof(ρ), T}(
-        c, ρ, cb, ρb, layer_thickness, layer_depth, depth
-    )
+    return UnderwaterEnv{typeof(c),typeof(ρ),T}(c, ρ, cb, ρb, layer_thickness, layer_depth, depth)
 end
 
-function Base.show(io::IO, ::UnderwaterEnv{T1, T2, T3}) where {T1, T2, T3}
+function Base.show(io::IO, ::UnderwaterEnv{T1,T2,T3}) where {T1,T2,T3}
     return print(io, "UnderwaterEnv{$T1, $T2, $T3}")
 end
 
 ### Sound Speed and Density Functions to extract values from profiles at a give depth from profiles
 """
-    soundspeed(ssp::SoundSpeedProfile, x, y, z)
+	soundspeed(ssp::SoundSpeedProfile, x, y, z)
 
 Get sound speed at location (`x`, `y`, `z`). If a sound speed profile is range
 independent, `x` and `y` may be ignored. `z` is generally negative, since the
@@ -216,7 +207,7 @@ function get_thickness(layers::Matrix{<:Real})
 end
 
 """
-    get_Nz_vec(env::UnderwaterEnv, freq; n_per_wavelength=20, factor=1)
+	get_Nz_vec(env::UnderwaterEnv, freq; n_per_wavelength=20, factor=1)
 
 Get the number of mesh points and the mesh spacing for each layer of the `env` for building the finite-difference scheme.
 This process is dependent on the frequency `f`.
@@ -227,9 +218,10 @@ This process is dependent on the frequency `f`.
 - `n_per_wavelength::Int=20`: Number of mesh points per wavelength.
 - `factor::Int=1`: factor of the mesh spacing.
 """
-function get_Nz_vec(env::UnderwaterEnv, freq; n_per_wavelength = 20, factor = 1)
+function get_Nz_vec(env::UnderwaterEnv, freq; n_per_wavelength=20, factor=1)
     ω = 2π * freq
-    @assert ω>=0 "Frequency must be non-negative"
+    # @infiltrate
+    @assert ω >= 0 "Frequency must be non-negative"
     @assert maxsoundspeed(env.c) < env.cb
     kr_max = ω / env.cb  # here we assume the bottom half-space sound speed is highest
     Nz_vec = zeros(Int, length(env.h_vec))
@@ -249,7 +241,7 @@ function get_Nz_vec(env::UnderwaterEnv, freq; n_per_wavelength = 20, factor = 1)
 end
 
 """
-    get_z_vec(env::UnderwaterEnv, Nz_vec, Δz_vec)
+	get_z_vec(env::UnderwaterEnv, Nz_vec, Δz_vec)
 
 Get the depth vector for each layer of the underwater environment according to the number of mesh points `Nz_vec`
  and mesh spacing `Δz_vec`.
@@ -273,7 +265,7 @@ end
 Properties of the acoustic problem based on the underwater environment `env` and frequency `freq`.
 `factor` is a factor for the mesh spacing and `n_per_wavelength` is the number of mesh points per wavelength.
 """
-struct AcousticProblemProperties{T <: Real, T2 <: Real}
+struct AcousticProblemProperties{T<:Real,T2<:Real}
     freq::T
     Nz_vec::Vector{Int}
     Δz_vec::Vector{T2}
@@ -281,30 +273,23 @@ struct AcousticProblemProperties{T <: Real, T2 <: Real}
 end
 
 """
-    AcousticProblemProperties(env::UnderwaterEnv, freq; factor::Int=1, n_per_wavelength=20)
+	AcousticProblemProperties(env::UnderwaterEnv, freq; factor::Int=1, n_per_wavelength=20)
 
 Get the properties of the acoustic problem based on the underwater environment `env` and frequency `freq`.
 """
-function AcousticProblemProperties(
-        env::UnderwaterEnv, freq; factor::Int = 1, n_per_wavelength = 20
-)
+function AcousticProblemProperties(env::UnderwaterEnv, freq; factor::Int=1, n_per_wavelength=20)
     if freq isa Int
         freq = float(freq)
         println("I did it!")
     end
-    Nz_vec, Δz_vec = get_Nz_vec(
-        env, freq; factor = factor, n_per_wavelength = n_per_wavelength)
+    Nz_vec, Δz_vec = get_Nz_vec(env, freq; factor=factor, n_per_wavelength=n_per_wavelength)
     zn_vec = get_z_vec(env, Nz_vec, Δz_vec)
 
-    return AcousticProblemProperties{eltype(freq), eltype(Δz_vec)}(
-        freq, Nz_vec, Δz_vec, zn_vec
-    )
+    return AcousticProblemProperties{eltype(freq),eltype(Δz_vec)}(freq, Nz_vec, Δz_vec, zn_vec)
 end
 
-function Base.show(io::IO, props::AcousticProblemProperties{T, T2}) where {T, T2}
-    return print(
-        io, "AcousticProblemProperties{", T, ",", T2, "}(", length(props.Nz_vec), " layers)"
-    )
+function Base.show(io::IO, props::AcousticProblemProperties{T,T2}) where {T,T2}
+    return print(io, "AcousticProblemProperties{", T, ",", T2, "}(", length(props.Nz_vec), " layers)")
 end
 
 ### Prepare vectors for the finite difference scheme
@@ -317,14 +302,13 @@ e_element(ρ, h) = @. 1 / (h * ρ)
 Get the value of `g` for the bottom half-space finite-difference element.
 """
 function get_g(kr, env::UnderwaterEnv, props::AcousticProblemProperties)
-    g = nm.sqrt(kr^2 - (2pi * props.freq / env.cb)^2) / env.ρb
+    g = sqrt(kr^2 - (2pi * props.freq / env.cb)^2) / env.ρb
     return g
 end
 
 ### Bisection and Sturm's Sequence
 function moving_average!(vs, n)
-    vs[1:(end - n + 1)] .= [sum(@view vs[i:(i + n - 1)]) / n
-                            for i in 1:(length(vs) - (n - 1))]
+    vs[1:(end - n + 1)] .= [sum(@view vs[i:(i + n - 1)]) / n for i in 1:(length(vs) - (n - 1))]
     return nothing
 end
 
@@ -335,6 +319,7 @@ mutable struct AcousticProblemCache{T}
     a_vec::T
     e_vec::T
     λ_scaling::T
+    A::SymTridiagonal
 end
 
 """
@@ -372,7 +357,9 @@ function AcousticProblemCache(env::UnderwaterEnv, props::AcousticProblemProperti
 
     moving_average!(scaling_factor, 2)
     scaling_factor[end] = e_vec[end] * props.Δz_vec[end]^2 / 2
-    return AcousticProblemCache(a_vec, e_vec, scaling_factor)
+    # Construct the Tridiagonal matrix
+    A = SymTridiagonal(a_vec, e_vec[2:end])
+    return AcousticProblemCache(a_vec, e_vec, scaling_factor, A)
 end
 
 function Base.show(io::IO, ::AcousticProblemCache{T}) where {T}
@@ -382,7 +369,7 @@ end
 ### Bisection and Sturm's Sequence
 
 # Function to scale the Sturm sequence
-function scale_const(p1, p2, Φ = 1e20, Γ = 1e-20)
+function scale_const(p1, p2, Φ=1e20, Γ=1e-20)
     w = max(abs(p1), abs(p2))
     if w > Φ
         return Γ
@@ -393,16 +380,15 @@ function scale_const(p1, p2, Φ = 1e20, Γ = 1e-20)
     end
 end
 
-
 """
-    det_sturm(
-        kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache;
-        stop_at_k = nothing, return_det = false, scale = true)
+	det_sturm(
+		kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache;
+		stop_at_k = nothing, return_det = false, scale = true)
 """
 function det_sturm(
-        kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache;
-        stop_at_k = nothing, scale = true)
-    local p2, p1, p0
+    kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; stop_at_k=nothing, scale=true
+)
+    local p2, p1, p0, λ
     mode_count = 0
     g = get_g(kr, env, props)
 
@@ -453,15 +439,14 @@ function det_sturm(
 end
 
 """
-    bisection(env::UnderwaterEnv, props::AcousticProblemProperties,
-    cache::AcousticProblemCache; verbose = false)
+	bisection(env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache)
 
 Bisection method to find the intervals where the roots (wavenumbers) lie.
 """
 function bisection(env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache)
     ω = 2pi * props.freq
     kr_max = maximum(ω ./ env.c.c)
-    kr_min = ω / env.cb
+    kr_min = ω / (0.9999 * env.cb)  # multiplying by 0.9999 so I don't touch the wavenumber boundary when root finding
     kr_min, kr_max = promote(kr_min, kr_max)
     n_max = last(det_sturm(kr_min, env, props, cache))
     if n_max == 0
@@ -520,23 +505,23 @@ function bisection(env::UnderwaterEnv, props::AcousticProblemProperties, cache::
     return intervals
 end
 
-### Solve for kr
-
 """
-    find_kr(env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; method=ITP(), kwargs...)
+	find_kr(env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; method=Roots.A42, kwargs...)
 
 Find the roots of the acoustic problem.
 """
-function find_kr(env::UnderwaterEnv, props::AcousticProblemProperties,
-        cache::AcousticProblemCache; method = ITP(), kwargs...)
-    krs = Vector{eltype(cache.a_vec)}()
+function find_kr(
+    env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; method=Roots.A42(), kwargs...
+)
     kr_spans = bisection(env, props, cache)
+    krs = zeros(eltype(kr_spans), size(kr_spans, 1))
     if isnothing(kr_spans)
         return krs
     end
+    i = 1
     for span in eachrow(kr_spans)
-        sol = solve_for_kr(span, env, props, cache; method = method, kwargs...)
-        push!(krs, sol[1])
+        krs[i] = solve_for_kr(span, env, props, cache; method=method, kwargs...)[1]
+        i += 1
     end
     return krs
 end
@@ -544,13 +529,12 @@ end
 """
 Solve for the roots of the acoustic problem.
 """
-function solve_for_kr(span, env, props, cache; method = ITP(), kwargs...)
-    function f(u, p)
+function solve_for_kr(span, env, props, cache; method=Roots.A42(), kwargs...)
+    function f(u, p=nothing)
         return first(det_sturm(u, env, props, cache))
     end
-    prob = IntervalNonlinearProblem{false}(f, span)
-    sol = solve(prob, NewtonRaphson(); kwargs...)
-    return sol # sol.u is the solution itself
+    sol = find_zero(f, span, method)
+    return sol
 end
 
 ### Inverse Iteration
@@ -561,32 +545,56 @@ function integral_trapz(y, x)
     return solve(problem, method).u
 end
 
-function inverse_iteration(kr, env::UnderwaterEnv, props::AcousticProblemProperties,
-        cache::AcousticProblemCache; tol = 0.1, verbose = false)
+# function create_finite_diff_matrix!(kr, env, props, cache)
+#     # λ = kr^2 .* cache.λ_scaling
+#     g = get_g(kr, env, props)
+#     # Update `a_vec` and `e_vec` in-place
+#     cache.a_vec[end] = 0.5 * cache.a_vec[end] - kr^2 .* cache.λ_scaling[end] - g
+#     # cache.a_vec[1:end-1] .-= kr^2 .* cache.λ_scaling[1:end-1]
+# 	@views cache.a_vec[1:end-1] .-= kr^2 .* cache.λ_scaling[1:end-1]
+#     # Construct the Tridiagonal matrix as a view of the data in `cache`
+#     A = SymTridiagonal(cache.a_vec[1:end], cache.e_vec[2:end])
+#     return A
+# end
+function create_finite_diff_matrix!(kr, env, props, cache)
+    g = get_g(kr, env, props)
+
+    # Update the diagonal elements
+    cache.a_vec[end] = 0.5 * cache.a_vec[end] - kr^2 .* cache.λ_scaling[end] - g
+    @views cache.a_vec[1:(end - 1)] .-= kr^2 .* cache.λ_scaling[1:(end - 1)]
+
+    # The Tridiagonal matrix will automatically reflect these changes
+    # since it's using views of the vectors
+    return nothing
+end
+
+function return_finite_diff_matrix!(kr, env, props, cache)
+    g = get_g(kr, env, props)
+    cache.a_vec[end] = 2 * (cache.a_vec[end] + kr^2 .* cache.λ_scaling[end] + g)
+    @views cache.a_vec[1:(end - 1)] .+= kr^2 .* cache.λ_scaling[1:(end - 1)]
+    # The Tridiagonal matrix will automatically reflect these changes
+    # since it's using views of the vectors
+    return nothing
+end
+
+function inverse_iteration(
+    kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; tol=0.0001, verbose=false
+)
     zn = vcat(props.zn_vec...)
     ρn = density(env.ρ, zn)
     N = sum(props.Nz_vec)
-    kr_try = kr - 1e3 * eps(kr)
-    λ_try = kr_try^2 .* cache.λ_scaling
+
     w0 = normalize(ones(eltype(kr), N))
     w1 = similar(w0)
 
-    # Initialize the cache
-    g = get_g(kr_try, env, props)
-    cache.a_vec[end] = 0.5 * cache.a_vec[end] - λ_try[end] - g
-    cache.a_vec[1:(end - 1)] .-= λ_try[1:(end - 1)]
-
     # Create the tridiagonal matrix
-    A = Tridiagonal(cache.e_vec[2:end], cache.a_vec, cache.e_vec[2:end])
+    kr_try = kr - 1e3 * eps(kr)
+    # Generate the tridiagonal matrix from cache
+    create_finite_diff_matrix!(kr_try, env, props, cache)
+    # Initialize the variables
     kr_new = kr
-    # prob = LinearProblem(A, w0)
-    # linsolve = init(prob)
     for ii in 1:50
-        # if ii >1
-        # 	println(ii)
-        # end
-        # w1 .= solve!(linsolve, LinearSolve.LUFactorization()).u
-        w1 .= A \ w0
+        w1 .= cache.A \ w0
         _, m = findmax(abs.(w1))
         kr_new = w0[m] / w1[m] + kr_try
         w1 .= w1 ./ norm(w1)
@@ -596,7 +604,6 @@ function inverse_iteration(kr, env::UnderwaterEnv, props::AcousticProblemPropert
             break
         end
         w0 .= w1
-        # linsolve.b = w0
     end
 
     w0 = ifelse(w0[1] < 0, w0 .* -1, w0)
@@ -604,25 +611,24 @@ function inverse_iteration(kr, env::UnderwaterEnv, props::AcousticProblemPropert
     amp1 = integral_trapz(abs2.(w0) ./ ρn, zn)
     amp2 = w0[end]^2 / (2 * env.ρb * sqrt(kr_new^2 - (2pi * props.freq / env.cb)^2))
     w0 ./= sqrt(amp1 + amp2)
-
+    return_finite_diff_matrix!(kr_try, env, props, cache)
     # Reset the cache
-    cache.a_vec[1:(end - 1)] .+= λ_try[1:(end - 1)]
-    cache.a_vec[end] = 2 * (cache.a_vec[end] + λ_try[end] + g)
+
     return kr_new, vcat(0.0, w0)
 end
 
 ### Full KRAKEN solve with Richardson's Extrapolation
 function inverse_iteration(
-        kr_vec::Vector, env::UnderwaterEnv, props::AcousticProblemProperties,
-        cache::AcousticProblemCache; kws...)
+    kr_vec::Vector, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; kws...
+)
 
     # Initialize containers
-    results = [inverse_iteration(kr, env, props, cache; kws...) for kr in kr_vec]
-
-    # Extract kr_vec_new and modes from the results
-    kr_vec_new = [result[1] for result in results]
-    modes = hcat([result[2] for result in results]...)
-
+    modes = zeros(eltype(kr_vec), length(cache.a_vec) + 1, length(kr_vec))
+    kr_vec_new = similar(kr_vec)
+    # Loop over the wavenumbers
+    for (ii, kr) in enumerate(kr_vec)
+        kr_vec_new[ii], modes[:, ii] = inverse_iteration(kr, env, props, cache; kws...)
+    end
     # Return the new kr_vec and modes
     return kr_vec_new, modes
 end
@@ -635,16 +641,7 @@ function richard_extrap(h_meshes, krs_meshes)
     return sqrt(sol[1])
 end
 
-function kraken_jl(
-        env,
-        freq;
-        n_meshes = 5,
-        rmax = 10_000,
-        method = ITP(),
-        dont_break = false,
-        abstol = 1e-6,
-        reltol = 1e-6
-)
+function kraken_jl(env, freq; n_meshes=5, rmax=10_000, method=A42(), dont_break=false, abstol=1e-6, reltol=1e-6)
     # First mesh first
     local rich_krs
     # convert frequency to float if needed
@@ -652,25 +649,22 @@ function kraken_jl(
         freq = float(freq)
     end
     # generate all problem properties for every mesh
-    props_all = [AcousticProblemProperties(env, freq; factor = 2^(i - 1)) for i in 1:n_meshes]
-    h_meshes = [h_extrap(props_all[i].Δz_vec[1], n_meshes) for i in 1:n_meshes]
-    h_meshes = hcat(h_meshes...)' # transpose
+    props = AcousticProblemProperties(env, freq)
+    h_meshes = zeros(eltype(env.c.c), n_meshes, n_meshes)
+    h_meshes[:, 1] = h_extrap(props.Δz_vec[1], n_meshes)
 
     # First Mesh (i_power = 1)
-    cache = AcousticProblemCache(env, props_all[1])
-    krs = find_kr(
-        env, props_all[1], cache;
-        method = method, abstol = abstol, reltol = reltol
-    )
+    cache = AcousticProblemCache(env, props)
+    krs = find_kr(env, props, cache; method=method, abstol=abstol, reltol=reltol)
     if isempty(krs)
-        return NormalModeSolution(krs, Matrix{eltype(krs)}(undef, 0, 0), env, props_all[1])
+        return NormalModeSolution(krs, Matrix{eltype(krs)}(undef, 0, 0), env, props)
     end
 
     # Inverse Iteration
-    krs_coarse, ψ = inverse_iteration(krs, env, props_all[1], cache)
+    krs_coarse, ψ = inverse_iteration(krs, env, props, cache)
     # If we want only one mesh calculation (n_meshes = 1), return the result
     if n_meshes == 1
-        return NormalModeSolution(krs_coarse, ψ, env, props_all[1])
+        return NormalModeSolution(krs_coarse, ψ, env, props)
     end
 
     # Richardson Extrapolation from here on out if n_mesh > 1
@@ -684,9 +678,10 @@ function kraken_jl(
     krs_old = krs_coarse
     for i_power in 2:n_meshes
         factor = 2^(i_power - 1)
-        props_new = AcousticProblemProperties(env, freq; factor = factor)
+        props_new = AcousticProblemProperties(env, freq; factor=factor)
+        h_meshes[i_power, :] = h_extrap(props_new.Δz_vec[1], n_meshes)
         cache = AcousticProblemCache(env, props_new)
-        krs_new = find_kr(env, props_new, cache; method = method)
+        krs_new = find_kr(env, props_new, cache; method=method)
         if length(krs_new) < M
             M = length(krs_new)
         end
@@ -697,9 +692,7 @@ function kraken_jl(
         #     krs_meshes = krs_meshes[:, 1:M]
         # end
         # interpolate krs_meshes with h_meshes
-        rich_krs = [richard_extrap(
-                        h_meshes[1:i_power, 1:i_power], [krs_all[ii][mm] for ii in 1:i_power])
-                    for mm in 1:M]
+        rich_krs = [richard_extrap(h_meshes[1:i_power, 1:i_power], [krs_all[ii][mm] for ii in 1:i_power]) for mm in 1:M]
 
         # Check if the difference is less than the tolerance
         errs = abs.(rich_krs[1:M] - krs_old[1:M])
@@ -713,19 +706,19 @@ function kraken_jl(
         krs_old = krs_new
     end
 
-    return NormalModeSolution(rich_krs[1:M], ψ[:, 1:M], env, props_all[1])
+    return NormalModeSolution(rich_krs[1:M], ψ[:, 1:M], env, props)
 end
 
-struct NormalModeSolution{T1, T2}
+struct NormalModeSolution{T1,T2}
     kr::T1
     modes::T2
     env::UnderwaterEnv
     props::AcousticProblemProperties
     function NormalModeSolution(kr, modes, env, props)
-        return new{typeof(kr), typeof(modes)}(kr, modes, env, props)
+        return new{typeof(kr),typeof(modes)}(kr, modes, env, props)
     end
 end
 
-function Base.show(io::IO, ρint::NormalModeSolution{T1, T2}) where {T1, T2}
+function Base.show(io::IO, ρint::NormalModeSolution{T1,T2}) where {T1,T2}
     return print(io, "NormalModeSolution{", eltype(T1), "}(", length(ρint.kr), " modes)")
 end
