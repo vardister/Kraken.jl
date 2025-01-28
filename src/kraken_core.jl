@@ -1,7 +1,7 @@
 ### Load packages
 using LinearAlgebra
 using Statistics
-using Roots
+using NonlinearSolve
 using LinearSolve
 using UnPack
 using Integrals
@@ -18,7 +18,7 @@ using Infiltrator
 export SampledSSP, SampledDensity
 export UnderwaterEnv, AcousticProblemProperties, UnderwaterEnvFORTRAN
 export AcousticProblemCache,
-       bisection, solve_for_kr, inverse_iteration, det_sturm, kraken_jl, find_kr, get_g
+       bisection, solve_for_kr, inverse_iteration, det_sturm, kraken_jl, find_kr
 
 ### Main Types
 ### Sound Speed Profile
@@ -317,7 +317,7 @@ e_element(ρ, h) = @. 1 / (h * ρ)
 Get the value of `g` for the bottom half-space finite-difference element.
 """
 function get_g(kr, env::UnderwaterEnv, props::AcousticProblemProperties)
-    g = sqrt(kr^2 - (2pi * props.freq / env.cb)^2) / env.ρb
+    g = nm.sqrt(kr^2 - (2pi * props.freq / env.cb)^2) / env.ρb
     return g
 end
 
@@ -378,7 +378,6 @@ end
 function Base.show(io::IO, ::AcousticProblemCache{T}) where {T}
     return print(io, "AcousticProblemCache{$T}")
 end
-
 
 ### Bisection and Sturm's Sequence
 
@@ -462,7 +461,7 @@ Bisection method to find the intervals where the roots (wavenumbers) lie.
 function bisection(env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache)
     ω = 2pi * props.freq
     kr_max = maximum(ω ./ env.c.c)
-    kr_min = ω / (0.9999*env.cb)  # multiplying by 0.9999 so I don't touch the wavenumber boundary when root finding
+    kr_min = ω / env.cb
     kr_min, kr_max = promote(kr_min, kr_max)
     n_max = last(det_sturm(kr_min, env, props, cache))
     if n_max == 0
@@ -522,13 +521,14 @@ function bisection(env::UnderwaterEnv, props::AcousticProblemProperties, cache::
 end
 
 ### Solve for kr
+
 """
     find_kr(env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; method=ITP(), kwargs...)
 
 Find the roots of the acoustic problem.
 """
 function find_kr(env::UnderwaterEnv, props::AcousticProblemProperties,
-        cache::AcousticProblemCache; method = Roots.A42(), kwargs...)
+        cache::AcousticProblemCache; method = ITP(), kwargs...)
     krs = Vector{eltype(cache.a_vec)}()
     kr_spans = bisection(env, props, cache)
     if isnothing(kr_spans)
@@ -544,20 +544,12 @@ end
 """
 Solve for the roots of the acoustic problem.
 """
-function solve_for_kr(span, env, props, cache; method = Roots.A42(), kwargs...)
-    function f(u, p=nothing)
+function solve_for_kr(span, env, props, cache; method = ITP(), kwargs...)
+    function f(u, p)
         return first(det_sturm(u, env, props, cache))
     end
-    # prob = IntervalNonlinearProblem{false}(f, span)
-    # sol = solve(prob, method; kwargs...)
-    # function ff(x)
-    #     A = create_finite_diff_matrix!(x, env, props, cache)
-    #     determinant = logabsdet(A)
-    #     return_finite_diff_matrix!(x, env, props, cache)
-    #     return prod(determinant)
-    # end
-    # @infiltrate
-    sol = find_zero(f, span, method)
+    prob = IntervalNonlinearProblem{false}(f, span)
+    sol = solve(prob, NewtonRaphson(); kwargs...)
     return sol # sol.u is the solution itself
 end
 
@@ -569,42 +561,23 @@ function integral_trapz(y, x)
     return solve(problem, method).u
 end
 
-function create_finite_diff_matrix!(kr, env, props, cache)
-    λ = kr^2 .* cache.λ_scaling
-    g = get_g(kr, env, props)
-    cache.a_vec[end] = 0.5 * cache.a_vec[end] - λ[end] - g
-    cache.a_vec[1:(end - 1)] .-= λ[1:(end - 1)]
-    A = Tridiagonal(cache.e_vec[2:end], cache.a_vec, cache.e_vec[2:end])
-    return A
-end
-
-function return_finite_diff_matrix!(kr, env, props, cache)
-    λ = kr^2 .* cache.λ_scaling
-    g = get_g(kr, env, props)
-    cache.a_vec[end] = 2 * (cache.a_vec[end] + λ[end] + g)
-    cache.a_vec[1:(end - 1)] .+= λ[1:(end - 1)]
-    A = Tridiagonal(cache.e_vec[2:end], cache.a_vec, cache.e_vec[2:end])
-    return A
-end
-
-
-
 function inverse_iteration(kr, env::UnderwaterEnv, props::AcousticProblemProperties,
         cache::AcousticProblemCache; tol = 0.1, verbose = false)
     zn = vcat(props.zn_vec...)
     ρn = density(env.ρ, zn)
     N = sum(props.Nz_vec)
-
+    kr_try = kr - 1e3 * eps(kr)
+    λ_try = kr_try^2 .* cache.λ_scaling
     w0 = normalize(ones(eltype(kr), N))
     w1 = similar(w0)
 
-    # Create the tridiagonal matrix
-    kr_try = kr - 1e3 * eps(kr)
-    # Generate the tridiagonal matrix from cache
-    A = create_finite_diff_matrix!(kr_try, env, props, cache)
+    # Initialize the cache
+    g = get_g(kr_try, env, props)
+    cache.a_vec[end] = 0.5 * cache.a_vec[end] - λ_try[end] - g
+    cache.a_vec[1:(end - 1)] .-= λ_try[1:(end - 1)]
 
-    # Initialize the variables
-    
+    # Create the tridiagonal matrix
+    A = Tridiagonal(cache.e_vec[2:end], cache.a_vec, cache.e_vec[2:end])
     kr_new = kr
     # prob = LinearProblem(A, w0)
     # linsolve = init(prob)
@@ -631,9 +604,10 @@ function inverse_iteration(kr, env::UnderwaterEnv, props::AcousticProblemPropert
     amp1 = integral_trapz(abs2.(w0) ./ ρn, zn)
     amp2 = w0[end]^2 / (2 * env.ρb * sqrt(kr_new^2 - (2pi * props.freq / env.cb)^2))
     w0 ./= sqrt(amp1 + amp2)
-    return_finite_diff_matrix!(kr_try, env, props, cache)
-    # Reset the cache
 
+    # Reset the cache
+    cache.a_vec[1:(end - 1)] .+= λ_try[1:(end - 1)]
+    cache.a_vec[end] = 2 * (cache.a_vec[end] + λ_try[end] + g)
     return kr_new, vcat(0.0, w0)
 end
 
