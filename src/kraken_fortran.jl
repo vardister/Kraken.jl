@@ -66,23 +66,21 @@ struct EnvKRAKEN <: KRAKENEnv
     z_source::Float64
 
     n_krak::Int
-    z_krak::Array{Float64, 1}
+    z_krak::Array{Float64,1}
     n_bc::Int
 end
 
-function EnvKRAKEN(
-        ssp, b, sspHS, z_krak, z_source; note1 = "NVW", note2 = "A", bsig = 0, z_step = 1.0)
+function EnvKRAKEN(ssp, b, sspHS, z_krak, z_source; note1="NVW", note2="A", bsig=0, z_step=1.0)
     n_layers = size(b, 1)
     n_source = length(z_source)
-    n_krak = length(range(z_krak[1], z_krak[2]; step = z_step))
+    n_krak = length(range(z_krak[1], z_krak[2]; step=z_step))
     n_bc = size(ssp, 1)
 
     if ssp[1, 4] > 500.025  # if ever I use an ssp that conforms to SI units
         ssp[:, 4] /= 1000.0
         sspHS[2, 4] /= 1000.0
     end
-    return EnvKRAKEN(n_layers, note1, note2, bsig, ssp, sspHS, b,
-        n_source, z_source, n_krak, z_krak, n_bc)
+    return EnvKRAKEN(n_layers, note1, note2, bsig, ssp, sspHS, b, n_source, z_source, n_krak, z_krak, n_bc)
 end
 
 """
@@ -107,20 +105,36 @@ Optional keywords:
 
     - "1layer_constant": 1 layer, constant sound speed
 """
-function env_builder(; hw = 71.0, cw = 1471.0, ρw = 1.0, αw = 0.0, h1 = 10.0, c1 = 1500.0,
-        ρ1 = 1.6, α1 = 0.05, cb = 1900.0, ρb = 2.0, αb = 0.25, type = "1layer_constant")
+function env_builder(;
+    hw=71.0,
+    cw=1471.0,
+    ρw=1.0,
+    αw=0.0,
+    h1=10.0,
+    c1=1500.0,
+    ρ1=1.6,
+    α1=0.05,
+    cb=1900.0,
+    ρb=2.0,
+    αb=0.25,
+    type="1layer_constant",
+)
     if type == "1layer_constant"
         @assert length(cw) == 1
         d0 = hw
         d1 = hw + h1
 
         b0 = [0.0 0.0 d0]
-        ssp0 = [0.0 cw 0.0 ρw αw 0.0
-                d0 cw 0.0 ρw αw 0.0]
+        ssp0 = [
+            0.0 cw 0.0 ρw αw 0.0
+            d0 cw 0.0 ρw αw 0.0
+        ]
 
         b1 = [0.0 0.0 d1]
-        ssp1 = [d0 c1 0.0 ρ1 α1 0.0
-                d1 c1 0.0 ρ1 α1 0.0]
+        ssp1 = [
+            d0 c1 0.0 ρ1 α1 0.0
+            d1 c1 0.0 ρ1 α1 0.0
+        ]
 
         ssp_bhs = [d1 cb 0.0 ρb αb 0.0]
         ssp_ths = [0.0 343.0 0.0 0.00121 0.0 0.0]
@@ -134,14 +148,18 @@ function env_builder(; hw = 71.0, cw = 1471.0, ρw = 1.0, αw = 0.0, h1 = 10.0, 
         d1 = hw + h1
 
         b0 = [0.0 0.0 d0]
-        ssp0 = [0.0 cw[1] 0.0 ρw αw 0.0
-                20.0 cw[2] 0.0 ρw αw 0.0
-                40.0 cw[3] 0.0 ρw αw 0.0
-                d0 cw[4] 0.0 ρw αw 0.0]
+        ssp0 = [
+            0.0 cw[1] 0.0 ρw αw 0.0
+            20.0 cw[2] 0.0 ρw αw 0.0
+            40.0 cw[3] 0.0 ρw αw 0.0
+            d0 cw[4] 0.0 ρw αw 0.0
+        ]
 
         b1 = [0.0 0.0 d1]
-        ssp1 = [d0 c1 0.0 ρ1 α1 0.0
-                d1 c1 0.0 ρ1 α1 0.0]
+        ssp1 = [
+            d0 c1 0.0 ρ1 α1 0.0
+            d1 c1 0.0 ρ1 α1 0.0
+        ]
 
         ssp_bhs = [d1 cb 0.0 ρb αb 0.0]
         ssp_ths = [0.0 343.0 0.0 0.00121 0.0 0.0]
@@ -171,12 +189,7 @@ Optional keywords:
 - `c_low`: minimum sound speed (default: 0)
 - `c_high`: maximum sound speed (default: maximum of SSP and SSPHS)
 """
-function kraken(env::KRAKENEnv,
-        freq = 15.0;
-        n_modes = 5,
-        range_max = 1e4,
-        c_low = 0.0,
-        c_high = nothing)
+function kraken(env::KRAKENEnv, freq=15.0; n_modes=5, range_max=1e4, c_low=0.0, c_high=nothing)
     if c_high === nothing
         c_high = maximum([maximum(env.ssp[:, 2]), maximum(env.sspHS[:, 2])])
     end
@@ -184,7 +197,8 @@ function kraken(env::KRAKENEnv,
     c_low_high = [c_low c_high]
     @unpack n_layers, note1, n_bc, note2, bsig, ssp, sspHS, b, n_source, z_source, n_krak, z_krak = env
 
-    cg, cp, kr_real, kr_imag, zm, modes = call_kraken(n_modes,
+    cg, cp, kr_real, kr_imag, zm, modes = call_kraken(
+        n_modes,
         freq,
         n_layers,
         [UInt8(x) for x in env.note1],
@@ -199,13 +213,9 @@ function kraken(env::KRAKENEnv,
         n_source,
         z_source,
         n_krak,
-        z_krak)
-    return Dict("cg" => cg,
-        "cp" => cp,
-        "kr_real" => kr_real,
-        "kr_imag" => kr_imag,
-        "zm" => zm,
-        "modes" => modes)
+        z_krak,
+    )
+    return Dict("cg" => cg, "cp" => cp, "kr_real" => kr_real, "kr_imag" => kr_imag, "zm" => zm, "modes" => modes)
 end
 
 """
@@ -233,8 +243,7 @@ Required arguments:
 - `zrc`: depth of receivers
 
 """
-function call_kraken(
-        nm, frq, nl, note1, b, nc, ssp, note2, bsig, sspHS, clh, rng, nsr, zsr, nrc, zrc)
+function call_kraken(nm, frq, nl, note1, b, nc, ssp, note2, bsig, sspHS, clh, rng, nsr, zsr, nrc, zrc)
     nz = nsr + nrc
 
     cg = zeros(1, nm)
@@ -244,15 +253,58 @@ function call_kraken(
     zm = zeros(nz, 1)
     modes = zeros(nz, nm)
 
-    ccall((:kraken_, "$libpath"),
+    ccall(
+        (:kraken_, "$libpath"),
         Nothing,
-        (Ref{Int}, Ref{Float64}, Ref{Int}, Ref{UInt8}, Ref{Float64},
-            Ref{Int}, Ref{Float64}, Ref{UInt8}, Ref{Float64},
-            Ref{Float64}, Ref{Float64}, Ref{Float64}, Ref{Int}, Ref{Float64},
-            Ref{Int}, Ref{Float64}, Ref{Int}, Ref{Float64},
-            Ref{Float64}, Ref{Float64}, Ref{Float64}, Ref{Float64}, Ref{Float64}),
-        nm, frq, nl, note1, b, nc, ssp, note2, bsig, sspHS, clh, rng,
-        nsr, zsr, nrc, zrc, nz, cg, cp, kr_real, kr_imag, zm, modes)
+        (
+            Ref{Int},
+            Ref{Float64},
+            Ref{Int},
+            Ref{UInt8},
+            Ref{Float64},
+            Ref{Int},
+            Ref{Float64},
+            Ref{UInt8},
+            Ref{Float64},
+            Ref{Float64},
+            Ref{Float64},
+            Ref{Float64},
+            Ref{Int},
+            Ref{Float64},
+            Ref{Int},
+            Ref{Float64},
+            Ref{Int},
+            Ref{Float64},
+            Ref{Float64},
+            Ref{Float64},
+            Ref{Float64},
+            Ref{Float64},
+            Ref{Float64},
+        ),
+        nm,
+        frq,
+        nl,
+        note1,
+        b,
+        nc,
+        ssp,
+        note2,
+        bsig,
+        sspHS,
+        clh,
+        rng,
+        nsr,
+        zsr,
+        nrc,
+        zrc,
+        nz,
+        cg,
+        cp,
+        kr_real,
+        kr_imag,
+        zm,
+        modes,
+    )
     return cg, cp, kr_real, kr_imag, zm, modes
 end
 
@@ -261,16 +313,16 @@ end
 
 
 """
-function pf_signal(env, ranges, zs, zr; T = 2, fs = 1000, n_modes = 41, t0_offset = 0.2)
-    freqs = range(1, fs / 2; step = 1 / T)
+function pf_signal(env, ranges, zs, zr; T=2, fs=1000, n_modes=41, t0_offset=0.2)
+    freqs = range(1, fs / 2; step=1 / T)
     rfft_freqs = rfftfreq(T * fs, fs)
 
     rho0 = 1.0  # density of water (gr/cm³) - used by FORTRAN version
     cw = env.ssp[1, 2]
     pf_sig = zeros(ComplexF64, length(ranges), length(rfft_freqs))
     for freq in freqs
-        res = kraken(env, freq; n_modes = n_modes)
-        kr = res["kr_real"] + 1im * res["kr_imag"] |> vec
+        res = kraken(env, freq; n_modes=n_modes)
+        kr = vec(res["kr_real"] + 1im * res["kr_imag"])
         ϕ = res["modes"]
 
         _, zs_ind = findmin(abs.(res["zm"] .- zs)) # zs_ind in a CartesianIndex
@@ -292,12 +344,12 @@ function pf_signal(env, ranges, zs, zr; T = 2, fs = 1000, n_modes = 41, t0_offse
     return pf_sig
 end
 
-function pressure_field_fortran(env, freq, r_vec, zs, zr_vec; n_modes = 41, t0_offset = 0.2, TL=false)
+function pressure_field_fortran(env, freq, r_vec, zs, zr_vec; n_modes=41, t0_offset=0.2, TL=false)
     ρw = 1.0  # density of water (gr/cm³) - used by FORTRAN version
     c_max = maximum(env.ssp[:, 2])
-    res = kraken(env, freq; n_modes = n_modes)
+    res = kraken(env, freq; n_modes=n_modes)
     # @infiltrate
-    krs = res["kr_real"] + 1im * res["kr_imag"] |> vec
+    krs = vec(res["kr_real"] + 1im * res["kr_imag"])
     ϕ = res["modes"]
     modes_interpolated = [QuadraticInterpolation(mode[2:(end - 1)], res["zm"][2:(end - 1)]) for mode in eachcol(ϕ)]
 
@@ -309,8 +361,7 @@ function pressure_field_fortran(env, freq, r_vec, zs, zr_vec; n_modes = 41, t0_o
         T = Float64
     end
     pf_field = NamedArray(
-        zeros(T, length(zr_vec), length(r_vec)); names = (zr_vec, r_vec ./ 1000), dimnames = (
-            "Depth(m)", "Range(km)")
+        zeros(T, length(zr_vec), length(r_vec)); names=(zr_vec, r_vec ./ 1000), dimnames=("Depth(m)", "Range(km)")
     )
     for ii in eachindex(zr_vec)
         ϕ_zr = [interp(zr_vec[ii]) for interp in modes_interpolated]
@@ -324,12 +375,12 @@ function pressure_field_fortran(env, freq, r_vec, zs, zr_vec; n_modes = 41, t0_o
                 pf = sum(pf)
                 pf_field[ii, jj] = pf * exp(2im * π * freq * t0)
             elseif TL
-              # @infiltrate
-                Q = 1 / (ρw * sqrt(r/2pi))
+                # @infiltrate
+                Q = 1 / (ρw * sqrt(r / 2pi))
                 pf = @. Q * ϕ_zs * ϕ_zr * exp(-im * krs * r) / sqrt(krs)
                 pf = fillnan.(pf)
                 pf = sum(pf)
-                pf_field[ii, jj] = -20*log10.(abs.(pf * exp(2im * π * freq * t0)))
+                pf_field[ii, jj] = -20 * log10.(abs.(pf * exp(2im * π * freq * t0)))
             end
         end
     end
@@ -349,12 +400,12 @@ Required arguments:
 - `zr`: receiver depth (m)
 
 """
-function pf_adiabatic(freq, envs, ranges, zs, zr; n_modes = 41)
+function pf_adiabatic(freq, envs, ranges, zs, zr; n_modes=41)
     krs = []
     modes = []
     zm = Vector{Float64}
     for (i, env) in enumerate(envs)
-        res = kraken(env, freq; n_modes = n_modes)
+        res = kraken(env, freq; n_modes=n_modes)
         kr = res["kr_real"] + 1im * res["kr_imag"]
         push!(krs, kr)
         push!(modes, res["modes"])
@@ -367,8 +418,7 @@ function pf_adiabatic(freq, envs, ranges, zs, zr; n_modes = 41)
     ## Interpolate wavenumbers in range for each mode
     krs_m = vcat(krs...)  # make krs_m be length(ranges) x length(modes)
     krs_m_interp = [LinearInterpolation(col, ranges) for col in eachcol(krs_m)]
-    krs_m_integral = [quadgk(krs_m_interp[i], ranges[1], ranges[end])[1]
-                      for i in eachindex(krs_m_interp)]
+    krs_m_integral = [quadgk(krs_m_interp[i], ranges[1], ranges[end])[1] for i in eachindex(krs_m_interp)]
 
     # println(krs_m_integral)
     ## Compute pressure(ω)
@@ -380,8 +430,7 @@ function pf_adiabatic(freq, envs, ranges, zs, zr; n_modes = 41)
     ϕ_zs = modes[1][zs_ind[1], :]
     ϕ_zr = modes[end][zr_ind[1], :]
 
-    pressure_f = Q * ϕ_zs .* ϕ_zr .* exp.(-im * krs_m_integral) ./ sqrt.(vec(krs[end])) .|>
-                 fillnan |> sum
+    pressure_f = sum(fillnan.(Q * ϕ_zs .* ϕ_zr .* exp.(-im * krs_m_integral) ./ sqrt.(vec(krs[end]))))
     return pressure_f
 end
 
@@ -403,16 +452,15 @@ end
     - `n_modes`: number of modes (default: 41)
     - `t0_offset`: the signal offset from the beginning of the time window
 """
-function pf_adiabatic_signal(
-        envs, ranges, zs, zr; T = 2, fs = 1000, n_modes = 41, t0_offset = 0.2)
-    freqs = range(1, fs / 2; step = 1 / T)
+function pf_adiabatic_signal(envs, ranges, zs, zr; T=2, fs=1000, n_modes=41, t0_offset=0.2)
+    freqs = range(1, fs / 2; step=1 / T)
     rfft_freqs = rfftfreq(T * fs, fs)
 
     cw = maximum(envs[end].ssp[:, 2])
     t0 = ranges[end] / cw - t0_offset  # align window correctly in time
     pf_signal = zeros(ComplexF64, length(rfft_freqs))
     for freq in freqs
-        pf = pf_adiabatic(freq, envs, ranges, zs, zr; n_modes = n_modes)
+        pf = pf_adiabatic(freq, envs, ranges, zs, zr; n_modes=n_modes)
         pf_shifted = pf * exp(2im * pi * freq * t0)
         ind = findfirst(rfft_freqs .== freq)
         pf_signal[ind] = pf_shifted
