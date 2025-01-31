@@ -583,6 +583,7 @@ end
 Performs inverse iteration to find the corresponding modal depth function ψₘ for a given wavenumber kᵣ
 """
 function inverse_iteration(kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; reltol=0.01)
+    local kr_new, w0, w1, amp1, amp2
     zn = vcat(props.zn_vec...)
     ρn = density(env.ρ, zn)
     N = sum(props.Nz_vec)
@@ -594,8 +595,8 @@ function inverse_iteration(kr, env::UnderwaterEnv, props::AcousticProblemPropert
     create_finite_diff_matrix!(kr_try, env, props, cache) # Generate the tridigonal finite-diff matrix with the new kr
     # Inversete iteration
     for ii in 1:50 # We typically don't need more than 50 iterations
-        w1 .= A \ w0
-        m = argmax(abs, w1)
+        w1 .= cache.A \ w0
+        m = argmax(abs.(w1))
         kr_new = w0[m] / w1[m] + kr_try
         normalize!(w1)
         if relative_error(w0, w1) < reltol # Default is 1% relative tolerance
@@ -619,7 +620,7 @@ function inverse_iteration(
 )
 
     # Initialize containers
-    modes = zeros(eltype(kr_vec), length(cache.a_vec) + 1, length(kr_vec))
+    modes = zeros(eltype(kr_vec), length(cache.a_vec), length(kr_vec))
     kr_vec_new = similar(kr_vec)
     # Loop over the wavenumbers
     for (ii, kr) in enumerate(kr_vec)
