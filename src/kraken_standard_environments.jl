@@ -9,9 +9,9 @@ export munk_test_dict_KRAKEN
 
 
 ### Standard Pekeris
-function pekeris_test_dict_KRAKEN(;c0::Real=1500.0, cb::Real=1600.0, ρ0::Real=1000.0, ρb::Real=1500.0, h0::Real=100.0)
+function pekeris_test_dict_KRAKEN(;c0::Real=1500.0, cb::Real=1600.0, ρ0::Real=1000.0, ρb::Real=1500.0, depth::Real=100.0)
     # Input validation
-    # for (param_name, param_value) in zip([:c0, :cb, :ρ0, :ρb, :h0], [c0, cb, ρ0, ρb, h0])
+    # for (param_name, param_value) in zip([:c0, :cb, :ρ0, :ρb, :depth], [c0, cb, ρ0, ρb, depth])
     #     if !isfinite(param_value)
     #         throw(DomainError(param_name, "Parameter must be a finite real number"))
     #     end
@@ -26,28 +26,28 @@ function pekeris_test_dict_KRAKEN(;c0::Real=1500.0, cb::Real=1600.0, ρ0::Real=1
     αb = 0.0
     # other
     freq = 100.0
-    z0 = h0
+    z0 = depth
 
     # ssp = NamedArray(
     #     [0.0 c0 0.0 ρ0 α0 0.0
-    #      h0 c0 0.0 ρ0 α0 0.0];
+    #      depth c0 0.0 ρ0 α0 0.0];
     #     dimnames = ("i", "Paramater")
     # )
     # setnames!(ssp, ["z", "cp", "cs", "ρ", "αp", "αs"], 2)
-    T = promote_type(typeof(c0), typeof(cb), typeof(ρ0), typeof(ρb), typeof(h0))
+    T = promote_type(typeof(c0), typeof(cb), typeof(ρ0), typeof(ρb), typeof(depth))
     ssp = zeros(T, 2, 6)
     ssp[1, :] = [0.0 c0 0.0 ρ0 α0 0.0]
-    ssp[2, :] = [h0 c0 0.0 ρ0 α0 0.0]
+    ssp[2, :] = [depth c0 0.0 ρ0 α0 0.0]
 
     # ssp = [0.0 c0 0.0 ρ0 α0 0.0
-           # h0  c0 0.0 ρ0 α0 0.0]
+           # depth  c0 0.0 ρ0 α0 0.0]
 
-    layers = [0.0 0.0 h0]
+    layers = [0.0 0.0 depth]
 
-    T2 = promote_type(typeof(h0), typeof(cb), typeof(ρb), typeof(αb))
+    T2 = promote_type(typeof(depth), typeof(cb), typeof(ρb), typeof(αb))
     sspHS = zeros(T2, 2, 6)
     sspHS[1, :] = [0.0 343.0 0.0 0.00121 0.0 0.0]
-    sspHS[2, :] = [h0 cb 0.0 ρb αb 0.0]
+    sspHS[2, :] = [depth cb 0.0 ρb αb 0.0]
 
     # env_dict = Dict(:ssp => ssp, :layers => layers, :sspHS => sspHS, :freq => freq)
     return ssp, layers, sspHS
@@ -124,7 +124,7 @@ function one_layer_slope_test_dict_KRAKEN(;c0 = 1500.0, c1_1 = 1550.0, c1_2 = 15
     sspHS = [0.0 343.0 0.0 0.00121 0.0 0.0
              z1 cb 0.0 ρb αb 0.0]
 
-    return Dict(:ssp => ssp, :layers => layers, :sspHS => sspHS, :freq => freq)
+    return ssp, layers, sspHS
 end
 
 ### Standard 2-layer model with slope in sound speed
@@ -170,7 +170,7 @@ function two_layer_slope_test_dict_KRAKEN(;
     sspHS = [0.0 343.0 0.0 0.00121 0.0 0.0
              z2 cb 0.0 ρb αb 0.0]
 
-    return Dict(:ssp => ssp, :layers => layers, :sspHS => sspHS, :freq => freq)
+    return ssp, layers, sspHS
 end
 
 
