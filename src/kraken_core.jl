@@ -614,11 +614,8 @@ function inverse_iteration(kr, env::UnderwaterEnv, props::AcousticProblemPropert
     return kr_new, w0
 end
 
-### Full KRAKEN solve with Richardson's Extrapolation
-function inverse_iteration(
-    kr_vec::Vector, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; kws...
-)
 
+function inverse_iteration(kr_vec::Vector, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; kws...)
     # Initialize containers
     modes = zeros(eltype(kr_vec), length(cache.a_vec), length(kr_vec))
     kr_vec_new = similar(kr_vec)
@@ -648,7 +645,7 @@ function kraken_jl(env, freq; n_meshes=5, rmax=10_000, method=A42(), dont_break=
     # generate all problem properties for every mesh
     props = AcousticProblemProperties(env, freq)
     h_meshes = zeros(eltype(env.c.c), n_meshes, n_meshes)
-    h_meshes[:, 1] = h_extrap(props.Δz_vec[1], n_meshes)
+    h_meshes[1, :] = h_extrap(props.Δz_vec[1], n_meshes)
 
     # First Mesh (i_power = 1)
     cache = AcousticProblemCache(env, props)
@@ -683,18 +680,10 @@ function kraken_jl(env, freq; n_meshes=5, rmax=10_000, method=A42(), dont_break=
             M = length(krs_new)
         end
         push!(krs_all, krs_new .^ 2)
-        # If the number of modes has changed, update M
-        # if length(krs_new) < M
-        #     M = length(krs_new)
-        #     krs_meshes = krs_meshes[:, 1:M]
-        # end
-        # interpolate krs_meshes with h_meshes
         rich_krs = [richard_extrap(h_meshes[1:i_power, 1:i_power], [krs_all[ii][mm] for ii in 1:i_power]) for mm in 1:M]
-
         # Check if the difference is less than the tolerance
         errs = abs.(rich_krs[1:M] - krs_old[1:M])
         err = errs[round(Int, 2 * M / 3)] # apparently this is used in KRAKEN to check for convergence
-        # println("Current tol: $err at mesh $i_power")
         # If the difference is less than the tolerance, or we've reached the maximum number of meshes
         # interpolate krs_meshes with h_meshes and return the result
         if !dont_break && err * rmax < 1
