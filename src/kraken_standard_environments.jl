@@ -25,8 +25,6 @@ function pekeris_test_dict_KRAKEN(;c0::Real=1500.0, cb::Real=1600.0, ρ0::Real=1
     # bottom half-space
     αb = 0.0
     # other
-    freq = 100.0
-    z0 = depth
 
     # ssp = NamedArray(
     #     [0.0 c0 0.0 ρ0 α0 0.0
@@ -64,7 +62,6 @@ function one_layer_test_dict_KRAKEN(
     # bottom half-space
     αb = 0.0
     # other
-    freq = 100.0
     z0 = h0
     z1 = h0 + h1
 
@@ -100,7 +97,6 @@ function one_layer_slope_test_dict_KRAKEN(;c0 = 1500.0, c1_1 = 1550.0, c1_2 = 15
     # bottom half-space
     αb = 0.0
     # other
-    freq = 100.0
     z0 = h0
     z1 = h0 + h1
 
@@ -140,7 +136,6 @@ function two_layer_slope_test_dict_KRAKEN(;
     # bottom half-space
     αb = 0.0
     # other
-    freq = 100.0
     z0 = h0
     z1 = h0 + h1
     z2 = h0 + h1 + h2
@@ -190,8 +185,6 @@ function munk_test_dict_KRAKEN()
     cb = 1600.0
 
     # other
-    freq = 100.0
-    z0 = 0.0
     zvec = 0:100:5000
     cvec = c.(zvec)
 
