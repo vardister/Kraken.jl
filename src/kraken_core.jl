@@ -203,7 +203,7 @@ density(ρ::SampledDensity1D, z) = ρ.f(z)
 ### Functions that convert SSP information (similar to KRAKEN) to environment and problem structs
 function get_thickness(layers::Matrix{<:Real})
     a = vcat(0.0, layers[:, 3]...)
-    return a[2:end] - a[1:(end-1)]
+    return a[2:end] - a[1:(end - 1)]
 end
 
 """
@@ -306,7 +306,7 @@ end
 
 ### Bisection and Sturm's Sequence
 function moving_average!(vs, n)
-    vs[1:(end-n+1)] .= [sum(@view vs[i:(i+n-1)]) / n for i in 1:(length(vs)-(n-1))]
+    vs[1:(end - n + 1)] .= [sum(@view vs[i:(i + n - 1)]) / n for i in 1:(length(vs) - (n - 1))]
     return nothing
 end
 
@@ -339,17 +339,17 @@ function AcousticProblemCache(env::UnderwaterEnv, props::AcousticProblemProperti
         cn = soundspeed(env.c, zn)
         ρn = density(env.ρ, zn)
 
-        a_vec[(Ni[i]+1):Ni[i+1]] .= a_element(cn, ρn, props.freq, Δz)
-        e_vec[(Ni[i]+1):Ni[i+1]] .= e_element(ρn, Δz)
+        a_vec[(Ni[i] + 1):Ni[i + 1]] .= a_element(cn, ρn, props.freq, Δz)
+        e_vec[(Ni[i] + 1):Ni[i + 1]] .= e_element(ρn, Δz)
 
-        scaling_factor[(Ni[i]+1):Ni[i+1]] .= e_vec[(Ni[i]+1):Ni[i+1]] .* (Δz^2)
+        scaling_factor[(Ni[i] + 1):Ni[i + 1]] .= e_vec[(Ni[i] + 1):Ni[i + 1]] .* (Δz^2)
     end
     # Interface conditions between layers
     if length(props.zn_vec) > 1
         loc = 0
-        for i in 1:(length(props.zn_vec)-1)
+        for i in 1:(length(props.zn_vec) - 1)
             loc += props.Nz_vec[i]
-            a_vec[loc] = 0.5 * (a_vec[loc] + a_vec[loc+1])
+            a_vec[loc] = 0.5 * (a_vec[loc] + a_vec[loc + 1])
         end
     end
 
@@ -460,11 +460,11 @@ function bisection(env::UnderwaterEnv, props::AcousticProblemProperties, cache::
     k1 = kr_min
     k2 = kr_max
     if n_max > 1
-        for mm in 1:(n_max-1)
+        for mm in 1:(n_max - 1)
             # ii = 0
             if kLeft[mm] == kr_min
                 k2 = kRight[mm]
-                k1 = max(maximum(kLeft[(mm+1):end]), kr_min)
+                k1 = max(maximum(kLeft[(mm + 1):end]), kr_min)
 
                 for _ in 1:50
                     # ii += 1
@@ -477,8 +477,8 @@ function bisection(env::UnderwaterEnv, props::AcousticProblemProperties, cache::
                         kRight[mm] = kmid
                     else
                         k1 = kmid
-                        if kRight[Δn+1] >= kmid
-                            kRight[Δn+1] = kmid
+                        if kRight[Δn + 1] >= kmid
+                            kRight[Δn + 1] = kmid
                         end
                         if kLeft[Δn] <= kmid
                             kLeft[Δn] = kmid
@@ -493,7 +493,7 @@ function bisection(env::UnderwaterEnv, props::AcousticProblemProperties, cache::
             end
         end
     end
-    intervals = [kLeft[1:(end-1)] kRight[1:(end-1)]]
+    intervals = [kLeft[1:(end - 1)] kRight[1:(end - 1)]]
     if !isempty(intervals)
         # intervals[end, 1] += eps(kr_min) # to avoid solvers to get complex roots
         # intervals[1, 2] -= eps(kr_min) # to avoid solvers to get complex roots
@@ -559,7 +559,7 @@ function create_finite_diff_matrix!(kr, env, props, cache)
 
     # Update the diagonal elements
     cache.a_vec[end] = 0.5 * cache.a_vec[end] - kr^2 .* cache.λ_scaling[end] - g
-    @views cache.a_vec[1:(end-1)] .-= kr^2 .* cache.λ_scaling[1:(end-1)]
+    @views cache.a_vec[1:(end - 1)] .-= kr^2 .* cache.λ_scaling[1:(end - 1)]
 
     # The Tridiagonal matrix will automatically reflect these changes
     # since it's using views of the vectors
@@ -569,7 +569,7 @@ end
 function return_finite_diff_matrix!(kr, env, props, cache)
     g = get_g(kr, env, props)
     cache.a_vec[end] = 2 * (cache.a_vec[end] + kr^2 .* cache.λ_scaling[end] + g)
-    @views cache.a_vec[1:(end-1)] .+= kr^2 .* cache.λ_scaling[1:(end-1)]
+    @views cache.a_vec[1:(end - 1)] .+= kr^2 .* cache.λ_scaling[1:(end - 1)]
     # The Tridiagonal matrix will automatically reflect these changes
     # since it's using views of the vectors
     return nothing
@@ -580,7 +580,9 @@ end
 
 Performs inverse iteration to find the corresponding modal depth function ψₘ for a given wavenumber kᵣ
 """
-function inverse_iteration(kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; reltol=0.01)
+function inverse_iteration(
+    kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; reltol=0.01
+)
     local kr_new, w0, w1, amp1, amp2
     zn = vcat(props.zn_vec...)
     ρn = density(env.ρ, zn)
@@ -612,8 +614,9 @@ function inverse_iteration(kr, env::UnderwaterEnv, props::AcousticProblemPropert
     return kr_new, w0
 end
 
-
-function inverse_iteration(kr_vec::Vector, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; kws...)
+function inverse_iteration(
+    kr_vec::Vector, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; kws...
+)
     # Initialize containers
     modes = zeros(eltype(kr_vec), length(cache.a_vec), length(kr_vec))
     kr_vec_new = similar(kr_vec)
@@ -626,7 +629,7 @@ function inverse_iteration(kr_vec::Vector, env::UnderwaterEnv, props::AcousticPr
 end
 
 ### Full KRAKEN solve with Richardson's Extrapolation
-h_extrap(h, Nh) = [h^pow for pow in 0:2:(2Nh-2)]
+h_extrap(h, Nh) = [h^pow for pow in 0:2:(2Nh - 2)]
 
 function richard_extrap(h_meshes, krs_meshes)
     sol = solve(LinearProblem(h_meshes, krs_meshes)).u
@@ -706,7 +709,6 @@ end
 function Base.show(io::IO, ρint::NormalModeSolution{T1,T2}) where {T1,T2}
     return print(io, "NormalModeSolution{", eltype(T1), "}(", length(ρint.kr), " modes)")
 end
-
 
 ### Helper functions
 function relative_error(v1, v2)
