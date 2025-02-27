@@ -32,7 +32,7 @@ struct SampledSSP1D{T1,T2,T3} <: SampledSSP
     c::Vector{T2}
     f::T3
     function SampledSSP1D(depth, c, f)
-        interp = f(c, depth; extrapolate=true)
+        interp = f(c, depth; extrapolation=ExtrapolationType.Constant)
         return new{eltype(depth),eltype(c),typeof(interp)}(-depth, c, interp)
     end
 end
@@ -67,7 +67,7 @@ struct SampledDensity1D{T1,T2,T3} <: SampledDensity
     f::T3
     # Constructor for Type inputs
     function SampledDensity1D(depth, ρ, f)
-        interp = f(ρ, depth; extrapolate=true)
+        interp = f(ρ, depth; extrapolation=ExtrapolationType.Constant)
         return new{eltype(depth),eltype(ρ),typeof(interp)}(-depth, ρ, interp)
     end
 end
@@ -220,7 +220,6 @@ This process is dependent on the frequency `f`.
 """
 function get_Nz_vec(env::UnderwaterEnv, freq; n_per_wavelength=20, factor=1)
     ω = 2π * freq
-    # @infiltrate
     @assert ω >= 0 "Frequency must be non-negative"
     @assert maxsoundspeed(env.c) < env.cb
     kr_max = ω / env.cb  # here we assume the bottom half-space sound speed is highest
@@ -280,7 +279,6 @@ Get the properties of the acoustic problem based on the underwater environment `
 function AcousticProblemProperties(env::UnderwaterEnv, freq; factor::Int=1, n_per_wavelength=20)
     if freq isa Int
         freq = float(freq)
-        println("I did it!")
     end
     Nz_vec, Δz_vec = get_Nz_vec(env, freq; factor=factor, n_per_wavelength=n_per_wavelength)
     zn_vec = get_z_vec(env, Nz_vec, Δz_vec)
@@ -319,7 +317,7 @@ mutable struct AcousticProblemCache{T}
     a_vec::T
     e_vec::T
     λ_scaling::T
-    A::SymTridiagonal
+    A::Tridiagonal
 end
 
 """
@@ -358,7 +356,7 @@ function AcousticProblemCache(env::UnderwaterEnv, props::AcousticProblemProperti
     moving_average!(scaling_factor, 2)
     scaling_factor[end] = e_vec[end] * props.Δz_vec[end]^2 / 2
     # Construct the Tridiagonal matrix
-    A = SymTridiagonal(a_vec, e_vec[2:end])
+    A = Tridiagonal(e_vec[2:end], a_vec, e_vec[2:end])
     return AcousticProblemCache(a_vec, e_vec, scaling_factor, A)
 end
 
