@@ -1,4 +1,4 @@
-module KRAKEN
+module Kraken
 
 ### New Julia implementation
 include("kraken_core.jl")
