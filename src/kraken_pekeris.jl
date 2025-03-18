@@ -1,7 +1,7 @@
 using NonlinearSolve
 using UnPack
 using StaticArrays
-using Infiltrator
+# using Infiltrator
 using DocStringExtensions
 using Roots
 import NaNMath as nm

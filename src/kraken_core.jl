@@ -12,7 +12,7 @@ import NaNMath as nm
 using DocStringExtensions
 
 ## Debugging
-using Infiltrator
+# using Infiltrator
 
 # Exports
 export SampledSSP, SampledDensity
