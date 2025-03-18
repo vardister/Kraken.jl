@@ -28,7 +28,7 @@ abstract type KRAKENEnv end
 ###########################################################################################
 
 """
-`env = Env(ssp, sspHS, bottom, z_krak, z_source; n_layers=2, note1="NVW", note2="A", bsig=0, z_step=1.0)`
+`env = Env(ssp, layers, sspHS, z_krak, z_source; n_layers=2, note1="NVW", note2="A", bsig=0, z_step=1.0)`
 
 Creates an underwater environment in the form of a sound speed profile (`ssp`), a
 half-space sound speed profile (`sspHS`), and a bottom profile (`bottom`).
@@ -37,10 +37,10 @@ The environment is used to compute the propagation of sound waves using KRAKEN.
 
 Required arguments:
 - `ssp`: sound speed profile
+- `layers`: bottom profile
 - `sspHS`: half-space sound speed profile
-- `b`: bottom profile
-- `n_krak`: number of receivers
 - `z_krak`: depth of receivers
+- `z_source`: depth of source
 
 
 Optional keywords:

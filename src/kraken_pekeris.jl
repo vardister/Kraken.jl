@@ -3,9 +3,10 @@ using UnPack
 using StaticArrays
 using Infiltrator
 using DocStringExtensions
+using Roots
 import NaNMath as nm
 
-export PekerisUnderwaterEnv, find_kr, get_modal_function, pressure_f, find_spans
+export PekerisUnderwaterEnv, find_kr, get_modal_function, pressure_f, find_spans, get_modal_function_values
 
 """
 	PekerisUnderwaterEnv
@@ -43,7 +44,7 @@ struct PekerisUnderwaterEnv{T1<:Real,T2<:Real,T3<:Real,T4<:Real,T5<:Real}
 end
 
 """
-    find_kr(env, freq, p; n_points = 5_000, method = NewtonRaphson())
+    find_kr(env, freq, p; n_points = 5_000, method = A42())
 
     Find the horizontal wavenumbers for the Pekeris model.
 
@@ -57,25 +58,31 @@ end
     # Returns
     - `Vector{Real}`: The horizontal wavenumbers.
 """
-function find_kr(env::PekerisUnderwaterEnv, f; n_points=2_000, method=NewtonRaphson())
+function find_kr(env::PekerisUnderwaterEnv, f; n_points=2_000, method=Roots.A42(), kwargs...)
+    T = promote_type(typeof(env.c1), typeof(env.cb), typeof(env.ρ1), typeof(env.ρb), typeof(env.depth), typeof(f))
+    f = convert(T, f)
     ω = 2π * f
     kr_min, kr_max = extrema([ω / env.c1, ω / env.cb])
     p = SA[env.c1, env.cb, env.ρ1, env.ρb, env.depth]
-    function func(kr, p)
+    function func(kr)
         @. nm.tan(nm.sqrt((ω / env.c1)^2 - kr^2) * env.depth) +
             (env.ρb / env.ρ1) * nm.sqrt((ω / env.c1)^2 - kr^2) / nm.sqrt(kr^2 - (ω / env.cb)^2)
     end
 
     kr_try = range(kr_min + eps(kr_min), kr_max - eps(kr_min); length=n_points)
-    kr0 = collect(find_spans(func, kr_try, p))
+    kr0 = collect(find_spans(func, kr_try))
     # kr0 = [0.39380573744004627, 0.4028554311353545, 0.40996684021864305, 0.4149566134428289, 0.41790332991380486]
     # @show kr0
     if isempty(kr0)
         return Vector{eltype(kr_min)}()
     end
-    prob = NonlinearProblem{false}(func, kr0, p)
-    sol = solve(prob, method)
-    return reverse(sol.u)
+
+    # prob = NonlinearProblem{false}(func, kr0, p)
+    sol = zeros(eltype(f), length(kr0))
+    for i in eachindex(kr0)
+        sol[i] = find_zero(kr -> func(kr), kr0[i], method; kwargs...)
+    end
+    return reverse(sol)
 end
 
 """
@@ -91,12 +98,12 @@ end
     # Returns
     - `Vector{eltype(x)}`: The spans.
 """
-function find_spans(func, x, p)
-    idxes = [i for i in 1:(length(x) - 1) if (func(x[i], p) > 0 && func(x[i + 1], p) < 0)]
+function find_spans(func, x)
+    idxes = [i for i in 1:(length(x) - 1) if (func(x[i]) > 0 && func(x[i + 1]) < 0)]
     if isempty(idxes)
-        return Vector{eltype(p)}()
+        return Vector{eltype(x)}()
     end
-    return (mean((x[i], x[i + 1])) for i in idxes)
+    return ((x[i], x[i + 1]) for i in idxes)
 end
 
 """
@@ -136,7 +143,7 @@ end
     - `Vector{Real}`: The modal function at the receiver depth.
     - `Vector{Real}`: The modal function at the source depth.
 """
-function get_modal_function(env, krs, freq, zr, zs)
+function get_modal_function_values(env, krs, freq, zr, zs)
     @unpack c1, cb, ρ1, ρb, depth = env
     ω = 2π * freq
     kzw = sqrt.((ω / c1)^2 .- krs .^ 2) # vertical wavenumber in the water column
@@ -155,6 +162,27 @@ function get_modal_function(env, krs, freq, zr, zs)
     modes_zr = [Ψ(zr, mode) for mode in eachindex(krs)]
     modes_zs = [Ψ(zs, mode) for mode in eachindex(krs)]
     return modes_zr, modes_zs
+end
+
+
+
+function get_modal_function(env, krs, freq)
+    @unpack c1, cb, ρ1, ρb, depth = env
+    ω = 2π * freq
+    kzw = sqrt.((ω / c1)^2 .- krs .^ 2) # vertical wavenumber in the water column
+    kzb = sqrt.(krs .^ 2 .- (ω / cb)^2) # vertical wavenumber in the bottom half-space
+    # The amplitude `amplitude` of the modes
+    amplitude =
+        sqrt.(
+            (4 .* kzb .* kzw .* ρ1 .* ρb) ./
+            (2 .* kzw .* ρ1 .* sin.(depth .* kzw) .^ 2 .- kzb .* ρb .* (-2 .* depth .* kzw .+ sin.(2 .* depth .* kzw)))
+        )
+    # The mode function
+    function Ψ(z, mode)
+        return amplitude[mode] * sin(kzw[mode] * z) * (z .<= depth) +
+               amplitude[mode] * sin(kzw[mode] * depth) * exp(-kzb[mode] * (z - depth)) * (z .> depth)
+    end
+    return Ψ
 end
 
 """

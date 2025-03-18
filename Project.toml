@@ -1,7 +1,7 @@
 name = "KRAKEN"
 uuid = "269dd85f-649c-4475-a373-cd87bf6afec3"
 authors = ["Ariel Vardi"]
-version = "1.2.0-DEV"
+version = "1.2.0"
 
 [deps]
 CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
