@@ -4,6 +4,7 @@ authors = ["Ariel Vardi"]
 version = "1.2.0"
 
 [deps]
+CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
 DSP = "717857b8-e6f2-59f4-9121-6e50c889abd2"
 DataInterpolations = "82cc6244-b520-54b8-b5a6-8a565e85f1d0"
 Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
@@ -28,6 +29,7 @@ Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 UnPack = "3a884ed6-31ef-47d7-9d2a-63182c4928ed"
 
 [compat]
+CairoMakie = "0.13.2"
 DSP = "0.8"
 DataInterpolations = "7"
 DocStringExtensions = "0.9.3"
