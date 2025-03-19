@@ -1,12 +1,12 @@
 using Test
-using KRAKEN
+using Kraken
 
 using ForwardDiff
 using Enzyme
 using SciMLSensitivity
 
-using Infiltrator
-using Cthulhu
+# using Infiltrator
+# using Cthulhu
 
 # test AD on the bisection method
 function test_ad_bisection(c0=1500.0 <: Real, cb=1600.0 <: Real)

@@ -1,4 +1,4 @@
-using KRAKEN
+using Kraken
 using Test
 
 
