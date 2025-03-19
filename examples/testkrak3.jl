@@ -1,4 +1,4 @@
-using KRAKEN
+using Kraken
 using CairoMakie
 
 frq = 150.0
@@ -112,7 +112,7 @@ rng = 5000000.0
 nsr = 1
 zsr = 500.0
 nrc = 500
-zrc = [0.0 5300.0]
+zrc = [0.0, 5300.0]
 
 b = [b1; b2]
 ssp = [ssp1; ssp2]
@@ -125,14 +125,12 @@ sspHS = [sspTHS; sspBHS]
 nz = nsr + nrc
 frq=vcat(10:1:30, 32:2:50, 55:5:100, 110:10:250)
 
-env = Env(
-    ssp = ssp,
-    b = b,
-    sspHS = sspHS,
-    n_krak = nrc,
-    z_krak = zrc,
-    z_sr = zsr,
-    n_sr = nsr,
+env = EnvKRAKEN(
+    ssp,
+    b,
+    sspHS,
+    zrc,
+    zsr,
 )
 
 CP=zeros(nm, length(frq))
@@ -145,7 +143,7 @@ for (i, ff) in enumerate(frq)
 end
 
 #%% Plot group and phase speeds
-f = Figure()
+f = Figure();
 ax1 = Axis(f[1, 1], xlabel = "Frequency (Hz)", ylabel = "Phase Speed (m/s)", title = "Phase Speed")
 series!(ax1, frq, CP, color = :tab20)
 ax2 = Axis(f[1, 2], xlabel = "Frequency (Hz)", ylabel = "Group Speed (m/s)", title = "Group Speed")

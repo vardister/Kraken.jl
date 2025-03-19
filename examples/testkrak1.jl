@@ -1,5 +1,4 @@
-include("../src/KRAKEN.jl")
-using .KRAKEN
+using Kraken
 using CairoMakie
 
 frq = 15.0
@@ -125,30 +124,18 @@ sspHS = [sspTHS; sspBHS]
 
 nz = nsr + nrc
 
-env_temp = EnvKRAKEN(
-    ssp,
-    b,
-    sspHS,
-    zrc,
-    zsr,
-)
+env = EnvKRAKEN(ssp, b, sspHS, zrc, zsr)
 
-res = kraken(env_temp, frq; n_modes = nm)
-
+res = kraken(env, frq; n_modes=nm)
 
 f = Figure();
 
-ax1 = Axis(
-    f[1, 1],
-    xlabel = "Sound Speed (m/s)",
-    ylabel = "Depth (km)",
-    title = "Sound Speed Profile",
-)
+ax1 = Axis(f[1, 1]; xlabel="Sound Speed (m/s)", ylabel="Depth (km)", title="Sound Speed Profile")
 lines!(ax1, ssp[:, 2], -ssp[:, 1] / 1000)
 
-ax2 = Axis(f[1, 2], xlabel = "Mode Amplitude ϕ", title = "Modes")
+ax2 = Axis(f[1, 2]; xlabel="Mode Amplitude ϕ", title="Modes")
 for (i, mode) in enumerate(eachcol(res["modes"]))
-    lines!(ax2, mode, vec(-res["zm"] / 1000), label = "mode $i")
+    lines!(ax2, mode, vec(-res["zm"] / 1000); label="mode $i")
 end
-axislegend(ax2; position = :rb)
+axislegend(ax2; position=:rb)
 display(f)

@@ -1,4 +1,4 @@
-using KRAKEN
+using Kraken
 using CairoMakie
 
 frq = 150.0
@@ -113,7 +113,7 @@ rng = 5000000.0
 nsr = 1
 zsr = 500.0
 nrc = 500
-zrc = [0.0 1300.0]
+zrc = [0.0, 1300.0]
 
 b = [b1; b2]
 ssp = [ssp1; ssp2]
@@ -125,20 +125,18 @@ sspHS = [sspTHS; sspBHS]
 
 nz = nsr + nrc
 
-env = Env(
-    ssp = ssp,
-    b = b,
-    sspHS = sspHS,
-    n_krak = nrc,
-    z_krak = zrc,
-    z_sr = zsr,
-    n_sr = nsr,
+env = EnvKRAKEN(
+    ssp,
+    b,
+    sspHS,
+    zrc,
+    zsr,
 )
 
 res = kraken(env, frq; n_modes = nm)
 
 
-f = Figure()
+f = Figure();
 
 ax1 = Axis(
     f[1, 1],

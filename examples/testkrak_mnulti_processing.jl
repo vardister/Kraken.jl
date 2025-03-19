@@ -3,7 +3,8 @@ Same as testkrak1.jl but with multi-threading enabled. This is a test to see if 
 """
 
 using Distributed # to get `pmap` and `@everywhere`
-@everywhere using KRAKEN
+addprocs(4) # Add 4 processes
+@everywhere using Kraken
 
 
 using CairoMakie
@@ -19,16 +20,14 @@ ssp, b, sspHS = env_builder(hw=hw)
 nsr = 1
 zsr = 18.0
 nrc = 70
-zrc = [0.0 hw]
+zrc = [0.0, hw]
 
-env_temp = Env(
-    ssp = ssp,
-    b = b,
-    sspHS = sspHS,
-    n_krak = nrc,
-    z_krak = zrc,
-    z_sr = zsr,
-    n_sr = nsr,
+env_temp = EnvKRAKEN(
+    ssp,
+    b,
+    sspHS,
+    zrc,
+    zsr,
 )
 
 return kraken(env_temp, freq; n_modes=nm)

@@ -1,4 +1,4 @@
-using KRAKEN
+using Kraken
 using CairoMakie
 
 frq=3:100
@@ -17,7 +17,7 @@ rng = 5000.0
 nsr = 1
 zsr = 1.0
 nrc = 101
-zrc = [0.0 100.0]
+zrc = [0.0, 100.0]
 
 b = b1
 ssp = ssp1
@@ -29,15 +29,12 @@ sspHS = [sspTHS; sspBHS]
 
 nz = nsr + nrc
 
-env = Env(
-    ssp = ssp,
-    b = b,
-    sspHS = sspHS,
-    n_krak = nrc,
-    z_krak = zrc,
-    z_sr = zsr,
-    n_sr = nsr,
-    n_layers = nl
+env = EnvKRAKEN(
+    ssp,
+    b,
+    sspHS,
+    zrc,
+    zsr,
 )
 
 #%% Run KRAKEN
@@ -62,7 +59,7 @@ end
 CP[CP .== 0] .= NaN
 CG[CG .== 0] .= NaN
 
-f = Figure()
+f = Figure();
 ax1 = Axis(f[1, 1], xlabel = "Frequency (m/s)", ylabel = "Phase Speed (m/s)")
 series!(ax1, frq, CP; color=:tab20)
 ax2 = Axis(f[1, 2], ylabel = "Group Speed (m/s)", xlabel="Frequency (Hz)")

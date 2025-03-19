@@ -1,4 +1,4 @@
-using KRAKEN
+using Kraken
 using CairoMakie
 
 frq=3:100
@@ -19,8 +19,8 @@ clh = [0.0 1600.0]
 rng = 5000000.0
 nsr = 1
 zsr = 1.0
-nrc = 120
-zrc = [0.0 120.0]
+nrc = 121
+zrc = [0.0, 120.0]
 
 b = [b1; b2]
 ssp = [ssp1; ssp2]
@@ -32,16 +32,13 @@ sspHS = [sspTHS; sspBHS]
 
 nz = nsr + nrc
 
-env = Env(
-    ssp = ssp,
-    b = b,
-    sspHS = sspHS,
-    n_krak = nrc,
-    z_krak = zrc,
-    z_sr = zsr,
-    n_sr = nsr,
+env = EnvKRAKEN(
+    ssp,
+    b,
+    sspHS,
+    zrc,
+    zsr,
 )
-
 #%% Run KRAKEN
 Nz = nrc + 1 # the number of depth points
 CP = zeros(nm, length(frq))
@@ -64,7 +61,7 @@ end
 CP[CP .== 0] .= NaN
 CG[CG .== 0] .= NaN
 
-f = Figure()
+f = Figure();
 ax1 = Axis(f[1, 1], xlabel = "Frequency (m/s)", ylabel = "Phase Speed (m/s)")
 series!(ax1, frq, CP; color=:tab20)
 ax2 = Axis(f[1, 2], ylabel = "Group Speed (m/s)", xlabel="Frequency (Hz)")
