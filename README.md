@@ -54,21 +54,22 @@ _ForwardDiff.jl_ and differentiate directly.
 
 ```julia
 using ForwardDiff
-using kraken
+using Kraken
+using Roots
 
 # Load the environment
 ssp, layers, sspHS = pekeris_env() # Similar structure to environment files from the Acoustics Toolbox
 env = UnderwaterEnv(ssp, layers, sspHS)
 
-function group_speeds(env, freq)
-    sol = kraken_jl(env, freq)
-    wavenumbers = sol.kr
-    group_speeds = ForwardDiff.derivative(freq -> kraken_jl(env, freq).kr, freq)
-    return group_speeds
+function calculate_kr(env, freq)
+    props = AcousticProblemProperties(env, freq)
+    cache = AcousticProblemCache(env, props)
+    wavenumbers = find_kr(env, props, cache; method=Roots.A42())
+    return wavenumbers
 end
 
 freq = 100.0
-cg = group_speeds(env, freq)
+group_speeds = ForwardDiff.derivative(freq -> find_kr(env, freq), freq)
 ```
 
 
