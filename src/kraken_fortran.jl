@@ -33,7 +33,7 @@ abstract type KRAKENEnv end
 Creates an underwater environment in the form of a sound speed profile (`ssp`), a
 half-space sound speed profile (`sspHS`), and a bottom profile (`bottom`).
 
-The environment is used to compute the propagation of sound waves using KRAKEN.
+The environment is used to compute the propagation of sound waves using Kraken.
 
 Required arguments:
 - `ssp`: sound speed profile

@@ -543,17 +543,7 @@ function integral_trapz(y, x)
     return solve(problem, method).u
 end
 
-# function create_finite_diff_matrix!(kr, env, props, cache)
-#     # λ = kr^2 .* cache.λ_scaling
-#     g = get_g(kr, env, props)
-#     # Update `a_vec` and `e_vec` in-place
-#     cache.a_vec[end] = 0.5 * cache.a_vec[end] - kr^2 .* cache.λ_scaling[end] - g
-#     # cache.a_vec[1:end-1] .-= kr^2 .* cache.λ_scaling[1:end-1]
-# 	@views cache.a_vec[1:end-1] .-= kr^2 .* cache.λ_scaling[1:end-1]
-#     # Construct the Tridiagonal matrix as a view of the data in `cache`
-#     A = SymTridiagonal(cache.a_vec[1:end], cache.e_vec[2:end])
-#     return A
-# end
+
 function create_finite_diff_matrix!(kr, env, props, cache)
     g = get_g(kr, env, props)
 
