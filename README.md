@@ -47,6 +47,31 @@ wavenumbers = sol.kr
 zn = vcat(sol.props.zn_vec...)
 ```
 
+### Calculating group speeds
+Group speeds are defined as the derivative of the wavenumbers $k_{r,m} with respect to the angular frequency $\omega$.
+As such, to calculate the group speeds using Kraken.jl we make use of automatic differentiation capabilities using
+_ForwardDiff.jl_ and differentiate directly.
+
+```julia
+using ForwardDiff
+using kraken
+
+# Load the environment
+ssp, layers, sspHS = pekeris_test_dict_KRAKEN() # Similar structure to environment files from the Acoustics Toolbox
+env = UnderwaterEnv(ssp, layers, sspHS)
+
+function group_speeds(env, freq)
+    sol = kraken_jl(env, freq)
+    wavenumbers = sol.kr
+    group_speeds = ForwardDiff.derivative(freq -> kraken_jl(env, freq).kr, freq)
+    return group_speeds
+end
+
+freq = 100.0
+cg = group_speeds(env, freq)
+```
+
+
 ## More examples
 More examples can be accessed in the `examples` folder.
 
