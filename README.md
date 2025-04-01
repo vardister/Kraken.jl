@@ -61,7 +61,9 @@ using Roots
 ssp, layers, sspHS = pekeris_env() # Similar structure to environment files from the Acoustics Toolbox
 env = UnderwaterEnv(ssp, layers, sspHS)
 
-function calculate_kr(env, freq)
+function calculate_kr_pekeris(freq)
+    ssp, layers, sspHS = pekeris_env() # Similar structure to environment files from the Acoustics Toolbox
+    env = UnderwaterEnv(ssp, layers, sspHS)
     props = AcousticProblemProperties(env, freq)
     cache = AcousticProblemCache(env, props)
     wavenumbers = find_kr(env, props, cache; method=Roots.A42())
@@ -69,7 +71,7 @@ function calculate_kr(env, freq)
 end
 
 freq = 100.0
-group_speeds = ForwardDiff.derivative(freq -> find_kr(env, freq), freq)
+group_speeds = ForwardDiff.derivative(calculate_kr_pekeris, freq)
 ```
 
 
