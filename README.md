@@ -34,7 +34,7 @@ Pkg.add("Kraken")
 using Kraken
 
 # Load the environment
-ssp, layers, sspHS = pekeris_test_dict_KRAKEN() # Similar structure to environment files from the Acoustics Toolbox
+ssp, layers, sspHS = pekeris_env() # Similar structure to environment files from the Acoustics Toolbox
 env = UnderwaterEnv(ssp, layers, sspHS)
 
 # Run the simulation
@@ -57,7 +57,7 @@ using ForwardDiff
 using kraken
 
 # Load the environment
-ssp, layers, sspHS = pekeris_test_dict_KRAKEN() # Similar structure to environment files from the Acoustics Toolbox
+ssp, layers, sspHS = pekeris_env() # Similar structure to environment files from the Acoustics Toolbox
 env = UnderwaterEnv(ssp, layers, sspHS)
 
 function group_speeds(env, freq)
