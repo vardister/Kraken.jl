@@ -57,9 +57,6 @@ using ForwardDiff
 using Kraken
 using Roots
 
-# Load the environment
-ssp, layers, sspHS = pekeris_env() # Similar structure to environment files from the Acoustics Toolbox
-env = UnderwaterEnv(ssp, layers, sspHS)
 
 function calculate_kr_pekeris(freq)
     ssp, layers, sspHS = pekeris_env() # Similar structure to environment files from the Acoustics Toolbox
