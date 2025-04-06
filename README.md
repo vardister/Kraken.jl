@@ -50,7 +50,7 @@ zn = vcat(sol.props.zn_vec...)
 ### Calculating group speeds
 Group speeds are defined as the derivative of the angular frequency $\omega = 2\pi f$ with respect to the wavenumbers $k_{r,m}$. This is written as
 
-$$ c_g = \omega/k_{r,m} $$
+$$ c_g = \frac{\partial \omega}{\partial k_{r,m}} $$
 
 As such, to calculate the group speeds using Kraken.jl we make use of automatic differentiation capabilities using
 _ForwardDiff.jl_ and differentiate directly.
