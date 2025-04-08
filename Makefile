@@ -1,7 +1,7 @@
 PROG = kraken
 
-OBJDIR = src_fortran/obj
-MODDIR = src_fortran/mod
+OBJDIR = src_fortran
+MODDIR = src_fortran
 SRCDIR = src_fortran/source
 FC=gfortran
 
