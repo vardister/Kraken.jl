@@ -1,10 +1,3 @@
-# Date: 2024-12-24
-# Currently compiles on MacOS and Linux only.
-# Make sure to have `gfortran` installed.
-# Tested on:
-# Macbook Pro M2 with MacOS Sequoia
-# Ubuntu 24 LTS
-
 PROG = kraken
 
 OBJDIR = src_fortran/obj
@@ -60,17 +53,10 @@ $(PROG) : $(MOD) $(OBJ)
 	@echo "Building Kraken"
 	@echo " "
 	@echo " "
-	@echo "Detected platform: "
-ifeq ($(OS), Windows_NT)
-	@echo "Windows"
-	gfortran $(OBJ) -shared -o ./src/kraken.dll
-else
-	@echo $(shell uname)
-	@echo "Building shared library for KRAKEN"
-    ifeq ($(shell uname), Linux)
-        gfortran $(OBJ) -shared -o ./src/kraken.so
-    else ifeq ($(shell uname), Darwin)
-        gfortran $(OBJ) -shared -o ./src/kraken.dylib
-    endif
+
+ifeq ($(shell uname), Linux)
+	gfortran $(OBJ) -shared -o ./src/kraken.so
+else ifeq ($(shell uname), Darwin)
+	gfortran $(OBJ) -shared -o ./src/kraken.dylib
 endif
 	make clean
