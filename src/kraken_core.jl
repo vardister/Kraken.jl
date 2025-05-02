@@ -2,6 +2,7 @@
 using LinearAlgebra
 using Statistics
 using Roots
+using NonlinearSolve
 using LinearSolve
 using UnPack
 using Integrals
@@ -317,7 +318,6 @@ mutable struct AcousticProblemCache{T}
     a_vec::T
     e_vec::T
     λ_scaling::T
-    A::Tridiagonal
 end
 
 """
@@ -355,9 +355,7 @@ function AcousticProblemCache(env::UnderwaterEnv, props::AcousticProblemProperti
 
     moving_average!(scaling_factor, 2)
     scaling_factor[end] = e_vec[end] * props.Δz_vec[end]^2 / 2
-    # Construct the Tridiagonal matrix
-    A = Tridiagonal(e_vec[2:end], a_vec, e_vec[2:end])
-    return AcousticProblemCache(a_vec, e_vec, scaling_factor, A)
+    return AcousticProblemCache(a_vec, e_vec, scaling_factor)
 end
 
 function Base.show(io::IO, ::AcousticProblemCache{T}) where {T}
@@ -527,12 +525,13 @@ end
 """
 Solve for the roots of the acoustic problem.
 """
-function solve_for_kr(span, env, props, cache; method=Roots.A42(), kwargs...)
-    function f(u, p=nothing)
+function solve_for_kr(span, env, props, cache; method=ITP(), kwargs...)
+    function f(u, p)
         return first(det_sturm(u, env, props, cache))
     end
-    sol = find_zero(f, span, method)
-    return sol
+    prob = IntervalNonlinearProblem{false}(f, span)
+    sol = solve(prob, method; kwargs...)
+    return sol.u
 end
 
 ### Inverse Iteration
@@ -549,7 +548,7 @@ function create_finite_diff_matrix!(kr, env, props, cache)
 
     # Update the diagonal elements
     cache.a_vec[end] = 0.5 * cache.a_vec[end] - kr^2 .* cache.λ_scaling[end] - g
-    @views cache.a_vec[1:(end - 1)] .-= kr^2 .* cache.λ_scaling[1:(end - 1)]
+    cache.a_vec[1:(end - 1)] .-= kr^2 .* cache.λ_scaling[1:(end - 1)]
 
     # The Tridiagonal matrix will automatically reflect these changes
     # since it's using views of the vectors
@@ -559,7 +558,7 @@ end
 function return_finite_diff_matrix!(kr, env, props, cache)
     g = get_g(kr, env, props)
     cache.a_vec[end] = 2 * (cache.a_vec[end] + kr^2 .* cache.λ_scaling[end] + g)
-    @views cache.a_vec[1:(end - 1)] .+= kr^2 .* cache.λ_scaling[1:(end - 1)]
+    cache.a_vec[1:(end - 1)] .+= kr^2 .* cache.λ_scaling[1:(end - 1)]
     # The Tridiagonal matrix will automatically reflect these changes
     # since it's using views of the vectors
     return nothing
@@ -571,7 +570,7 @@ end
 Performs inverse iteration to find the corresponding modal depth function ψₘ for a given wavenumber kᵣ
 """
 function inverse_iteration(
-    kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; reltol=0.01
+    kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; reltol=0.01, dense=true
 )
     local kr_new, w0, w1, amp1, amp2
     zn = vcat(props.zn_vec...)
@@ -584,8 +583,14 @@ function inverse_iteration(
     kr_try = kr - 1e3 * eps(kr)
     create_finite_diff_matrix!(kr_try, env, props, cache) # Generate the tridigonal finite-diff matrix with the new kr
     # Inversete iteration
-    for ii in 1:50 # We typically don't need more than 50 iterations
-        w1 .= cache.A \ w0
+    if dense == true
+        A = Array(Tridiagonal(cache.e_vec[2:end], cache.a_vec, cache.e_vec[2:end]))
+    else
+        A = Tridiagonal(cache.e_vec[2:end], cache.a_vec, cache.e_vec[2:end])
+    end
+
+    for _ in 1:50 # We typically don't need more than 50 iterations
+        w1 .= A \ w0
         m = argmax(abs.(w1))
         kr_new = w0[m] / w1[m] + kr_try
         normalize!(w1)
