@@ -301,7 +301,7 @@ e_element(ρ, h) = @. 1 / (h * ρ)
 Get the value of `g` for the bottom half-space finite-difference element.
 """
 function get_g(kr, env::UnderwaterEnv, props::AcousticProblemProperties)
-    g = sqrt(kr^2 - (2pi * props.freq / env.cb)^2) / env.ρb
+    g = nm.sqrt(kr^2 - (2pi * props.freq / env.cb)^2) / env.ρb
     return g
 end
 
@@ -525,13 +525,23 @@ end
 """
 Solve for the roots of the acoustic problem.
 """
-function solve_for_kr(span, env, props, cache; method=ITP(), kwargs...)
+# function solve_for_kr(span, env, props, cache; method=ITP(), kwargs...)
+#     function f(u, p)
+#         return first(det_sturm(u, env, props, cache))
+#     end
+#     prob = IntervalNonlinearProblem{false}(f, span)
+#     sol = solve(prob, method; kwargs...)
+#     return sol.u
+# end
+
+function solve_for_kr(span, env, props, cache; method=SimpleTrustRegion(), kwargs...)
     function f(u, p)
-        return first(det_sturm(u, env, props, cache))
+        return (first(det_sturm(u[1], env, props, cache)))
     end
-    prob = IntervalNonlinearProblem{false}(f, span)
+    u0 = ((span[1] + span[2]) / 2)
+    prob = NonlinearProblem{false}(f, u0)
     sol = solve(prob, method; kwargs...)
-    return sol.u
+    return sol.u[1]
 end
 
 ### Inverse Iteration
