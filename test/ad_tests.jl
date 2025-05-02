@@ -10,7 +10,7 @@ using SciMLSensitivity
 
 # test AD on the bisection method
 function test_ad_bisection(c0=1500.0 <: Real, cb=1600.0 <: Real)
-    ssp, layers, sspHS = pekeris_test_dict_KRAKEN(c0=c0, cb=cb)
+    ssp, layers, sspHS = pekeris_env(c0=c0, cb=cb)
     env = UnderwaterEnv(ssp, layers, sspHS)
     freq = 100.0
     props = AcousticProblemProperties(env, freq)
@@ -20,7 +20,7 @@ function test_ad_bisection(c0=1500.0 <: Real, cb=1600.0 <: Real)
 end
 
 function test_ad_bisection_inp(x)
-    ssp, layers, sspHS = pekeris_test_dict_KRAKEN(c0=x[1], cb=x[2])
+    ssp, layers, sspHS = pekeris_env(c0=x[1], cb=x[2])
     env = UnderwaterEnv(ssp, layers, sspHS)
     freq = 100.0
     props = AcousticProblemProperties(env, freq)
@@ -30,7 +30,7 @@ function test_ad_bisection_inp(x)
 end
 
 function test_ad_bisection_single(x)
-    ssp, layers, sspHS = pekeris_test_dict_KRAKEN(c0=x)
+    ssp, layers, sspHS = pekeris_env(c0=x)
     env = UnderwaterEnv(ssp, layers, sspHS)
     freq = 100.0
     props = AcousticProblemProperties(env, freq)
@@ -80,7 +80,7 @@ end
 
 ### Test AD on `find_kr` function (the hardest one)
 function test_ad_find_kr_inp(x)
-    ssp, layers, sspHS = pekeris_test_dict_KRAKEN(c0=x[1], cb=x[2])
+    ssp, layers, sspHS = pekeris_env(c0=x[1], cb=x[2])
     env = UnderwaterEnv(ssp, layers, sspHS)
     freq = 100.0
     props = AcousticProblemProperties(env, freq)
@@ -89,7 +89,7 @@ function test_ad_find_kr_inp(x)
 end
 
 function test_ad_find_kr_inp_single(x)
-    ssp, layers, sspHS = pekeris_test_dict_KRAKEN(c0=x)
+    ssp, layers, sspHS = pekeris_env(c0=x)
     env = UnderwaterEnv(ssp, layers, sspHS)
     freq = 100.0
     props = AcousticProblemProperties(env, freq)

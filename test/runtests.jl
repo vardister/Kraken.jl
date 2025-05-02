@@ -6,7 +6,7 @@ using Roots
 
 # Test the numerical implementation of Kraken in multiple scenarios
 @testset "kraken_core.jl" begin
-    ssp, layers, sspHS = pekeris_test_dict_KRAKEN()
+    ssp, layers, sspHS = pekeris_env()
     env = UnderwaterEnv(ssp, layers, sspHS)
     props = AcousticProblemProperties(env, 100.0)
     cache = AcousticProblemCache(env, props)
