@@ -5,14 +5,11 @@ using Roots
 using LinearSolve
 using UnPack
 using Integrals
-using DataInterpolations: LinearInterpolation, CubicSpline
+using DataInterpolations
 import NaNMath as nm
 
 ### Docs
 using DocStringExtensions
-
-## Debugging
-# using Infiltrator
 
 # Exports
 export SampledSSP, SampledDensity
@@ -46,11 +43,11 @@ Constructor for `SampledSSP1D`.
 	Create a sound speed profile based on measurements at discrete depths `z` in meters and sound speed `c` in m/s.
 	Two options for interpolation are available: `:linear` and `:smooth`.
 """
-SampledSSP(depth, c) = SampledSSP1D(depth, c, LinearInterpolation)
+SampledSSP(depth, c) = SampledSSP1D(depth, c, DataInterpolations.LinearInterpolation)
 SampledSSP(depth, c, type::Symbol) = SampledSSP1D(depth, c, type)
 
-function Base.show(io::IO, ρint::SampledSSP1D{T1,T2,T3}) where {T1,T2,T3}
-    return print(io, "SampledSSP1D{", T1, ",", T2, ",", ρint.type, "}(", length(ρint.z), " points)")
+function Base.show(io::IO, ssp::SampledSSP1D{T1,T2,T3}) where {T1,T2,T3}
+    return print(io, "SampledSSP1D{", T1, ",", T2, ",", ssp.f, "}(", length(ssp.z), " points)")
 end
 
 ### Density Profile
@@ -80,7 +77,7 @@ Constructor for `SampledDensity1D`.
 Create a density profile based on measurements at discrete depths `z` in meters and density `ρ` in kg/m³.
 Two options for interpolation are available: `:linear` and `:smooth`.
 """
-SampledDensity(depth, ρ) = SampledDensity1D(depth, ρ, LinearInterpolation)
+SampledDensity(depth, ρ) = SampledDensity1D(depth, ρ, DataInterpolations.LinearInterpolation)
 SampledDensity(depth, ρ, type::Symbol) = SampledDensity1D(depth, ρ, type)
 
 function Base.show(io::IO, ρint::SampledDensity1D{T1,T2,T3}) where {T1,T2,T3}
@@ -177,7 +174,7 @@ sea surface is the datum and z-axis points upwards.
 """
 function soundspeed end
 
-soundspeed(ssp::SampledSSP1D, z) = ssp.f(z)
+soundspeed(ssp::SampledSSP, z) = ssp.f(z)
 
 """
 	maxsoundspeed(ssp::SoundSpeedProfile)
@@ -186,7 +183,7 @@ Get the maximum sound speed from the sound speed profile.
 """
 function maxsoundspeed end
 
-maxsoundspeed(ssp::SampledSSP1D) = maximum(ssp.c)
+maxsoundspeed(ssp::SampledSSP) = maximum(ssp.c)
 
 """
 	density(ρ::DensityProfile, x, y, z)
