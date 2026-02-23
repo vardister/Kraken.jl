@@ -537,7 +537,6 @@ end
 """
 Solve for the roots of the acoustic problem.
 """
-<<<<<<< Updated upstream
 # function solve_for_kr(span, env, props, cache; method=ITP(), kwargs...)
 #     function f(u, p)
 #         return first(det_sturm(u, env, props, cache))
@@ -547,22 +546,12 @@ Solve for the roots of the acoustic problem.
 #     return sol.u
 # end
 
-function solve_for_kr(span, env, props, cache; method = SimpleNewtonRaphson(), kwargs...)
-  function f(u, p)
-    return (first(det_sturm(u[1], env, props, cache)))
-  end
-  u0 = ((span[1] + span[2]) / 2)
-  prob = NonlinearProblem{false}(f, u0)
-  sol = solve(prob, method; kwargs...)
-  return sol.u[1]
-=======
 function solve_for_kr(span, env, props, cache; method=Roots.A42(), kwargs...)
     function f(u, p=nothing)
         return first(det_sturm(u, env, props, cache))
     end
     sol = find_zero(f, span, method; kwargs...)
     return sol
->>>>>>> Stashed changes
 end
 
 ### Inverse Iteration
