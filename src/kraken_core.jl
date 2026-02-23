@@ -528,7 +528,7 @@ function solve_for_kr(span, env, props, cache; method=Roots.A42(), kwargs...)
     function f(u, p=nothing)
         return first(det_sturm(u, env, props, cache))
     end
-    sol = find_zero(f, span, method)
+    sol = find_zero(f, span, method; kwargs...)
     return sol
 end
 
