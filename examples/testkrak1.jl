@@ -124,9 +124,8 @@ sspHS = [sspTHS; sspBHS]
 
 nz = nsr + nrc
 
-env = EnvKRAKEN(ssp, b, sspHS, zrc, zsr)
-
-res = kraken(env, frq; n_modes=nm)
+env = UnderwaterEnv(ssp, b, sspHS)
+res = kraken_jl(env, frq)
 
 f = Figure();
 
@@ -134,8 +133,8 @@ ax1 = Axis(f[1, 1]; xlabel="Sound Speed (m/s)", ylabel="Depth (km)", title="Soun
 lines!(ax1, ssp[:, 2], -ssp[:, 1] / 1000)
 
 ax2 = Axis(f[1, 2]; xlabel="Mode Amplitude ϕ", title="Modes")
-for (i, mode) in enumerate(eachcol(res["modes"]))
-    lines!(ax2, mode, vec(-res["zm"] / 1000); label="mode $i")
+for (i, mode) in enumerate(eachcol(res.modes[:, 1:5]))
+    lines!(ax2, mode, vec(-vcat(res.props.zn_vec...) / 1000); label="mode $i")
 end
 axislegend(ax2; position=:rb)
 display(f)
