@@ -506,7 +506,7 @@ end
 Find the roots of the acoustic problem.
 """
 function find_kr(
-    env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; method=Roots.A42(), kwargs...
+    env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; method=ITP(), kwargs...
 )
     kr_spans = bisection(env, props, cache)
     if isnothing(kr_spans)
@@ -524,12 +524,13 @@ end
 """
 Solve for the roots of the acoustic problem.
 """
-function solve_for_kr(span, env, props, cache; method=Roots.A42(), kwargs...)
-    function f(u, p=nothing)
+function solve_for_kr(span, env, props, cache; method=ITP(), kwargs...)
+    function f(u, p)
         return first(det_sturm(u, env, props, cache))
     end
-    sol = find_zero(f, span, method; kwargs...)
-    return sol
+    prob = IntervalNonlinearProblem{false}(f, span)
+    sol = solve(prob, method; kwargs...)
+    return sol.u
 end
 
 ### Inverse Iteration
@@ -623,7 +624,7 @@ function richard_extrap(h_meshes, krs_meshes)
     return sqrt(sol[1])
 end
 
-function kraken_jl(env, freq; n_meshes=5, rmax=10_000, method=A42(), dont_break=false, abstol=1e-6, reltol=1e-6)
+function kraken_jl(env, freq; n_meshes=5, rmax=10_000, method=ITP(), dont_break=false, abstol=1e-6, reltol=1e-6)
     # First mesh first
     local rich_krs
     # convert frequency to float if needed

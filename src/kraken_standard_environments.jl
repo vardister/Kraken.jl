@@ -1,7 +1,7 @@
 using NamedArrays
 
 
-export pekeris_test_dict_KRAKEN
+export pekeris_env
 export one_layer_test_dict_KRAKEN
 export one_layer_slope_test_dict_KRAKEN
 export two_layer_slope_test_dict_KRAKEN
@@ -9,7 +9,7 @@ export munk_test_dict_KRAKEN
 
 
 ### Standard Pekeris
-function pekeris_test_dict_KRAKEN(;c0::Real=1500.0, cb::Real=1600.0, ρ0::Real=1000.0, ρb::Real=1500.0, depth::Real=100.0)
+function pekeris_env(;c0::Real=1500.0, cb::Real=1600.0, ρ0::Real=1000.0, ρb::Real=1500.0, depth::Real=100.0)
     # Input validation
     # for (param_name, param_value) in zip([:c0, :cb, :ρ0, :ρb, :depth], [c0, cb, ρ0, ρb, depth])
     #     if !isfinite(param_value)
