@@ -152,7 +152,130 @@ const KR = KrakenReference
         end
     end
 
+    # Run `kraken.exe` (or `krakenc.exe`) on a checked-in .env and hand back the file root. Task
+    # 3.4 replaces this with the real runner; here it only needs to be enough to produce a .mod and
+    # a .prt to read. Note the .mod/.prt files were untracked in task 2.4 and are gitignored, so
+    # they are regenerated rather than read from the tree.
+    function run_checked_in_env(dir, name; complex=false, as=name)
+        cp(joinpath(@__DIR__, "standard_envs", name * ".env"), joinpath(dir, as * ".env"); force=true)
+        cmd = Cmd(`$(KR.kraken_cmd(; complex=complex)) $(as)`; dir=dir)
+        run(pipeline(ignorestatus(cmd); stdout=devnull, stderr=devnull))
+        return joinpath(dir, as)
+    end
+
     if KR.fortran_available()
+        @testset ".mod and .prt readers" begin
+            @testset "Pekeris_AV" begin
+                mktempdir() do dir
+                    root = run_checked_in_env(dir, "Pekeris_AV")
+                    modes = KR.read_mod_file(root * ".mod")
+                    grp = KR.read_grp(root * ".prt")
+
+                    # The two files describe the same solve, so they must agree on how many modes
+                    # there are and on what their wavenumbers are.
+                    @test modes.nmodes == 5
+                    @test length(grp.m) == modes.nmodes
+                    @test grp.m == 1:modes.nmodes
+                    @test real(modes.kᵣ[1]) ≈ 0.4179 atol = 1e-4
+                    @test modes.freq == 100.0
+                    @test modes.freqs == [100.0]
+
+                    # The .mod stores wavenumbers in single precision while the .prt prints ten
+                    # digits of the double-precision value, so they agree only to ~1e-7.
+                    @test maximum(abs.(real.(modes.kᵣ) .- real.(grp.kᵣ)) ./ abs.(real.(grp.kᵣ))) < 1e-6
+                    @test all(iszero, imag.(modes.kᵣ))   # no attenuation in this environment
+                    @test all(iszero, imag.(grp.kᵣ))
+
+                    # `depths` is zTab -- the union of the .env source and receiver depths, which
+                    # for this file is 100 receivers over 0..100 m plus one source at 25 m.
+                    @test length(modes.depths) == size(modes.ϕ, 1)
+                    @test modes.depths[1] == 0.0
+                    @test modes.depths[end] ≈ 100.0 atol = 1e-3
+                    @test issorted(modes.depths)
+
+                    # Pressure-release surface: every mode vanishes at z = 0.
+                    @test maximum(abs.(modes.ϕ[1, :])) < 1e-10
+                    @test all(>(0), maximum(abs.(modes.ϕ); dims=1))
+
+                    # Phase speeds are ω/kᵣ and must sit between the water and half-space speeds.
+                    @test grp.phase_speed ≈ 2π * 100.0 ./ real.(grp.kᵣ) rtol = 1e-6
+                    @test all(1500.0 .< grp.phase_speed .< 1600.0)
+                end
+            end
+
+            @testset "broadband record stepping" begin
+                mktempdir() do dir
+                    root = run_checked_in_env(dir, "Pekeris_AV_BroadBand")
+                    blocks = KR.read_grp_blocks(root * ".prt")
+                    @test [b.freq for b in blocks] == [50.0, 100.0, 200.0, 300.0, 500.0]
+
+                    counts = Int[]
+                    for b in blocks
+                        # Stepping to frequency i requires reading M for every block before it, so
+                        # a wrong stride shows up as a garbage mode count or a read past EOF.
+                        modes = KR.read_mod_file(root * ".mod"; freq=b.freq)
+                        @test modes.freq == b.freq
+                        @test modes.freqs == [50.0, 100.0, 200.0, 300.0, 500.0]
+                        @test modes.nmodes == length(b.m)
+                        @test maximum(abs.(real.(modes.kᵣ) .- real.(b.kᵣ)) ./ abs.(real.(b.kᵣ))) < 1e-6
+                        # The higher-frequency blocks carry a small non-zero alpha, and the .prt
+                        # prints it with G10.2 -- two significant digits. That, not the .mod, is
+                        # the limiting precision here; see MOD_WAVENUMBER_DIGITS.
+                        @test all(abs.(imag.(modes.kᵣ) .- imag.(b.kᵣ)) .<= 0.02 .* abs.(imag.(b.kᵣ)) .+ 1e-12)
+                        @test maximum(abs.(modes.ϕ[1, :])) < 1e-10
+                        push!(counts, modes.nmodes)
+                    end
+                    # More modes fit in the waveguide as the frequency rises.
+                    @test issorted(counts)
+                    @test counts == [2, 5, 10, 15, 24]
+                end
+            end
+
+            @testset "many modes: subsampled .prt table" begin
+                mktempdir() do dir
+                    root = joinpath(dir, "munk")
+                    KR.write_env_file(root, UnderwaterEnv(munk_env()...), 50.0)
+                    run(pipeline(ignorestatus(Cmd(`$(KR.kraken_cmd()) munk`; dir=dir)); stdout=devnull, stderr=devnull))
+                    modes = KR.read_mod_file(root * ".mod")
+                    grp = KR.read_grp(root * ".prt")
+
+                    # `DO mode = 1, M, MAX(1, M/30)` -- with ~100 modes the table lists every third
+                    # one, so the row count is far below the mode count and the indices matter.
+                    @test modes.nmodes > 30
+                    @test length(grp.m) < modes.nmodes
+                    @test grp.m[1] == 1
+                    @test allunique(grp.m)
+                    @test issorted(grp.m)
+                    @test last(grp.m) <= modes.nmodes
+                    @test allequal(diff(grp.m))
+                    @test first(diff(grp.m)) == max(1, modes.nmodes ÷ 30)
+                    # Indexing the .mod wavenumbers by the .prt's mode numbers must line them up.
+                    @test maximum(abs.(real.(modes.kᵣ[grp.m]) .- real.(grp.kᵣ)) ./ abs.(real.(grp.kᵣ))) < 1e-6
+                end
+            end
+
+            @testset "group speeds" begin
+                mktempdir() do dir
+                    # AcousticsToolbox_jll v2025.9's kraken.exe zeroes the Group Speed column while
+                    # getting everything else right; its krakenc.exe does not. Anything downstream
+                    # that needs group speeds has to know which binary it is talking to.
+                    plain = KR.read_grp(run_checked_in_env(dir, "Pekeris_AV") * ".prt")
+                    cplx = KR.read_grp(run_checked_in_env(dir, "Pekeris_AV"; complex=true, as="pek_c") * ".prt")
+
+                    @test KR.has_group_speeds(cplx)
+                    @test all(1400.0 .< cplx.v .< 1600.0)
+                    # Group speed is below phase speed in a waveguide with a positive-gradient bottom.
+                    @test all(cplx.v .< cplx.phase_speed)
+                    # Same solve either way: the wavenumbers agree even though VG does not.
+                    @test plain.kᵣ ≈ cplx.kᵣ rtol = 1e-9
+                    if !KR.has_group_speeds(plain)
+                        @info "kraken.exe ($(KR.binary_source())) reports no group speeds; " *
+                            "krakenc.exe does. Group-speed comparisons must use complex=true."
+                    end
+                end
+            end
+        end
+
         @testset "env writer accepted by kraken.exe" begin
             @testset "$(case.name)" for case in env_writer_cases
                 mktempdir() do dir

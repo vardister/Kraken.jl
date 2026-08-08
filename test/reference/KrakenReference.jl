@@ -28,7 +28,7 @@ module KrakenReference
 
 using AcousticsToolbox_jll
 
-export fortran_available, write_env_file
+export fortran_available, write_env_file, read_mod_file, read_grp
 
 """
 Name of the environment variable that overrides the jll binaries with a local Acoustics Toolbox
@@ -155,9 +155,9 @@ function describe()
 end
 
 include("env_writer.jl")
+include("mod_reader.jl")
 
-# Plan tasks 3.3-3.5 add these:
-# include("mod_reader.jl")
+# Plan tasks 3.4-3.5 add these:
 # include("runner.jl")
 # include("compare.jl")
 

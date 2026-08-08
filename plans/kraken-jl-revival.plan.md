@@ -166,6 +166,27 @@ These are facts established by running the code, not assumptions. Tasks below re
   water column — the same density KRAKEN picks for its own finite-difference mesh — capped at 2001
   points to bound the `.mod` record length.
 
+- **`AcousticsToolbox_jll` v2025.9's `kraken.exe` reports every group speed as `0.00000`**
+  (established during 3.3). Its wavenumbers and mode shapes are correct and agree digit for digit
+  with the 2023 OALIB build; only the `VG` column is lost. The *same jll's* `krakenc.exe` is fine,
+  and so is the local OALIB build of both binaries — so it is a regression in that one binary, not
+  a property of the format or the environment. Consequence: **any group-speed comparison must run
+  `complex=true` or point `KRAKEN_FORTRAN_BIN` at a local build.** `KrakenReference.has_group_speeds`
+  is the guard; without it this surfaces as a spurious "group speeds differ by 100%" in 3.5 and 4.6.
+  (`AcousticsToolbox.jl` carries the same workaround, so it is not specific to this repo.)
+
+- **Neither output file dominates the other on precision** (established during 3.3). The `.mod`
+  stores `CMPLX(k)` — single precision, ~7 digits on both parts. The `.prt` prints the same complex
+  number through `'( I5, G18.10, G10.2, … )'`, and a Fortran `COMPLEX` consumes two edit descriptors
+  — so `Re(kᵣ)` gets **10** digits but `alpha = Im(kᵣ)` gets **2**. Measured on the broadband Pekeris
+  case: agreement of 6e-8 on the real part, only ~4e-3 on the imaginary. So wavenumber comparisons
+  (3.5, 3.6) should prefer the `.prt`, while the attenuation work in Milestone 5 must read the `.mod`
+  — comparing Milestone 5's imaginary parts against the `.prt` would be measuring the print format.
+
+- **The `.prt` group-speed table is subsampled** (established during 3.3). `kraken.f90` prints it
+  with `DO mode = 1, M, MAX( 1, M / 30 )`, so a 102-mode run lists 34 rows, every third mode. That is
+  why `read_grp` returns mode *indices* alongside values; `length(grp.m) < nmodes` is normal.
+
 - **The declared `julia = "1.10"` compat bound is real and enforced** (established during 2.6). It was
   not: `@views x[1:(end-1)] .-= y` is a syntax error on 1.10, so the package could not even load
   there. Fixed in `create_finite_diff_matrix!`/`return_finite_diff_matrix!` rather than raising the
@@ -510,7 +531,7 @@ the package's public surface. KrakenFortran.jl is not touched.
   `.env` files to within formatting differences.
 - **Dependencies:** 3.1
 
-### 3.3 [ ] Implement the `.mod` and `.prt` readers
+### 3.3 [x] Implement the `.mod` and `.prt` readers *(completed 2026-08-08)*
 - **Files:** `test/reference/mod_reader.jl`
 - **What:** Implement `read_mod_file` for the binary `.mod` format (record-length prefix, 80-char title,
   `nfreq`/`nmedia`/`ntot`/`nmat` header, depth array at record 4, mode count at record 5, complex mode shapes
@@ -520,6 +541,10 @@ the package's public surface. KrakenFortran.jl is not touched.
   text file — this is the reference for validating AD-computed group speeds in Milestone 4.
 - **Acceptance:** Reading the checked-in `test/standard_envs/Pekeris_AV.mod` yields the same number of modes
   and the same leading wavenumbers as the values in the companion `Pekeris_AV.prt`.
+  *Adjusted during 3.3:* task 2.4 untracked every `.mod`/`.prt` and `.gitignore` now excludes them, so there
+  is no checked-in `Pekeris_AV.mod` to read. The test runs `kraken.exe` on the checked-in
+  `Pekeris_AV.env` and asserts the same agreement between the `.mod` and `.prt` it produces — same
+  property, and it works on a fresh clone and in CI, which reading an untracked file would not.
 - **Dependencies:** 3.2
 
 ### 3.4 [ ] Implement the runner
