@@ -1,9 +1,10 @@
 name = "Kraken"
 uuid = "269dd85f-649c-4475-a373-cd87bf6afec3"
-authors = ["Ariel Vardi"]
 version = "0.2.2"
+authors = ["Ariel Vardi"]
 
 [deps]
+ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
 DataInterpolations = "82cc6244-b520-54b8-b5a6-8a565e85f1d0"
 DocStringExtensions = "ffbed154-4ef7-542d-bbb7-c09d3a79fcae"
 Integrals = "de52edbc-65ea-441a-8357-d3a637375a31"
@@ -23,11 +24,12 @@ Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
 KrakenMakieExt = "Makie"
 
 [compat]
-Makie = "0.24"
+ChainRulesCore = "1"
 DataInterpolations = "8"
 DocStringExtensions = "0.9.3"
 Integrals = "4.5.0"
 LinearSolve = "3"
+Makie = "0.24"
 NaNMath = "1.0.2"
 NonlinearSolve = "4.2.0"
 Roots = "2.2"

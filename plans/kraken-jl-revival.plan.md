@@ -286,6 +286,86 @@ These are facts established by running the code, not assumptions. Tasks below re
   machine into the repo). A `[sources]` entry in `test/Project.toml` would be the declarative fix
   but needs Pkg 1.11+; revisit when the `julia = "1.10"` bound is dropped.
 
+- **The rrule differentiates the Sturm recurrence analytically rather than by nesting ForwardDiff**
+  (decided during 4.2, revising this task's own instruction). Nested forward mode is right for
+  `D_kr` — one dual number — but not for `D_θ`, because inside the rule `θ` *is* the three
+  length-`N` cache vectors: that is the only route by which the sound-speed profile, the density
+  profile and the mesh spacing reach the determinant. Forward mode over them costs one sweep per
+  entry, O(N²) for an O(N) problem, which would defeat the entire point of reverse mode. The Sturm
+  sequence is a product of 2×2 transfer matrices, so its adjoint is a single backward sweep of the
+  same length as the forward one. `sturm_sensitivities` runs both sweeps in **1.3 µs against 11 µs
+  for the `solve_for_kr` it accompanies** (Pekeris, 100 Hz, N = 125) — a 12% surcharge on the solve.
+  All eight partial families (`a_vec`, `e_vec`, `λ_scaling`, `kr`, `cb`, `ρb`, `freq`, and `g`) were
+  checked against central differences and agree to ≤ 4e-8, and the rule's forward sweep reproduces
+  `det_sturm`'s determinant **bit for bit**, rescaling included — which is what makes them
+  derivatives of the same scalar.
+
+- **The mesh is only *half* discrete, and the half that is not carries the depth gradient**
+  (established during 4.2, correcting the seam note written in 4.1). That note put
+  `AcousticProblemProperties` behind the seam on the grounds that the mesh is piecewise constant in
+  the parameters. Only `Nz_vec` is: `Δz_vec = h_vec ./ Nz_vec` is *linear* in the layer thicknesses,
+  and `zn_vec` is built from it. Treating `props` as a constant silently drops the
+  discretization-error part of `∂kr/∂depth`, worth ~1e-5 relative — four orders above this task's
+  1e-9 acceptance, and invisible unless something is compared against it. `props` is therefore on
+  the seam and its construction must stay non-mutating.
+
+- **Making the seam traceable took three non-mutating rewrites and three declarations** (established
+  during 4.2). None of them changed a number; all of them were places where forward mode had been
+  perfectly happy. The rewrites: `get_Nz_vec`/`get_z_vec` filled preallocated arrays; `pekeris_env`
+  used `zeros(T, 2, 6)` plus `setindex!` where every one of its four sibling builders already used a
+  matrix literal — and its `promote_type` dance was never needed, since `hvcat` promotes to `Dual` on
+  its own; and `get_thickness` spelled its concatenation `vcat(0.0, layers[:, 3]...)`, whose splat
+  routes the whole thing through `Core._apply_iterate` and cannot be composed with the `getindex`
+  pullback feeding it. The declarations: `@non_differentiable n_mesh_points` (the `ceil` inside it is
+  an LLVM intrinsic; reverse mode errors on it instead of noticing that an `Int` carries no
+  derivative), `@non_differentiable maxsoundspeed` (nothing on the seam consumes its value — it feeds
+  an `@assert`, and its `maximum` pullback ends up being accumulated into the assertion's `Bool`),
+  and an `rrule` for `layer_mesh`, for the reason below.
+
+- **`range` had to keep its exact arithmetic, so the mesh got a rule instead of a rewrite**
+  (established during 4.2 — the one rewrite that had to be reverted). `collect(range(z_top, z_bot,
+  Nz))` builds a `StepRangeLen` whose fields are `Base.TwicePrecision`; reverse mode cannot construct
+  that, so the obvious move is to open-code the interpolation as a broadcast. Doing so shifts
+  interior mesh points by **up to 13 ulp** — 1.4e-14 in absolute terms — and that was enough to fail
+  `two_layer_slope` against `kraken.exe` at 25, 50, 100 and 200 Hz, plus the `twolayer_slope_AV`
+  reader case, against tolerances of 1e-4 and 1e-5. A clean-`HEAD` baseline run (948 pass, 0 fail)
+  was what established the failures were the change's and not pre-existing; it is worth keeping that
+  trick in mind, since `git worktree add` plus a copy of `test/Manifest.toml` (whose `Kraken` entry is
+  the relative `path = ".."`) gives a runnable baseline checkout in one command. The resolution is the
+  same pattern as the rest of this milestone: leave the primal alone and state the derivative, which
+  for a mesh is exactly linear interpolation between the endpoints. **The wider lesson is that the
+  Richardson extrapolation is far more sensitive to mesh coordinates than a 1e-4 tolerance suggests —
+  Milestones 6 and 7 should not assume ulp-level mesh changes are free.**
+
+- **`kraken_jl` typed its Richardson matrix off the wrong thing, and only `pekeris_env`'s
+  over-promotion hid it** (found during 4.2). `h_meshes = zeros(eltype(env.c.c), …)` stores powers of
+  `props.Δz_vec[1]`, which has nothing to do with the sound-speed vector's element type. It worked
+  only because `pekeris_env` built its `ssp` matrix through a `promote_type` that included `cb` and
+  `ρb` — parameters that appear nowhere in `ssp`. Removing that accidental over-promotion turned
+  `ForwardDiff.derivative(kr_vs_cb, 1600.0)` into a `MethodError: no method matching
+  Float64(::Dual)`, i.e. the existing forward-mode tests were relying on it. `h_meshes` is now typed
+  from `props.Δz_vec`, and `richard_extrap` promotes its two arguments to a common type rather than
+  handing a mixed-precision system to `LinearSolve`.
+
+- **ForwardDiff is not the more accurate reference for a wavenumber gradient** (established during
+  4.2, and it changes how 4.5 and 4.6 should be judged). At 250 Hz the two methods disagree by
+  **1.3%** on `∂kr₁/∂cb`, and central differences on the primal say the rule is right: 5.6e-6 from
+  the rule versus 1.3e-2 from ForwardDiff. The cause is that ForwardDiff differentiates the
+  arithmetic of the *last ITP iterate*, so its gradient inherits the root solver's truncation error,
+  while the implicit function theorem differentiates the exact root. Tightening `abstol`/`reltol` to
+  1e-10 pulls ForwardDiff to within 5e-6 of the rule; at 1e-14 it collapses (96% off, roundoff in the
+  iteration's derivative) while the rule's value is unchanged to 13 digits. Consequences: the rule is
+  **tolerance-independent and ForwardDiff is not**, so `FiniteDiff` — not ForwardDiff — is the
+  arbiter when the two differ; and this task's "matches ForwardDiff to 1e-9" is a statement about
+  ForwardDiff's convergence, met at 50 and 100 Hz for every mode, not a bound on the rule.
+
+- **Zygote's overhead is in `finite_difference_coefficients`, not in the rules** (measured during
+  4.2 — this is the number Milestone 4.7 has to move). A 5-parameter reverse gradient costs 1.1 ms
+  against a 22 µs primal solve at N = 125, while the rule itself is 12% of the solve. The tape is
+  spent on the coefficient assembly, and most of that on
+  `map(k -> k in interfaces ? ... : ..., eachindex(a_raw))` — O(N × n_layers) with a closure pullback
+  per element. The milestone's "~3× a forward solve" target is a statement about that function.
+
 - **The declared `julia = "1.10"` compat bound is real and enforced** (established during 2.6). It was
   not: `@views x[1:(end-1)] .-= y` is a syntax error on 1.10, so the package could not even load
   there. Fixed in `create_finite_diff_matrix!`/`return_finite_diff_matrix!` rather than raising the
@@ -754,8 +834,13 @@ Correctness is judged against `ForwardDiff` and `FiniteDiff`, not against Fortra
   callable standalone and its output matches the cache's fields exactly.
 - **Dependencies:** 3.8
 
-### 4.2 [ ] Implement the implicit-function-theorem rule for `solve_for_kr`
-- **Files:** `src/kraken_ad.jl` (new), `src/Kraken.jl`, `Project.toml`
+### 4.2 [x] Implement the implicit-function-theorem rule for `solve_for_kr` *(completed 2026-08-08)*
+- **Files:** `src/kraken_ad.jl` (new), `src/Kraken.jl`, `Project.toml` — plus, as it turned out,
+  `src/kraken_core.jl` and `src/kraken_standard_environments.jl` (the seam was not yet traceable:
+  four functions still mutated preallocated arrays or splatted, see the Architecture Decisions), and
+  `test/reverse_ad_tests.jl` + `test/Project.toml` + `test/runtests.jl` — the test file 4.5 was going
+  to create, brought forward so this task's acceptance is checked by something committed rather than
+  by a REPL session. 4.5 extends it with the other backends rather than creating it.
 - **What:** Add `ChainRulesCore` as a dependency and write an `rrule` for `solve_for_kr`. The root `kr*`
   satisfies `D(kr*, θ) = 0` where `D` is `det_sturm`'s determinant output, so `∂kr*/∂θ = -D_θ / D_kr`, both
   evaluated at the converged root. Obtain `D_kr` and `D_θ` with ForwardDiff on `det_sturm` — nesting
@@ -795,8 +880,9 @@ Correctness is judged against `ForwardDiff` and `FiniteDiff`, not against Fortra
 - **Dependencies:** 4.3
 
 ### 4.5 [ ] Multi-backend AD test suite
-- **Files:** create `test/reverse_ad_tests.jl`, edit `test/Project.toml`, `test/runtests.jl`
-- **What:** Add `Zygote`, `Mooncake`, `DifferentiationInterface`, and `ChainRulesTestUtils` to the test
+- **Files:** extend `test/reverse_ad_tests.jl` (created in 4.2, along with the `Zygote` entry in
+  `test/Project.toml` and the `include` in `test/runtests.jl`)
+- **What:** Add `Mooncake`, `DifferentiationInterface`, and `ChainRulesTestUtils` to the test
   environment. Test three targets — wavenumbers, mode shapes, and a scalar loss over both — across the
   Pekeris, one-layer, and Munk environments, comparing Zygote and Mooncake against ForwardDiff and FiniteDiff
   through a single `DifferentiationInterface` harness so backends are rows in a table rather than duplicated

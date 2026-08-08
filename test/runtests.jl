@@ -47,6 +47,7 @@ check_testing_this_checkout()
     # Include standard @testset-based tests
     include("numerical_methods_tests.jl")
     include("automatic_differentiation_tests.jl")
+    include("reverse_ad_tests.jl")
 
     # Cross-validation against unmodified kraken.exe from AcousticsToolbox_jll. Self-skipping when
     # no binary resolves, so this is safe to run unconditionally on any platform.

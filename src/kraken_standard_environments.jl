@@ -41,19 +41,21 @@ function pekeris_env(; c0::Real=1500.0, cb::Real=1600.0, ρ0::Real=1000.0, ρb::
     freq = 100.0
     z0 = depth
 
-    # Columns are [z, cp, cs, ρ, αp, αs] — the KRAKEN .env SSP record layout. Built through a
-    # promoted element type so ForwardDiff.Dual parameters survive into the environment.
-    T = promote_type(typeof(c0), typeof(cb), typeof(ρ0), typeof(ρb), typeof(depth))
-    ssp = zeros(T, 2, 6)
-    ssp[1, :] = [0.0 c0 0.0 ρ0 α0 0.0]
-    ssp[2, :] = [depth c0 0.0 ρ0 α0 0.0]
+    # Columns are [z, cp, cs, ρ, αp, αs] — the KRAKEN .env SSP record layout. Written as matrix
+    # literals, like every other builder in this file: `hvcat` already promotes the element type, so
+    # `ForwardDiff.Dual` parameters survive without an explicit `promote_type`, and there is no
+    # `setindex!` for reverse-mode AD to refuse to trace.
+    ssp = [
+        0.0 c0 0.0 ρ0 α0 0.0
+        depth c0 0.0 ρ0 α0 0.0
+    ]
 
     layers = [0.0 0.0 depth]
 
-    T2 = promote_type(typeof(depth), typeof(cb), typeof(ρb), typeof(αb))
-    sspHS = zeros(T2, 2, 6)
-    sspHS[1, :] = [0.0 343.0 0.0 0.00121 0.0 0.0]
-    sspHS[2, :] = [depth cb 0.0 ρb αb 0.0]
+    sspHS = [
+        0.0 343.0 0.0 0.00121 0.0 0.0
+        depth cb 0.0 ρb αb 0.0
+    ]
 
     # env_dict = Dict(:ssp => ssp, :layers => layers, :sspHS => sspHS, :freq => freq)
     return ssp, layers, sspHS

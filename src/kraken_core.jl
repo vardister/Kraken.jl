@@ -32,18 +32,22 @@ export finite_difference_coefficients
 #   * `finite_difference_coefficients`                     — the whole assembly `(env, props) -> (a, e, λ)`
 #   * `AcousticProblemCache(env, props)`                   — a thin wrapper over the above
 #   * `get_g`                                              — bottom half-space term, also used inside the rules
+#   * `get_Nz_vec`, `get_z_vec`, `AcousticProblemProperties` — the mesh; see the caveat below
 #   * `richard_extrap`, and the arithmetic in `kraken_jl` between the two seam calls
 #
 # BEHIND THE SEAM — never traced; free to mutate the cache, branch on values, and iterate:
-#   * `det_sturm`, `scale_const`                           — differentiated by the rule via ForwardDiff
+#   * `det_sturm`, `scale_const`                           — differentiated analytically by the rule
 #   * `bisection`                                          — integer mode counting, `@non_differentiable`
 #   * `solve_for_kr`                                       — rrule: implicit function theorem on `det_sturm`
 #   * `create_finite_diff_matrix!`, `return_finite_diff_matrix!` — in-place cache updates
 #   * `inverse_iteration`                                  — rrule: eigenvector adjoint
-#   * `get_Nz_vec`, `get_z_vec`, `AcousticProblemProperties` — mesh selection; discrete in the parameters
 #
-# The mesh is chosen from the environment but is piecewise constant in it, so `props` carries no
-# derivative information; `zn_vec` and `Δz_vec` are treated as constants by everything above.
+# The mesh is only *half* discrete, and getting that wrong loses a gradient silently. `Nz_vec` is an
+# integer point count and is genuinely piecewise constant in the parameters. But `Δz_vec = h ./ Nz_vec`
+# is linear in the layer thickness, and `zn_vec` is built from it — so both carry real derivative
+# information with respect to layer depths, and the discretization-error part of `∂kr/∂depth` flows
+# through them. `AcousticProblemProperties` is therefore *on* the seam and its construction must stay
+# non-mutating; only `Nz_vec` is treated as a constant.
 
 ### Main Types
 ### Sound Speed Profile
@@ -236,7 +240,11 @@ density(ρ::SampledDensity1D, z) = ρ.f(z)
 ### Finite Difference Scheme
 ### Functions that convert SSP information (similar to KRAKEN) to environment and problem structs
 function get_thickness(layers::Matrix{<:Real})
-    a = vcat(0.0, layers[:, 3]...)
+    # `vcat(0.0, col)` rather than `vcat(0.0, col...)`: splatting the column routes the whole thing
+    # through `Core._apply_iterate`, whose reverse-mode adjoint cannot be composed with the
+    # `getindex` pullback feeding it. Same result, and layer thicknesses stay differentiable — which
+    # they must be, since every depth derivative enters the mesh through them.
+    a = vcat(0.0, layers[:, 3])
     return a[2:end] - a[1:(end - 1)]
 end
 
@@ -257,21 +265,28 @@ function get_Nz_vec(env::UnderwaterEnv, freq; n_per_wavelength=20, factor=1)
     @assert ω >= 0 "Frequency must be non-negative"
     @assert maxsoundspeed(env.c) < env.cb
     kr_max = ω / env.cb  # here we assume the bottom half-space sound speed is highest
-    Nz_vec = zeros(Int, length(env.h_vec))
-    Δz_vec = zeros(eltype(env.h_vec), length(env.h_vec))
+    Lmin = 2π / kr_max   # The lowest wavelength available in the problem
+    # 20 points per wavelength. `factor` is for Richardson extrapolation.
+    Δz = Lmin / n_per_wavelength
 
-    for (i, h) in enumerate(env.h_vec)
-        Lmin = 2π / kr_max # The lowest wavelength available in the problem
-        # 20 points per wavelength. h_power is for richardson extrapolation
-        Δz = (Lmin / n_per_wavelength)
-        Nz = ceil(Int, h / Δz) * factor
-        Nz = max(10, Nz) # Minimum of 10 points
-        Δz_new = h / Nz
-        Nz_vec[i] = Nz
-        Δz_vec[i] = Δz_new
-    end
+    # `Nz_vec` is an integer count and so is piecewise constant in the parameters, but `Δz_vec` is
+    # `h / Nz` — *linear* in the layer thickness, hence differentiable. Written as comprehensions
+    # rather than a fill-in loop so reverse-mode AD can trace it; see the seam note at the top.
+    Nz_vec = [n_mesh_points(h, Δz, factor) for h in env.h_vec]
+    Δz_vec = env.h_vec ./ Nz_vec
     return Nz_vec, Δz_vec
 end
+
+"""
+    n_mesh_points(h, Δz, factor)
+
+Number of mesh points for a layer of thickness `h` at target spacing `Δz`, never fewer than 10.
+
+Split out as its own function only so the AD rules can mark it non-differentiable in one place:
+`ceil` has no derivative and reverse mode refuses to trace it, even though the result is an `Int` and
+is genuinely piecewise constant in the parameters.
+"""
+n_mesh_points(h, Δz, factor) = max(10, ceil(Int, h / Δz) * factor)
 
 """
     get_z_vec(env::UnderwaterEnv, Nz_vec, Δz_vec)
@@ -280,17 +295,27 @@ Get the depth vector for each layer of the underwater environment according to t
  and mesh spacing `Δz_vec`.
 """
 function get_z_vec(env::UnderwaterEnv, Nz_vec, Δz_vec)
-    zn_all = Vector{typeof(env.layer_depth)}(undef, length(Nz_vec))
-    z0 = 0.0
-    for (i, Nz) in enumerate(Nz_vec)
-        Δz = Δz_vec[i]
-        z_layer = env.layer_depth[i]
-        zn = range(z0 + Δz, z_layer, Nz)
-        zn_all[i] = collect(zn)
-        z0 = z_layer
-    end
-    return zn_all
+    # Layer `i` runs from the previous layer's bottom to its own, and its mesh starts one step in
+    # (there is no `z = 0` sample — see the Architecture Decisions). Non-mutating so reverse-mode AD
+    # can trace the layer-depth dependence.
+    z_starts = vcat(zero(eltype(env.layer_depth)), env.layer_depth[1:(end - 1)])
+    return [layer_mesh(z_starts[i] + Δz_vec[i], env.layer_depth[i], Nz_vec[i]) for i in eachindex(Nz_vec)]
 end
+
+"""
+    layer_mesh(z_top, z_bot, Nz)
+
+`Nz` equally spaced depths from `z_top` to `z_bot` inclusive — `collect(range(z_top, z_bot, Nz))`,
+no more.
+
+It exists as a named function purely so `src/kraken_ad.jl` can hang an `rrule` on it. `range` builds
+a `StepRangeLen` whose fields are `Base.TwicePrecision`, which reverse-mode AD cannot construct, and
+the obvious workaround — open-coding the interpolation as a broadcast — is **not** acceptable here:
+it moves interior mesh points by up to ~13 ulp, and that is enough to push `two_layer_slope` past the
+1e-4 wavenumber tolerance it is cross-validated against. `range` stays; the derivative (which is just
+linear interpolation, exactly) is supplied by the rule instead.
+"""
+layer_mesh(z_top, z_bot, Nz) = collect(range(z_top, z_bot, Nz))
 
 """
     AcousticProblemProperties(env::UnderwaterEnv, freq; factor=1, n_per_wavelength=20)
@@ -701,7 +726,11 @@ end
 h_extrap(h, Nh) = [h^pow for pow in 0:2:(2Nh - 2)]
 
 function richard_extrap(h_meshes, krs_meshes)
-    sol = solve(LinearProblem(h_meshes, krs_meshes)).u
+    # Mesh spacings and wavenumbers do not have to carry the same parameters — differentiating with
+    # respect to `cb` alone makes `h_meshes` a plain `Float64` matrix and `krs_meshes` a `Dual`
+    # vector — so promote explicitly rather than handing a mixed-precision system to `LinearSolve`.
+    T = promote_type(eltype(h_meshes), eltype(krs_meshes))
+    sol = solve(LinearProblem(T.(h_meshes), T.(krs_meshes))).u
     return sqrt(sol[1])
 end
 
@@ -744,7 +773,12 @@ function kraken_jl(env, freq; n_meshes=5, rmax=10_000, method=ITP(), dont_break=
     end
     # generate all problem properties for every mesh
     props = AcousticProblemProperties(env, freq)
-    h_meshes = zeros(eltype(env.c.c), n_meshes, n_meshes)
+    # Typed from what it actually stores — powers of the mesh spacing. It used to be typed from
+    # `eltype(env.c.c)`, which happened to work only because `pekeris_env` built its `ssp` matrix
+    # through a `promote_type` that included `cb` and `ρb`, parameters that appear nowhere in `ssp`.
+    # Once that over-promotion went away, differentiating with respect to `cb` gave a `Float64`
+    # matrix and a `Dual` right-hand side.
+    h_meshes = zeros(eltype(props.Δz_vec), n_meshes, n_meshes)
     h_meshes[1, :] = h_extrap(props.Δz_vec[1], n_meshes)
 
     # First Mesh (i_power = 1)
