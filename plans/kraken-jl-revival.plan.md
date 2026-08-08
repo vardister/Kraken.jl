@@ -36,12 +36,40 @@ lets the user watch what is being run. Specifically:
 | `julia -e 'using JuliaFormatter; format(".")'` | `format_code(path="...")` |
 | `Pkg.add(...)` | `pkg_add(packages=[...])` |
 
-Rules of thumb: never `Pkg.activate()` inside the shared REPL (it changes the user's environment out from
-under them); `println` output is stripped, so return a final expression with `q=false` when you need a value
-back; evaluations past ~30 s auto-promote to background jobs, so poll with `check_eval` rather than blocking;
-and `manage_repl(command="restart")` is the fast fix for world-age or stale-state errors after a structural
-change (new `include`, changed `__init__`, added extension). Bash remains appropriate for git operations, file
-moves, and non-Julia tooling.
+### Sessions
+
+**Spawn the sessions you need; do not wait to be given one.** `start_session(project_path=...)` creates a
+REPL for any allowed project, and `ping` / "No session matched" is the signal to call it. Two sessions are
+worth keeping alive for this repo, because they are *different environments*:
+
+| Session | `project_path` | Why |
+|---|---|---|
+| package | `/Users/arielv/programs/29.02-KRAKEN.jl` | `src/` work, solver experiments, the analytic Pekeris cross-checks |
+| test env | `/Users/arielv/programs/29.02-KRAKEN.jl/test` | `ForwardDiff`, `FiniteDiff`, `BenchmarkTools`, `Roots` live **only** in `test/Project.toml` — `include`ing `test/automatic_differentiation_tests.jl` or `test/performance_tests.jl` in the package session fails with `ArgumentError: Package ForwardDiff not found in current path` |
+
+Pass the 8-character key explicitly (`ex(e="...", ses="…")`) once more than one session is connected —
+tools error out with the available keys rather than guessing. Shut a session down with
+`manage_repl(command="shutdown")` when its project is no longer in play, so the key list stays short and
+unambiguous; `manage_repl(command="restart")` (same key, fresh state) is the fast fix for world-age or
+stale-state errors after a structural change (new `include`, changed `__init__`, added extension).
+
+**Revise is attached and is the whole point of a long-lived session.** Edit `src/`, then immediately re-run
+the test file in the same session — no restart, no reload, no re-precompilation. Never call
+`Revise.revise()` yourself (it is a stripped no-op), and never `Pkg.activate()` inside a shared REPL (it
+changes the user's environment out from under them). Adding a new `export` is one of the few edits Revise
+handles cleanly *only* on a fresh `using` — if a name still reads as undefined after you exported it,
+restart rather than debugging the export.
+
+### Other rules of thumb
+
+`println` output is stripped, so return a final expression with `q=false` when you need a value back.
+Evaluations past ~30 s auto-promote to background jobs; poll `check_eval` at ~30 s intervals rather than
+blocking, and do useful work in between instead of spinning on it — a cold session's first
+`using Kraken, ForwardDiff, FiniteDiff` takes ~1 minute, and the AD suite ~70 s. `format_code` needs
+JuliaFormatter installed *in that session's* environment; when it is not, fall back to
+`julia -e 'using JuliaFormatter; format_file(...)'` from the global env rather than adding JuliaFormatter as
+a project dependency. Bash remains appropriate for git operations, file moves, non-Julia tooling, and for
+the `Pkg.test()` runs that must be verified as a *subprocess from the root env* exactly as documented.
 
 ## Verified Baseline (measured 2026-08-07, commit `753875f`)
 
@@ -249,7 +277,7 @@ five wired-in test files to completion and reports zero failures.
   found and whether the test or the source was at fault.
 - **Dependencies:** 1.2, 1.3
 
-### 1.6 [ ] Wire and verify the optional performance suite
+### 1.6 [x] Wire and verify the optional performance suite *(completed 2026-08-08)*
 - **Files:** `test/performance_tests.jl`, `test/runtests.jl`
 - **What:** `performance_tests.jl` runs only under `KRAKEN_RUN_PERFORMANCE_TESTS=true` and has the same
   never-executed risk as 1.5. Run it and fix what breaks — note it contains at least one certain bug, a

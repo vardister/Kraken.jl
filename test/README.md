@@ -36,6 +36,12 @@ KRAKEN_RUN_PERFORMANCE_TESTS=true julia --project=. -e 'using Pkg; Pkg.test()'
 |------|--------------|-------------|
 | `performance_tests.jl` | `KRAKEN_RUN_PERFORMANCE_TESTS=true` | Benchmarks, memory usage, scaling |
 
+Every timing in `performance_tests.jl` is measured after a warm-up call, so compilation is excluded.
+Thresholds are set several times above the measured value so they catch order-of-magnitude
+regressions without flaking on slower CI runners. The frequency- and depth-scaling ratios are
+*reported*, not asserted — wall-clock ratios between sub-second runs are dominated by timer noise —
+and those testsets assert a generous absolute ceiling plus the mode counts instead.
+
 ### Script Files (manual execution)
 
 | File | Description |
