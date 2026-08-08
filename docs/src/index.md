@@ -82,6 +82,30 @@ sol = kraken_jl(env, 100.0)
 plot_modes(sol; modes=1:5)
 ```
 
+## Validation against Fortran KRAKEN
+
+The solver is checked against **unmodified** Fortran KRAKEN on every push. The reference binaries
+come from [`AcousticsToolbox_jll`](https://github.com/JuliaBinaryWrappers/AcousticsToolbox_jll.jl),
+so CI needs no Fortran toolchain, and the comparison runs over the toolbox's own `.env`/`.mod` file
+interface. Kraken.jl itself links against no Fortran code and ships no shared library — the harness
+is test-only, under `test/reference/`, and is not part of the package's public surface.
+
+Across the five standard environments at 25–400 Hz the largest relative wavenumber difference is
+2.7e-5 and the smallest mode-shape correlation is 0.99995. Of the 402 environment files shipped with
+the Acoustics Toolbox, 65 use only features Kraken.jl models today, and all 65 agree; the rest are
+reported with the specific feature that blocks them. `test/README.md` in the repository has the
+per-environment table.
+
+To compare against a particular Acoustics Toolbox build instead of the packaged one, point
+`KRAKEN_FORTRAN_BIN` at a directory containing `kraken.exe`.
+
+!!! note "KrakenFortran.jl is a different thing"
+    [KrakenFortran.jl](https://github.com/vardister/KrakenFortran.jl) is a separate, optional package
+    that calls Fortran KRAKEN *in process* through `ccall`. Kraken.jl does not depend on it and does
+    not use it for validation: its sources are a MEX-adapted fork of an older KRAKEN, so it is a
+    performance option for broadband sweeps rather than a statement about correctness. Validating
+    against a fork would prove nothing about agreement with upstream KRAKEN.
+
 ## Where to go next
 
 See [API reference](@ref) for the full list of exported functions and types.

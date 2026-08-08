@@ -8,10 +8,9 @@ Kraken.jl is a pure-Julia reimplementation of Michael Porter's KRAKEN normal-mod
 acoustic propagation (from the Acoustics Toolbox), plus ideas from UnderwaterAcoustics.jl. It computes
 horizontal wavenumbers and mode shapes for a range-independent underwater environment via a
 finite-difference discretization of the depth-separated wave equation, then uses those modes to
-synthesize the acoustic pressure field. Cross-validation against the original Fortran KRAKEN is
-rebuilt in Milestone 3 as a test-only harness under `test/reference/`, driving unmodified
-`kraken.exe` from `AcousticsToolbox_jll`. There is no Fortran source, shared library, or `Makefile`
-in this repo — `src_fortran/` moved out to `KrakenFortran.jl` in commit `49d9343`.
+synthesize the acoustic pressure field. It is cross-validated against unmodified Fortran KRAKEN by a
+test-only harness under `test/reference/` (see below). There is no Fortran source, shared library, or
+`Makefile` in this repo, and nothing here links against Fortran code.
 
 ## Commands
 
@@ -29,6 +28,13 @@ julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'
 
 # Include performance benchmarks (skipped by default, can be slow)
 KRAKEN_RUN_PERFORMANCE_TESTS=true julia --project=. -e 'using Pkg; Pkg.test()'
+
+# Cross-validate against a local Acoustics Toolbox build instead of the AcousticsToolbox_jll
+# binaries, and enable the test cases built from the toolbox's own .env files. Both optional —
+# without them the suite uses the jll and skips the toolbox cases (which is the CI path).
+KRAKEN_FORTRAN_BIN=~/programs/AcousticsToolboxOALIB/bin \
+KRAKEN_OALIB_TESTS=~/programs/AcousticsToolboxOALIB/tests \
+  julia --project=. -e 'using Pkg; Pkg.test()'
 
 # ONE-TIME setup, REQUIRED before the single-file invocations below.
 # `Kraken` is registered in General, and test/Manifest.toml is gitignored — so on a fresh
@@ -67,13 +73,60 @@ write `@views x[1:(end-1)] .= x[1:(end-1)] .- y` instead. Verify locally with
 
 Test files fall into three categories (see `test/README.md` for the up-to-date table):
 - **TestItems** files (`environment_tests.jl`, `integration_tests.jl`) — use `@testitem`, run via `@run_package_tests` in `runtests.jl`.
-- **Test** files (`numerical_methods_tests.jl`, `automatic_differentiation_tests.jl`, `performance_tests.jl`) — plain `@testset`, `include`d from `runtests.jl`.
+- **Test** files (`numerical_methods_tests.jl`, `automatic_differentiation_tests.jl`, `fortran_reference_tests.jl`, `performance_tests.jl`) — plain `@testset`, `include`d from `runtests.jl`.
 - **Manual scripts** (`timings_vs_fortran.jl` needs DrWatson) — not wired into `runtests.jl`, run by hand.
 
-There is deliberately no Fortran comparison layer right now. The old `fortran_interface_tests.jl`
-and the `KRAKEN_RUN_FORTRAN_TESTS` switch were deleted in plan task 1.4 because they called an
-`EnvKRAKEN` API that no longer exists anywhere. Milestone 3 replaces them with `test/reference/`,
-driving unmodified `kraken.exe` from `AcousticsToolbox_jll` over `.env`/`.mod` files.
+**Anything added to `test/` must be declared in `test/Project.toml`, stdlibs included.**
+`--project=test` resolves against a manifest that already contains every stdlib indirectly, so
+`using LinearAlgebra` succeeds there even when it was never declared; `Pkg.test()` builds from the
+declared dependencies only and fails. A green single-file run proves less than it looks like it does
+— run the full `Pkg.test()` before pushing.
+
+### Fortran cross-validation (`test/reference/`)
+
+`test/reference/KrakenReference.jl` is a test-only module — validation machinery is not public API,
+so it is deliberately not in `src/`. It `include`s, in order:
+
+| File | Provides |
+|---|---|
+| `env_writer.jl` | `write_env_file` / `env_file_string` — an `UnderwaterEnv` → KRAKEN `.env` |
+| `mod_reader.jl` | `read_mod_file` (binary `.mod`), `read_grp` (the `.prt` Group Speed table), `has_group_speeds` |
+| `env_reader.jl` | `read_env_file` — `.env` → `UnderwaterEnv`; `categorize_env_tree` for bulk feature triage |
+| `runner.jl` | `run_fortran_kraken` — write, invoke, read back; raises `FortranKrakenError` |
+| `compare.jl` | `compare_with_fortran` — runs both solvers, returns a printable `FortranComparison` |
+
+Binaries come from `AcousticsToolbox_jll` (no Fortran toolchain needed, including in CI). Two env
+vars: `KRAKEN_FORTRAN_BIN` points at a directory containing `kraken.exe` to use a local Acoustics
+Toolbox build instead; `KRAKEN_OALIB_TESTS` points at a toolbox `tests/` tree to enable the cases
+built from its `.env` files (those files are GPL-3 and this package is MIT, so they are read in place,
+never vendored). Both are optional — everything is gated on `KrakenReference.fortran_available()` and
+skips with a message rather than erroring.
+
+Things that will bite you here, all established by running the code and recorded in
+`test/README.md` and the plan's Architecture Decisions:
+
+- **`kraken.exe` exits 0 even on a fatal error.** Scan the generated `.prt` for `ERROR`; never trust
+  the exit code.
+- **`AcousticsToolbox_jll` v2025.9's `kraken.exe` reports every group speed as `0.00000`.** Its
+  wavenumbers and mode shapes are correct; only `VG` is lost, and `krakenc.exe` is unaffected. Use
+  `complex=true` for anything needing group speeds.
+- **Neither output file dominates on precision.** The `.mod` is single precision throughout; the
+  `.prt` prints `Re(kᵣ)` with 10 digits but `alpha` with 2. Wavenumber comparisons want the `.prt`,
+  attenuation work wants the `.mod`.
+- **The `.prt` group-speed table is subsampled** (`DO mode = 1, M, MAX(1, M/30)`), so `read_grp`
+  returns mode indices, not just values.
+- **Generated `.env` files use `'C'` (C-linear), not the `'S'` of the checked-in samples**, because
+  `SampledSSP` interpolates linearly — `'S'` would have the Fortran solve a different problem.
+- **`.env` densities are g/cm³; Kraken.jl's are kg/m³.** The writer and reader convert.
+
+The old `fortran_interface_tests.jl` and its `KRAKEN_RUN_FORTRAN_TESTS` switch were deleted in plan
+task 1.4 (they called an `EnvKRAKEN` API that exists nowhere) and are fully replaced by the above.
+
+**KrakenFortran.jl is a separate, optional package and Kraken.jl does not depend on it.** It offers
+an *in-process* `ccall` path to Fortran KRAKEN, which is genuinely faster for broadband sweeps. It is
+deliberately not the correctness oracle: its sources are a MEX-adapted fork of an older KRAKEN, so
+validating against it would prove nothing about agreement with upstream. Do not add it as a
+dependency or reference it from the test harness.
 
 ## Architecture
 

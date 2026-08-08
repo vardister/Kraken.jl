@@ -655,7 +655,7 @@ the package's public surface. KrakenFortran.jl is not touched.
   whole OALIB `tests/` tree produces a categorized report of which features block the rest.
 - **Dependencies:** 3.6
 
-### 3.8 [ ] Document the KrakenFortran.jl relationship
+### 3.8 [x] Document the KrakenFortran.jl relationship *(completed 2026-08-08)*
 - **Files:** `CLAUDE.md`, `README.md`, `docs/src/index.md`
 - **What:** `CLAUDE.md` currently states the Fortran comparison layer "lives in a separate package,
   KrakenFortran.jl" and documents a `KRAKEN_RUN_FORTRAN_TESTS` variable — both now false. Update it to
