@@ -40,8 +40,10 @@ julia --project=test -e 'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'
 # Verify the link points at the working tree, not ~/.julia/packages/Kraken/...
 julia --project=test -e 'using Kraken; println(pathof(Kraken))'
 
-# Run a single TestItems-based file (environment_tests.jl, integration_tests.jl)
-julia --project=test -e 'using TestItemRunner; @run_package_tests filter=t->t.filename=="test/environment_tests.jl"'
+# Run a single TestItems-based file (environment_tests.jl, integration_tests.jl).
+# `t.filename` is an ABSOLUTE path — match with `endswith`, not `==`, or the filter selects
+# zero test items and reports a green "Package | 0 total".
+julia --project=test -e 'using TestItemRunner; @run_package_tests filter=t->endswith(t.filename, "environment_tests.jl")'
 
 # Run a single @testset-based file (numerical_methods_tests.jl, automatic_differentiation_tests.jl)
 julia --project=test -e 'using Kraken; include("test/numerical_methods_tests.jl")'

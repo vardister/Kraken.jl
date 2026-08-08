@@ -290,7 +290,7 @@ five wired-in test files to completion and reports zero failures.
 - **Acceptance:** `KRAKEN_RUN_PERFORMANCE_TESTS=true julia --project=. -e 'using Pkg; Pkg.test()'` passes.
 - **Dependencies:** 1.5
 
-### 1.7 [ ] Full-suite green run and baseline record
+### 1.7 [x] Full-suite green run and baseline record *(completed 2026-08-08)*
 - **Files:** `test/README.md`
 - **What:** Run the complete suite (default and with performance tests enabled) and confirm zero failures.
   Record the resulting test count and wall-clock time in `test/README.md` as a baseline, so later milestones

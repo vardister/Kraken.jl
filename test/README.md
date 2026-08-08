@@ -13,6 +13,30 @@ julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'
 KRAKEN_RUN_PERFORMANCE_TESTS=true julia --project=. -e 'using Pkg; Pkg.test()'
 ```
 
+## Baseline
+
+Recorded at the end of Milestone 1 (commit `df99dfb`, 2026-08-08) on Julia 1.12.6, macOS
+arm64 (M1), 1 thread inside `Pkg.test()`. Both runs are green: 0 failures, 0 errors, 0 broken.
+
+| Run | Tests | Suite time |
+|---|---|---|
+| `Pkg.test()` | **258** | 2m05s |
+| `KRAKEN_RUN_PERFORMANCE_TESTS=true Pkg.test()` | **282** | 2m25s |
+
+Per file, so a silent drop in coverage is visible in a diff:
+
+| File | Tests |
+|---|---|
+| `environment_tests.jl` | 39 |
+| `integration_tests.jl` | 98 |
+| `numerical_methods_tests.jl` | 73 |
+| `automatic_differentiation_tests.jl` | 48 |
+| `performance_tests.jl` (opt-in) | 24 |
+
+The suite time is dominated by `automatic_differentiation_tests.jl` (~70 s: it runs `kraken_jl`
+under `ForwardDiff` *and* `FiniteDiff` across dozens of parameter points). Add roughly 4 minutes
+of dependency precompilation on the first run after a `Manifest.toml` change.
+
 > **Do not use `--project=test` with `Pkg.test()`.** Pkg would then treat the test environment as the
 > package under test and fail with `The Project.toml of the package being tested must have a name and
 > a UUID entry`. `test/Project.toml` has no `name`/`uuid` on purpose — that is what makes it a test
@@ -78,8 +102,10 @@ julia --project=test -e 'using Kraken; println(pathof(Kraken))'
 > `Pkg.test()` from the root environment is immune to this: it always uses the local package.
 
 ```bash
-# Run a single TestItems file
-julia --project=test -e 'using TestItemRunner; @run_package_tests filter=t->t.filename=="test/environment_tests.jl"'
+# Run a single TestItems file. `t.filename` is an ABSOLUTE path, so match with `endswith`
+# — a `==` against "test/environment_tests.jl" silently selects zero test items and reports
+# a green "Package | 0 total".
+julia --project=test -e 'using TestItemRunner; @run_package_tests filter=t->endswith(t.filename, "environment_tests.jl")'
 
 # Run a single @testset file
 julia --project=test -e 'using Kraken; include("test/numerical_methods_tests.jl")'
