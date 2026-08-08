@@ -20,8 +20,11 @@ Julia 1.12.6, macOS arm64 (M1), 1 thread inside `Pkg.test()`. Every run below is
 
 | Run | End of M1 (`df99dfb`) | End of M2 (`ce38000`) | End of M3 |
 |---|---|---|---|
-| `Pkg.test()` | **258** / 2m05s | **380** / 2m05s | **816** / 2m51s |
-| `KRAKEN_RUN_PERFORMANCE_TESTS=true Pkg.test()` | **282** / 2m25s | **404** / 2m20s | **840** / 3m09s |
+| `Pkg.test()` | **258** / 2m05s | **380** / 2m05s | **925** / 2m53s |
+| `KRAKEN_RUN_PERFORMANCE_TESTS=true Pkg.test()` | **282** / 2m25s | **404** / 2m20s | **949** / 3m10s |
+
+The M3 numbers are with an Acoustics Toolbox checkout present. Without one — which is the CI case —
+the toolbox cases skip and `Pkg.test()` reports **898**, still green.
 
 Per file, so a silent drop in coverage is visible in a diff:
 
@@ -31,7 +34,7 @@ Per file, so a silent drop in coverage is visible in a diff:
 | `integration_tests.jl` | 98 | 98 | 98 |
 | `numerical_methods_tests.jl` | 73 | 73 | 73 |
 | `automatic_differentiation_tests.jl` | 48 | 48 | 48 |
-| `fortran_reference_tests.jl` | — | — | 436 |
+| `fortran_reference_tests.jl` | — | — | 545 |
 | `performance_tests.jl` (opt-in) | 24 | 24 | 24 |
 
 The M2 jump is the B1–B5 regression tests added in task 2.5; the B4 bisection sweep (8 environments
@@ -125,6 +128,40 @@ and against a local 2023 OALIB build**, so these are properties of the solver, n
 
 Error grows with the number of gradient layers, not with frequency — `two_layer_slope_env` is the
 worst case at its *lowest* frequency, where the mesh is coarsest relative to the mode structure.
+
+#### Acoustics Toolbox test cases
+
+`test/reference/env_reader.jl` parses a KRAKEN `.env` file back into an `UnderwaterEnv`, which turns
+the environments shipped with the Acoustics Toolbox into test cases. Those files are **GPL-3 while
+this package is MIT**, so they are read in place rather than copied into this repo:
+
+```bash
+KRAKEN_OALIB_TESTS=~/programs/AcousticsToolboxOALIB/tests julia --project=. -e 'using Pkg; Pkg.test()'
+```
+
+Without that tree the toolbox cases skip; the reader itself stays covered by round-tripping this
+repo's own `test/standard_envs/` files through `write_env_file` → `read_env_file`.
+
+Coverage as of 2026-08-08 — **65 of 402 `.env` files are supported today, and all 65 cross-validate**
+(max relative Δkᵣ 3.6e-6, min correlation 0.999992, mode counts matching within one):
+
+| Blocker | Files | Unblocked by |
+|---|---|---|
+| attenuation | 114 | Milestone 5 |
+| top boundary (not vacuum) | 65 | Milestone 6 |
+| bottom boundary (not an acoustic half-space) | 50 | Milestone 6 |
+| SSP interpolation over a varying profile | 28 | Milestone 6 |
+| added volume attenuation (THORP / Francois-Garrison / biological) | 27 | Milestone 5 |
+| bottom half-space is not the fastest medium | 19 | leaky modes (M5 stretch) |
+| elastic layer | 7 | out of scope |
+| interfacial roughness | 5 | out of scope |
+| analytic SSP; profile not starting at the surface | 2 | — |
+| not a KRAKEN deck (BELLHOP3D `'H'`/`'Q'` SSP options, malformed) | 20 | n/a |
+
+Regenerate this with `KrakenReference.categorize_env_tree` and `print_env_tree_report`. A file that
+uses an unsupported feature is *named*, never approximated — the whole point is that a case Kraken.jl
+cannot model fails with "unsupported feature: attenuation" rather than silently mis-parsing into a
+plausible environment that then disagrees with Fortran for reasons nobody can find.
 
 Two caveats the suite encodes rather than hides:
 

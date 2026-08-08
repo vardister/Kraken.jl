@@ -206,6 +206,47 @@ These are facts established by running the code, not assumptions. Tasks below re
   exact pressure-release value `φ(0) = 0` rather than extrapolating — without it the comparison
   clamps to the first interior sample right where the mode is steepest.
 
+- **The Acoustics Toolbox test files are GPL-3 and are NOT vendored** (decided during 3.7). Kraken.jl
+  is MIT; copying GPL-licensed input decks into this tree is a licensing decision that is not the
+  implementer's to make. The OALIB cases are therefore read *in place* from `KRAKEN_OALIB_TESTS`
+  (defaulting to the local checkout) and skip when it is absent, which is what happens in CI. The
+  reader itself is covered unconditionally by round-tripping the repo's own `test/standard_envs/`
+  files, which are Ariel's, not OALIB's. **Open question for the user:** if a handful of these
+  should be vendored to give CI real OALIB coverage, that needs a licensing call first.
+
+- **Toolbox coverage measured (3.7, 2026-08-08): 65 of 402 `.env` files are supported today, and all
+  65 cross-validate** — max relative wavenumber difference 3.6e-6, min mode-shape correlation
+  0.999992, mode counts matching within one everywhere. The categorized blocker list *is* the
+  backlog for the next two milestones:
+
+  | blocker | files | milestone |
+  |---|---|---|
+  | attenuation | 114 | M5 |
+  | top boundary (not vacuum) | 65 | M6 |
+  | bottom boundary (not an acoustic half-space) | 50 | M6 |
+  | SSP interpolation (n²-linear / spline over a varying profile) | 28 | M6 |
+  | added volume attenuation (THORP / Francois-Garrison / biological) | 27 | M5 |
+  | bottom half-space is not the fastest medium | 19 | M5 stretch (leaky modes) |
+  | elastic layer | 7 | out of scope |
+  | interfacial roughness | 5 | out of scope |
+  | analytic SSP, profile not starting at the surface | 2 | — |
+  | not a KRAKEN deck at all (BELLHOP3D `'H'`/`'Q'` SSP options, malformed) | 20 | n/a |
+
+  Attenuation alone unlocks more files than everything else combined — it is correctly ordered first.
+
+- **A declared SSP interpolator is not automatically a blocker** (established during 3.7). A cubic
+  spline through a *two-point* medium is the straight line, and any interpolator through an
+  isovelocity medium is that constant — so `'S'`/`'P'` over two-point media and `'N'`/`'S'`/`'P'` over
+  isovelocity media are exactly C-linear. Confirmed rather than assumed: `Pekeris_AV.env` declares
+  `'S'` and reproduces the wavenumbers of the C-linear file this repo generates to all ten printed
+  digits. Accepting these costs no fidelity and is what makes most of the 65 supported cases usable.
+
+- **The reader reproduces Fortran's misreadings, which is the point.** `Dickins.env` writes SSP rows
+  without a `/` terminator, so list-directed input runs on into the following records; the reader
+  reports "SSP of medium 1 never reaches 3000 m". Running `kraken.exe` on that same file confirms it
+  reads `betaR = 38.00` and a garbage density — i.e. the file really is broken for KRAKEN, and the
+  reader agrees with the Fortran rather than papering over it.
+
 - **The declared `julia = "1.10"` compat bound is real and enforced** (established during 2.6). It was
   not: `@views x[1:(end-1)] .-= y` is a syntax error on 1.10, so the package could not even load
   there. Fixed in `create_finite_diff_matrix!`/`return_finite_diff_matrix!` rather than raising the
@@ -601,7 +642,7 @@ the package's public surface. KrakenFortran.jl is not touched.
   recorded error table is committed.
 - **Dependencies:** 3.5
 
-### 3.7 [ ] Extend validation to OALIB's own test cases
+### 3.7 [x] Extend validation to OALIB's own test cases *(completed 2026-08-08)*
 - **Files:** `test/reference/env_reader.jl`, `test/fortran_reference_tests.jl`
 - **What:** Implement the reverse direction — parse a KRAKEN `.env` file into an `UnderwaterEnv` — so the
   hundreds of environments in `/Users/arielv/programs/AcousticsToolboxOALIB/tests/` become available as test

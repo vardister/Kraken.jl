@@ -570,6 +570,144 @@ const KR = KrakenReference
             end
         end
 
+        # --- .env reader ---------------------------------------------------------------------
+
+        @testset "env reader" begin
+            # The checked-in files are the ones whose contents we know independently, because the
+            # standard-environment builders produce the same environments. Parsing them and getting
+            # the same cross-validation accuracy as the programmatic versions is the strongest
+            # available evidence that the reader is faithful.
+            reader_cases = [
+                (file="Pekeris_AV", nmedia=1, depth=100.0, cb=1600.0, ρb=1500.0, nmodes=5),
+                (file="onelayer_AV", nmedia=2, depth=120.0, cb=1600.0, ρb=2000.0, nmodes=5),
+                (file="onelayer_slope_AV", nmedia=2, depth=120.0, cb=1600.0, ρb=2000.0, nmodes=5),
+                (file="twolayer_slope_AV", nmedia=3, depth=140.0, cb=1800.0, ρb=2000.0, nmodes=10),
+            ]
+
+            @testset "$(case.file)" for case in reader_cases
+                parsed = KR.read_env_file(joinpath(@__DIR__, "standard_envs", case.file * ".env"))
+                @test length(parsed.env.layer_depth) == case.nmedia
+                @test parsed.env.depth == case.depth
+                @test parsed.env.cb == case.cb
+                # Densities come back in kg/m³, not the file's g/cm³.
+                @test parsed.env.ρb == case.ρb
+                @test parsed.freqs == [100.0]
+                @test parsed.clow == 1400.0
+
+                c = KR.compare_with_fortran(parsed.env, parsed.freqs[1])
+                @test c.n_julia == case.nmodes
+                @test c.n_fortran == case.nmodes
+                @test KR.max_kr_reldiff(c) < 1e-5
+                @test KR.min_mode_corr(c) > 0.999
+            end
+
+            @testset "round trip through the writer" begin
+                # write_env_file -> read_env_file must be the identity on the environment.
+                for build in (pekeris_env, one_layer_env, one_layer_slope_env, two_layer_slope_env, munk_env)
+                    original = UnderwaterEnv(build()...)
+                    mktempdir() do dir
+                        path = KR.write_env_file(joinpath(dir, "rt"), original, 100.0)
+                        parsed = KR.read_env_file(path).env
+                        @test parsed.layer_depth ≈ original.layer_depth
+                        @test parsed.depth ≈ original.depth
+                        @test parsed.cb ≈ original.cb
+                        @test parsed.ρb ≈ original.ρb
+                        @test parsed.c.c ≈ original.c.c
+                        @test parsed.ρ.ρ ≈ original.ρ.ρ
+                        @test -parsed.c.z ≈ -original.c.z
+                    end
+                end
+            end
+
+            @testset "unsupported features are named, not approximated" begin
+                # ssp2.env declares n²-linear over a varying profile, which is genuinely a different
+                # problem from the C-linear one Kraken.jl solves.
+                err = try
+                    KR.read_env_file(joinpath(@__DIR__, "standard_envs", "ssp2.env"))
+                    nothing
+                catch e
+                    e
+                end
+                @test err isa KR.UnsupportedEnvFeature
+                @test err.feature == "SSP interpolation"
+                @test occursin("n²-linear", sprint(showerror, err))
+                # ...but the environment is still recoverable for inspection.
+                @test KR.read_env_file(joinpath(@__DIR__, "standard_envs", "ssp2.env"); strict=false).env isa
+                    UnderwaterEnv
+
+                # A cubic spline through a two-point medium *is* the straight line, so declaring 'S'
+                # over the checked-in two-point files is not a reason to reject them.
+                @test KR.read_env_file(joinpath(@__DIR__, "standard_envs", "Pekeris_AV.env")).topopt[1] == 'S'
+            end
+
+            @testset "a non-KRAKEN deck is rejected cleanly" begin
+                mktempdir() do dir
+                    path = joinpath(dir, "bellhop.env")
+                    write(path, "'A ray deck'\n'NMNR'\n50.0\n-14.66, 14.66, 44\n")
+                    err = try
+                        KR.read_env_file(path)
+                        nothing
+                    catch e
+                        e
+                    end
+                    @test err isa KR.MalformedEnvFile
+                    @test occursin("NMEDIA", sprint(showerror, err))
+                end
+            end
+        end
+
+        # --- Acoustics Toolbox's own test cases ------------------------------------------------
+        #
+        # The toolbox tree is GPL-3 while this package is MIT, so its .env files are read in place
+        # rather than vendored. Point KRAKEN_OALIB_TESTS at a checkout to run these; without one
+        # they skip, which is what happens in CI.
+        oalib_tree = get(ENV, "KRAKEN_OALIB_TESTS", "/Users/arielv/programs/AcousticsToolboxOALIB/tests")
+
+        if isdir(oalib_tree)
+            @testset "Acoustics Toolbox test cases" begin
+                # A spread of shapes: a deep multi-layer Atlantic profile, a shallow penetrable
+                # wedge slice, a 44-mode Pekeris waveguide, and the Munk profile at 102 modes.
+                oalib_cases = [
+                    (file="3DAtlantic/lante02.env", freq=50.0),
+                    (file="3DAtlantic/lanta36.env", freq=50.0),
+                    (file="Bellhop3DTests/PenetrableWedge/pwedge2d.env", freq=10.0),
+                    (file="TLslices/pekeris.env", freq=10.0),
+                    (file="Munk/MunkB_eigenray.env", freq=50.0),
+                ]
+
+                @testset "$(case.file)" for case in oalib_cases
+                    path = joinpath(oalib_tree, case.file)
+                    if !isfile(path)
+                        @info "Not present in this Acoustics Toolbox checkout — skipped." path
+                        continue
+                    end
+                    parsed = KR.read_env_file(path)
+                    c = KR.compare_with_fortran(parsed.env, case.freq)
+                    @test c.n_julia > 0
+                    @test abs(c.n_julia - c.n_fortran) <= 1
+                    @test KR.max_kr_reldiff(c) < 1e-4
+                    @test KR.min_mode_corr(c) > 0.999
+                end
+
+                @testset "categorized report over the whole tree" begin
+                    report = KR.categorize_env_tree(oalib_tree)
+                    @test report.total > 100
+                    @test length(report.supported) > 20
+                    # Every rejection carries a reason; that list is the Milestone 5/6 backlog.
+                    @test !isempty(report.unsupported)
+                    @test all(!isempty, values(report.unsupported))
+                    @test haskey(report.unsupported, "attenuation")
+                    text = sprint(KR.print_env_tree_report, report)
+                    @test occursin("Scanned $(report.total) .env files", text)
+                    @test occursin("attenuation", text)
+                    @info "Acoustics Toolbox coverage\n" * text
+                end
+            end
+        else
+            @info "No Acoustics Toolbox tree at $oalib_tree — its test cases are skipped. " *
+                "Set KRAKEN_OALIB_TESTS to a checkout to run them."
+        end
+
         @testset "env writer accepted by kraken.exe" begin
             @testset "$(case.name)" for case in env_writer_cases
                 mktempdir() do dir
