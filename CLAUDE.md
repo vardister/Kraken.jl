@@ -8,10 +8,10 @@ Kraken.jl is a pure-Julia reimplementation of Michael Porter's KRAKEN normal-mod
 acoustic propagation (from the Acoustics Toolbox), plus ideas from UnderwaterAcoustics.jl. It computes
 horizontal wavenumbers and mode shapes for a range-independent underwater environment via a
 finite-difference discretization of the depth-separated wave equation, then uses those modes to
-synthesize the acoustic pressure field. A prebuilt Fortran shared library (`src/kraken.dylib` /
-`.so` / `.dll`, built from `src_fortran/` via `Makefile`/`make`) is used only for cross-validation
-against the original Fortran KRAKEN — that comparison layer lives in a separate package,
-`KrakenFortran.jl`, not in this repo.
+synthesize the acoustic pressure field. Cross-validation against the original Fortran KRAKEN is
+rebuilt in Milestone 3 as a test-only harness under `test/reference/`, driving unmodified
+`kraken.exe` from `AcousticsToolbox_jll`. There is no Fortran source, shared library, or `Makefile`
+in this repo — `src_fortran/` moved out to `KrakenFortran.jl` in commit `49d9343`.
 
 ## Commands
 
@@ -50,9 +50,6 @@ julia --project=test -e 'using Kraken; include("test/numerical_methods_tests.jl"
 
 # Format (JuliaFormatter, config in .JuliaFormatter.toml: indent=4, style=blue, margin=120)
 julia -e 'using JuliaFormatter; format(".")'
-
-# Build the Fortran shared library from src_fortran/ (only needed for Fortran-comparison work)
-make
 ```
 
 Test files fall into three categories (see `test/README.md` for the up-to-date table):
@@ -67,19 +64,20 @@ driving unmodified `kraken.exe` from `AcousticsToolbox_jll` over `.env`/`.mod` f
 
 ## Architecture
 
-`src/Kraken.jl` is the module entry point and only `include`s three files, in dependency order:
+`src/Kraken.jl` is the module entry point and `include`s three files, in dependency order:
 
 ```julia
-include("kraken_core.jl")                 # main FD solver — most work happens here
-include("kraken_basic.jl")                # currently empty
+include("kraken_core.jl")                  # main FD solver — most work happens here
 include("kraken_pekeris.jl")               # closed-form Pekeris (2-layer) analytic model
 include("kraken_standard_environments.jl") # canned test environments (pekeris_env, one_layer_env, munk_env, ...)
 ```
 
-`src/kraken_broadband.jl` exists in the tree but is **not** `include`d from `Kraken.jl` — it is a
-standalone script you `include(...)` manually when needed (broadband pulse synthesis from mode sums).
-If you promote it to a real part of the package, add the `include` to `Kraken.jl` and add its deps to
-`Project.toml`.
+`src/` now contains exactly the files `Kraken.jl` includes, and nothing else. Code that is not part
+of the package lives outside it: **`dev/kraken_broadband.jl`** is a standalone script you
+`include(...)` by hand (broadband pulse synthesis from mode sums). It is in `dev/` rather than
+`src/` so its "not part of the package" status is structural instead of a comment — Milestone 7
+promotes it properly, which means moving it back into `src/`, adding the `include` to `Kraken.jl`,
+and adding its deps to `Project.toml`.
 
 Plotting lives in **`ext/KrakenMakieExt.jl`**, a package extension triggered by `Makie` (a
 `[weakdeps]` entry, so it costs nothing unless you ask for it). `using CairoMakie` or `using GLMakie`
