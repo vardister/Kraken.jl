@@ -13,6 +13,7 @@ using DocStringExtensions
 
 # Exports
 export SampledSSP, SampledDensity
+export soundspeed, maxsoundspeed, density
 export UnderwaterEnv, AcousticProblemProperties, UnderwaterEnvFORTRAN
 export AcousticProblemCache, bisection, solve_for_kr, inverse_iteration, det_sturm, kraken_jl, find_kr, get_g
 
@@ -295,6 +296,12 @@ e_element(ρ, h) = @. 1 / (h * ρ)
     get_g(kr, env::UnderwaterEnv, props::AcousticProblemProperties)
 
 Get the value of `g` for the bottom half-space finite-difference element.
+
+Only defined for `kr >= 2π * freq / cb`, i.e. for modes that are evanescent in the bottom
+half-space — below that cutoff the vertical wavenumber in the bottom is real (a radiating,
+leaky mode) and this real-valued formulation has no solution. `bisection` therefore only ever
+searches `kr ∈ [ω/cb, max(ω/c)]`; calling `get_g` (or `det_sturm`) below the cutoff throws a
+`DomainError` from `sqrt`.
 """
 function get_g(kr, env::UnderwaterEnv, props::AcousticProblemProperties)
     g = sqrt(kr^2 - (2pi * props.freq / env.cb)^2) / env.ρb
@@ -437,6 +444,10 @@ end
     bisection(env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache)
 
 Bisection method to find the intervals where the roots (wavenumbers) lie.
+
+Searches `kr ∈ [ω/(0.9999 cb), max(ω/c)]`, the band in which modes are trapped. Returns an
+`n_modes × 2` matrix of `[left right]` brackets, or `nothing` when the environment supports no
+trapped modes at this frequency (e.g. water too shallow relative to the wavelength).
 """
 function bisection(env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache)
     ω = 2pi * props.freq
@@ -501,9 +512,10 @@ function bisection(env::UnderwaterEnv, props::AcousticProblemProperties, cache::
 end
 
 """
-    find_kr(env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; method=Roots.A42, kwargs...)
+    find_kr(env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; method=ITP(), kwargs...)
 
-Find the roots of the acoustic problem.
+Find the roots of the acoustic problem. `method` is any bracketing solver accepted by
+`IntervalNonlinearProblem`. Returns an empty vector when `bisection` finds no trapped modes.
 """
 function find_kr(
     env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; method=ITP(), kwargs...
@@ -540,7 +552,6 @@ function integral_trapz(y, x)
     method = TrapezoidalRule()
     return solve(problem, method).u
 end
-
 
 function create_finite_diff_matrix!(kr, env, props, cache)
     g = get_g(kr, env, props)

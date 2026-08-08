@@ -238,7 +238,7 @@ five wired-in test files to completion and reports zero failures.
   `runtests.jl` has no reference to a nonexistent file.
 - **Dependencies:** 1.1
 
-### 1.5 [ ] Get the never-executed numerical and AD suites to green
+### 1.5 [x] Get the never-executed numerical and AD suites to green *(completed 2026-08-08)*
 - **Files:** `test/numerical_methods_tests.jl`, `test/automatic_differentiation_tests.jl`, `src/kraken_core.jl` (as needed)
 - **What:** These two files have not run since the NonlinearSolve migration in `753875f`, so their state is
   unknown. Run them, triage every failure, and fix it at the correct layer — if the test encodes a stale API
