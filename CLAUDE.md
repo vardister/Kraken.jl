@@ -69,7 +69,7 @@ Test files fall into three categories (see `test/README.md` for the up-to-date t
 include("kraken_core.jl")                 # main FD solver — most work happens here
 include("kraken_basic.jl")                # currently empty
 include("kraken_pekeris.jl")               # closed-form Pekeris (2-layer) analytic model
-include("kraken_standard_environments.jl") # canned test environments (pekeris_env, munk_test_dict_KRAKEN, ...)
+include("kraken_standard_environments.jl") # canned test environments (pekeris_env, one_layer_env, munk_env, ...)
 ```
 
 `src/kraken_broadband.jl` and `src/kraken_plots.jl` exist in the tree but are **not** `include`d from

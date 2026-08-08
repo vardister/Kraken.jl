@@ -2,10 +2,10 @@ using NamedArrays
 
 
 export pekeris_env
-export one_layer_test_dict_KRAKEN
-export one_layer_slope_test_dict_KRAKEN
-export two_layer_slope_test_dict_KRAKEN
-export munk_test_dict_KRAKEN
+export one_layer_env
+export one_layer_slope_env
+export two_layer_slope_env
+export munk_env
 
 
 ### Standard Pekeris
@@ -55,7 +55,7 @@ end
 
 
 ### Standard 1-layer sediment model with constant sound speeds
-function one_layer_test_dict_KRAKEN(
+function one_layer_env(
         ;c0 = 1500.0, c1 = 1550.0, cb = 1600.0, ρ0 = 1000.0, ρ1 = 1500.0, ρb = 2000.0, h0 = 100.0, h1 = 20.0)
     # Water column
     α0 = 0.0
@@ -91,7 +91,7 @@ function one_layer_test_dict_KRAKEN(
 end
 
 ### Standard 1-layey model with slope in sound speed
-function one_layer_slope_test_dict_KRAKEN(;c0 = 1500.0, c1_1 = 1550.0, c1_2 = 1580.0, cb = 1600.0,
+function one_layer_slope_env(;c0 = 1500.0, c1_1 = 1550.0, c1_2 = 1580.0, cb = 1600.0,
         ρ0 = 1000.0, ρ1 = 1500.0, ρb = 2000.0, h0 = 100.0, h1 = 20.0)
     # Water column
     α0 = 0.0
@@ -128,7 +128,7 @@ function one_layer_slope_test_dict_KRAKEN(;c0 = 1500.0, c1_1 = 1550.0, c1_2 = 15
 end
 
 ### Standard 2-layer model with slope in sound speed
-function two_layer_slope_test_dict_KRAKEN(;
+function two_layer_slope_env(;
         c0 = 1500.0, c1_1 = 1550.0, c1_2 = 1580.0, c2_1 = 1600.0, c2_2 = 1650.0, cb = 1800.0,
         ρ0 = 1000.0, ρ1 = 1500.0, ρ2 = 1600.0, ρb = 2000.0, h0 = 100.0, h1 = 20.0, h2 = 20.0)
     # Water column
@@ -174,7 +174,7 @@ function two_layer_slope_test_dict_KRAKEN(;
 end
 
 
-function munk_test_dict_KRAKEN()
+function munk_env()
     function c(z)
         ϵ = 0.00737
         zhat = 2 * (z - 1300.0) / 1300

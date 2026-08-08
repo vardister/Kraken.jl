@@ -201,7 +201,7 @@ five wired-in test files to completion and reports zero failures.
   test items (it may still fail on 1.2/1.3 defects — that is expected at this point).
 - **Dependencies:** None
 
-### 1.2 [ ] Rename the standard-environment helpers to the API the tests expect
+### 1.2 [x] Rename the standard-environment helpers to the API the tests expect *(completed 2026-08-08)*
 - **Files:** `src/kraken_standard_environments.jl`, `test/environment_tests.jl`, `test/integration_tests.jl`, `test/performance_tests.jl`, `README.md`, `CLAUDE.md`
 - **What:** Rename and re-export: `one_layer_test_dict_KRAKEN` → `one_layer_env`,
   `one_layer_slope_test_dict_KRAKEN` → `one_layer_slope_env`, `two_layer_slope_test_dict_KRAKEN` →
