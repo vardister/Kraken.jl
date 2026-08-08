@@ -16,6 +16,34 @@ export SampledSSP, SampledDensity
 export soundspeed, maxsoundspeed, density
 export UnderwaterEnv, AcousticProblemProperties, UnderwaterEnvFORTRAN
 export AcousticProblemCache, bisection, solve_for_kr, inverse_iteration, det_sturm, kraken_jl, find_kr, get_g
+export finite_difference_coefficients
+
+### The differentiable seam
+#
+# Reverse-mode AD (Milestone 4) does not trace the solver. Rules are attached at `solve_for_kr` and
+# `inverse_iteration`, which makes everything they call *opaque* to the tape. That splits this file
+# in two, and the split has to be maintained deliberately — moving a computation across it silently
+# either breaks reverse mode or makes it needlessly slow.
+#
+# ON THE SEAM — traced by the AD backend, so these must stay allocating and free of any mutation of
+# arrays that outlive the expression that made them:
+#   * `soundspeed`, `density`, `get_thickness`             — parameters entering from the environment
+#   * `a_element`, `e_element`                             — elementwise coefficient formulas
+#   * `finite_difference_coefficients`                     — the whole assembly `(env, props) -> (a, e, λ)`
+#   * `AcousticProblemCache(env, props)`                   — a thin wrapper over the above
+#   * `get_g`                                              — bottom half-space term, also used inside the rules
+#   * `richard_extrap`, and the arithmetic in `kraken_jl` between the two seam calls
+#
+# BEHIND THE SEAM — never traced; free to mutate the cache, branch on values, and iterate:
+#   * `det_sturm`, `scale_const`                           — differentiated by the rule via ForwardDiff
+#   * `bisection`                                          — integer mode counting, `@non_differentiable`
+#   * `solve_for_kr`                                       — rrule: implicit function theorem on `det_sturm`
+#   * `create_finite_diff_matrix!`, `return_finite_diff_matrix!` — in-place cache updates
+#   * `inverse_iteration`                                  — rrule: eigenvector adjoint
+#   * `get_Nz_vec`, `get_z_vec`, `AcousticProblemProperties` — mesh selection; discrete in the parameters
+#
+# The mesh is chosen from the environment but is piecewise constant in it, so `props` carries no
+# derivative information; `zn_vec` and `Δz_vec` are treated as constants by everything above.
 
 ### Main Types
 ### Sound Speed Profile
@@ -316,12 +344,6 @@ function get_g(kr, env::UnderwaterEnv, props::AcousticProblemProperties)
     return g
 end
 
-### Bisection and Sturm's Sequence
-function moving_average!(vs, n)
-    vs[1:(end - n + 1)] .= [sum(@view vs[i:(i + n - 1)]) / n for i in 1:(length(vs) - (n - 1))]
-    return nothing
-end
-
 """
 Cache for the acoustic problem vectors.
 """
@@ -333,43 +355,73 @@ mutable struct AcousticProblemCache{T}
 end
 
 """
-    AcousticProblemCache(env::UnderwaterEnv, props::AcousticProblemProperties)
+    finite_difference_coefficients(env::UnderwaterEnv, props::AcousticProblemProperties)
 
-Prepare the vectors `a_vec`, `e_vec`, and `scaling_factor` for the acoustic problem. Return an `AcousticProblemCache` struct.
+Assemble the finite-difference coefficients for `env` on the mesh described by `props`. Returns
+`(a_vec, e_vec, λ_scaling)`, the three vectors [`AcousticProblemCache`](@ref) stores.
+
+This is the whole dependence of the discretized problem on the environment parameters, isolated as a
+pure function: it allocates its results and mutates nothing — not its arguments, not a cache, not
+even a locally allocated buffer. That is what puts it *on the differentiable seam* (see the note at
+the top of this file). Reverse-mode AD traces this function, so keep it free of `setindex!`,
+`push!`, and in-place broadcasts; the mutating hot path lives behind the rules in
+[`create_finite_diff_matrix!`](@ref) and never needs to be traced.
+
+- `a_vec` — main diagonal, from [`a_element`](@ref); at each interface between two media the value
+  is the average of the coefficients on either side.
+- `e_vec` — off-diagonals, from [`e_element`](@ref).
+- `λ_scaling` — the factor multiplying `kr²` in the Sturm sequence: a two-point moving average of
+  `e_vec * Δz²`, with the final entry halved for the bottom half-space boundary condition.
+
+The mesh (`Nz_vec`, `Δz_vec`, `zn_vec`) is piecewise constant in the parameters and is treated as a
+constant here — only `env` carries derivative information.
 """
-function AcousticProblemCache(env::UnderwaterEnv, props::AcousticProblemProperties)
-    Ntotal = sum(props.Nz_vec)
-    Ni = prepend!(accumulate(+, props.Nz_vec), 0)
+function finite_difference_coefficients(env::UnderwaterEnv, props::AcousticProblemProperties)
     #TODO: create vector that generalizes well to different types
     T = promote_type(eltype(env.c.c), eltype(env.ρ.ρ), typeof(env.cb), typeof(props.freq))
-    a_vec = zeros(T, Ntotal)
-    e_vec = similar(a_vec)
-    scaling_factor = similar(a_vec)
-    for i in eachindex(props.zn_vec)
-        zn = props.zn_vec[i]
-        Δz = props.Δz_vec[i]
-        cn = soundspeed(env.c, zn)
-        ρn = density(env.ρ, zn)
 
-        a_vec[(Ni[i] + 1):Ni[i + 1]] .= a_element(cn, ρn, props.freq, Δz)
-        e_vec[(Ni[i] + 1):Ni[i + 1]] .= e_element(ρn, Δz)
+    # Flatten the per-layer mesh once, so the coefficients are a single broadcast over the whole
+    # column rather than a loop that fills slices of a preallocated array.
+    zn = reduce(vcat, props.zn_vec)
+    Δzn = reduce(vcat, [fill(props.Δz_vec[i], props.Nz_vec[i]) for i in eachindex(props.Nz_vec)])
+    cn = soundspeed(env.c, zn)
+    ρn = density(env.ρ, zn)
 
-        scaling_factor[(Ni[i] + 1):Ni[i + 1]] .= e_vec[(Ni[i] + 1):Ni[i + 1]] .* (Δz^2)
-    end
-    # Interface conditions between layers
-    if length(props.zn_vec) > 1
-        loc = 0
-        for i in 1:(length(props.zn_vec) - 1)
-            loc += props.Nz_vec[i]
-            a_vec[loc] = 0.5 * (a_vec[loc] + a_vec[loc + 1])
-        end
+    a_raw = T.(a_element(cn, ρn, props.freq, Δzn))
+    e_vec = T.(e_element(ρn, Δzn))
+
+    # Interface conditions between layers: the last point of each layer but the last carries the
+    # average of the two media's coefficients. `interfaces` are the cumulative mesh counts.
+    interfaces = cumsum(props.Nz_vec)[1:(end - 1)]
+    a_vec = if isempty(interfaces)
+        a_raw
+    else
+        map(k -> k in interfaces ? (a_raw[k] + a_raw[k + 1]) / 2 : a_raw[k], eachindex(a_raw))
     end
 
-    moving_average!(scaling_factor, 2)
-    scaling_factor[end] = e_vec[end] * props.Δz_vec[end]^2 / 2
-    # Construct the Tridiagonal matrix
+    # λ_scaling: pairwise mean of e * Δz² over the column, with the bottom entry halved.
+    s = e_vec .* Δzn .^ 2
+    λ_scaling = vcat((s[1:(end - 1)] .+ s[2:end]) ./ 2, e_vec[end] * props.Δz_vec[end]^2 / 2)
+
+    return a_vec, e_vec, λ_scaling
+end
+
+"""
+    AcousticProblemCache(env::UnderwaterEnv, props::AcousticProblemProperties)
+
+Prepare the vectors `a_vec`, `e_vec`, and `λ_scaling` for the acoustic problem. Return an
+`AcousticProblemCache` struct.
+
+The coefficients themselves come from [`finite_difference_coefficients`](@ref); this constructor
+only wraps them and builds the `Tridiagonal` view over `a_vec`/`e_vec` that root-finding and inverse
+iteration mutate in place.
+"""
+function AcousticProblemCache(env::UnderwaterEnv, props::AcousticProblemProperties)
+    a_vec, e_vec, λ_scaling = finite_difference_coefficients(env, props)
+    # `a_vec` is shared with the matrix, not copied into it — that is what lets
+    # `create_finite_diff_matrix!` update `A` by writing to `cache.a_vec`.
     A = Tridiagonal(e_vec[2:end], a_vec, e_vec[2:end])
-    return AcousticProblemCache(a_vec, e_vec, scaling_factor, A)
+    return AcousticProblemCache(a_vec, e_vec, λ_scaling, A)
 end
 
 function Base.show(io::IO, ::AcousticProblemCache{T}) where {T}

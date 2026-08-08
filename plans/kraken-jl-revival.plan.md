@@ -66,10 +66,17 @@ restart rather than debugging the export.
 Evaluations past ~30 s auto-promote to background jobs; poll `check_eval` at ~30 s intervals rather than
 blocking, and do useful work in between instead of spinning on it — a cold session's first
 `using Kraken, ForwardDiff, FiniteDiff` takes ~1 minute, and the AD suite ~70 s. `format_code` needs
-JuliaFormatter installed *in that session's* environment; when it is not, fall back to
-`julia -e 'using JuliaFormatter; format_file(...)'` from the global env rather than adding JuliaFormatter as
-a project dependency. Bash remains appropriate for git operations, file moves, non-Julia tooling, and for
-the `Pkg.test()` runs that must be verified as a *subprocess from the root env* exactly as documented.
+JuliaFormatter installed *in that session's* environment; when it is not, use `format_code` from a session
+that has it rather than adding JuliaFormatter as a project dependency.
+
+**Bash is for git, file moves, and non-Julia tooling. Nothing else.** There is no exception for the full
+test suite: `run_tests(project_path=…)` spawns exactly the documented subprocess from the root env, and it
+is the only way the user can see the run in their REPL. A `julia -e 'Pkg.test()'` through Bash is invisible
+to them, which is the whole reason the rule exists — it is not about speed. (This carve-out used to read
+"…and for the `Pkg.test()` runs that must be verified as a subprocess"; it was removed on 2026-08-08 after
+it was read as licence to shell out. Also now recorded at the top of `CLAUDE.md`'s Commands section.)
+When working in a git worktree, start the session against the **worktree** path — a session on the main
+checkout has Revise watching a different copy of `src/` and will happily test code you did not write.
 
 ## Verified Baseline (measured 2026-08-07, commit `753875f`)
 
@@ -246,6 +253,26 @@ These are facts established by running the code, not assumptions. Tasks below re
   reports "SSP of medium 1 never reaches 3000 m". Running `kraken.exe` on that same file confirms it
   reads `betaR = 38.00` and a garbage density — i.e. the file really is broken for KRAKEN, and the
   reader agrees with the Fortran rather than papering over it.
+
+- **The coefficient assembly was already a pure function in disguise** (established during 4.1). The
+  extraction of `finite_difference_coefficients` reproduces the old per-layer loop **bit for bit**
+  (`==`, not `≈`) across all five standard environments × {25, 100, 400} Hz × mesh factors {1, 4},
+  including the 2- and 3-layer cases that exercise interface averaging — and at identical cost
+  (0.240 ms vs 0.239 ms on `munk` at 100 Hz, N = 6250). The old loop's mutation was writing each
+  slice exactly once into a fresh buffer, so removing it cost nothing. Two subtleties the rewrite had
+  to preserve: `moving_average!` built its whole RHS before assigning, so `λ_scaling` is a pairwise
+  mean of the *original* values, not a sequential in-place sweep; and `Tridiagonal` stores `a_vec` by
+  reference rather than copying, which is the only reason `create_finite_diff_matrix!` can update `A`
+  by writing to `cache.a_vec`. `moving_average!` had no other caller and was deleted with the loop.
+
+- **A worktree's test env silently resolves the *released* Kraken** (established during 4.1). The
+  trap `CLAUDE.md` documents for fresh clones fires for every new git worktree too, because
+  `test/Manifest.toml` is gitignored and so is never carried over — the MCP's `instantiate` then
+  resolves `Kraken` from the General registry. It presents as a wall of `UndefVarError: soundspeed
+  not defined`, because the exports added in 1.5 do not exist in the released version. The fix is the
+  documented one-time `Pkg.develop(path=".")` into `test/`, run per worktree; verify with
+  `path = ".."` on the `[[deps.Kraken]]` entry. `Pkg.test()` from the *root* env is immune, which is
+  why the two runs disagreed and why the immune one is not the one to trust here.
 
 - **The declared `julia = "1.10"` compat bound is real and enforced** (established during 2.6). It was
   not: `@views x[1:(end-1)] .-= y` is a syntax error on 1.10, so the package could not even load
@@ -702,7 +729,7 @@ Correctness is judged against `ForwardDiff` and `FiniteDiff`, not against Fortra
 | `test/reverse_ad_tests.jl` | Zygote + Mooncake vs ForwardDiff + FiniteDiff, on `kr`, on modes, on a scalar loss |
 | Benchmark | gradient cost vs parameter count, reverse vs forward |
 
-### 4.1 [ ] Isolate the differentiable seam
+### 4.1 [x] Isolate the differentiable seam *(completed 2026-08-08)*
 - **Files:** `src/kraken_core.jl`
 - **What:** Before any rules can be written, the dependence of the finite-difference coefficients on the
   environment parameters must be a pure function. Extract the coefficient assembly currently inside

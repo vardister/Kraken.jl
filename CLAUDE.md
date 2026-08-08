@@ -14,6 +14,27 @@ test-only harness under `test/reference/` (see below). There is no Fortran sourc
 
 ## Commands
 
+> **Never run Julia through Bash. Use the `kaimon` MCP.** This is not a preference about speed — the
+> user watches the shared REPL, and a `julia -e ...` subprocess is invisible to them. It applies to
+> *every* Julia invocation, with no exceptions, including the full test suite:
+>
+> | Instead of | Use |
+> |---|---|
+> | `julia --project=. -e 'using Pkg; Pkg.test()'` | `run_tests(project_path="<repo root or worktree>")` |
+> | `julia -e '...'`, `julia --project=... -e '...'` | `ex(e="...", ses="<8-char key>")` |
+> | `julia -e 'using JuliaFormatter; format(...)'` | `format_code(path="...")` |
+> | `julia --project=... -e 'Pkg.add(...)'` | `pkg_add(packages=[...])` |
+>
+> No session connected for this checkout? Start one — `start_session(project_path="…")` — rather than
+> falling back to Bash. In a git worktree, point it at the *worktree* path, or Revise reloads the
+> wrong copy of `src/`. Env-var-prefixed runs (`KRAKEN_RUN_PERFORMANCE_TESTS=true …`) go through the
+> MCP too: set them with `ex(e="ENV[\"KRAKEN_RUN_PERFORMANCE_TESTS\"] = \"true\"")` in the session
+> that will run the suite. Bash stays for git, file moves, and non-Julia tooling only.
+>
+> The `julia ...` command lines below are the *documented invocations* — what CI runs and what a
+> human types in a terminal. They are the reference for which project flag is correct; they are not
+> an instruction to shell out.
+
 Run all commands from the repo root. The package env is `Project.toml` at the root; the test env is
 `test/Project.toml`, which Pkg picks up **automatically** when `Pkg.test()` is run from the *root*
 environment. `test/Project.toml` deliberately has no `name`/`uuid` (that is correct for a test

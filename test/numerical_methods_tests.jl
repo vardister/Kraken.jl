@@ -43,6 +43,64 @@ using Roots
         @test size(cache.A, 1) == length(cache.a_vec)
     end
 
+    @testset "finite_difference_coefficients" begin
+        # The coefficient assembly is the differentiable seam: a pure function the reverse-mode
+        # rules trace. These tests pin both halves of that — that it is what the cache contains,
+        # and that it mutates nothing.
+        env, props, cache = setup_test_environment()
+        a_vec, e_vec, λ_scaling = finite_difference_coefficients(env, props)
+        N = sum(props.Nz_vec)
+
+        @test length(a_vec) == N
+        @test length(e_vec) == N
+        @test length(λ_scaling) == N
+
+        # The cache is a thin wrapper — its fields are exactly this function's output.
+        @test a_vec == cache.a_vec
+        @test e_vec == cache.e_vec
+        @test λ_scaling == cache.λ_scaling
+        # `create_finite_diff_matrix!` updates `A` by writing into `cache.a_vec`, which only works
+        # because the matrix shares that array rather than copying it.
+        @test cache.A.d === cache.a_vec
+
+        # The bottom entry of λ_scaling is halved for the half-space boundary condition.
+        @test λ_scaling[end] ≈ e_vec[end] * props.Δz_vec[end]^2 / 2
+
+        # Pure: inputs untouched, and every call returns fresh arrays.
+        zn_before = deepcopy(props.zn_vec)
+        c_before = copy(env.c.c)
+        ρ_before = copy(env.ρ.ρ)
+        a2, e2, λ2 = finite_difference_coefficients(env, props)
+        @test props.zn_vec == zn_before
+        @test env.c.c == c_before
+        @test env.ρ.ρ == ρ_before
+        @test a2 == a_vec
+        @test e2 == e_vec
+        @test λ2 == λ_scaling
+        @test a2 !== a_vec
+
+        # Multi-layer: the diagonal coefficient at a medium interface is the average of the values
+        # the two media give there.
+        env_ml = UnderwaterEnv(two_layer_slope_env()...)
+        props_ml = AcousticProblemProperties(env_ml, 100.0)
+        @test length(props_ml.Nz_vec) > 1
+        a_ml, _, _ = finite_difference_coefficients(env_ml, props_ml)
+        zn_all = reduce(vcat, props_ml.zn_vec)
+        Δz_all = reduce(vcat, [fill(props_ml.Δz_vec[i], props_ml.Nz_vec[i]) for i in eachindex(props_ml.Nz_vec)])
+        a_raw(k) =
+            Kraken.a_element(soundspeed(env_ml.c, zn_all[k]), density(env_ml.ρ, zn_all[k]), props_ml.freq, Δz_all[k])
+        for k in cumsum(props_ml.Nz_vec)[1:(end - 1)]
+            @test a_ml[k] ≈ (a_raw(k) + a_raw(k + 1)) / 2
+            @test a_ml[k] != a_raw(k)   # the interface value really was averaged, not copied
+        end
+        # Away from interfaces the coefficient is the plain element formula.
+        interfaces_ml = cumsum(props_ml.Nz_vec)[1:(end - 1)]
+        for k in (1, length(a_ml) ÷ 2, length(a_ml))
+            k in interfaces_ml && continue
+            @test a_ml[k] ≈ a_raw(k)
+        end
+    end
+
     @testset "Determinant and Sturm Count Function" begin
         env, props, cache = setup_test_environment()
 
