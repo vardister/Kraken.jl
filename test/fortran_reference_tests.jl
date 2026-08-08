@@ -398,6 +398,84 @@ const KR = KrakenReference
             end
         end
 
+        @testset "comparison utility" begin
+            pekeris = UnderwaterEnv(pekeris_env()...)
+
+            @testset "canonical Pekeris agreement" begin
+                c = KR.compare_with_fortran(pekeris, 100.0)
+                @test c.n_julia == 5
+                @test c.n_fortran == 5
+                @test c.n_compared == 5
+                @test KR.max_kr_reldiff(c) < 1e-5
+                @test KR.min_mode_corr(c) > 0.999
+                @test length(c.kr_absdiff) == length(c.kr_reldiff) == length(c.mode_corr) == 5
+                @test c.kr_absdiff ≈ abs.(c.kr_julia .- c.kr_fortran)
+                @test all(0 .<= c.mode_corr .<= 1 + 1e-12)
+                @test c.group_speed_reldiff === nothing      # opt-in
+                @test isempty(c.warnings)
+            end
+
+            @testset "summary table" begin
+                text = sprint(show, MIME"text/plain"(), KR.compare_with_fortran(pekeris, 100.0))
+                @test occursin("FortranComparison at 100.0 Hz", text)
+                @test occursin("5 Julia modes vs 5 Fortran modes", text)
+                @test occursin("max relative wavenumber difference", text)
+                @test occursin("min mode-shape correlation", text)
+                # One row per compared mode, plus header, title and the two summary lines.
+                @test count(==('\n'), text) == 5 + 4
+                # The compact form is what shows up inside containers.
+                @test sprint(show, KR.compare_with_fortran(pekeris, 100.0)) ==
+                    "FortranComparison(100.0 Hz, 5 vs 5 modes)"
+            end
+
+            @testset "nmodes caps the comparison" begin
+                c = KR.compare_with_fortran(pekeris, 100.0; nmodes=3)
+                @test c.n_julia == 5 && c.n_fortran == 5     # both sides still reported in full
+                @test c.n_compared == 3
+                @test length(c.kr_reldiff) == 3
+            end
+
+            @testset "mode correlation is sign- and scale-invariant" begin
+                z = collect(0.0:1.0:100.0)
+                a = sinpi.(z ./ 100)
+                @test KR.mode_correlation(z, a, z, a) ≈ 1.0
+                @test KR.mode_correlation(z, a, z, -7.5 .* a) ≈ 1.0      # sign and normalization
+                @test KR.mode_correlation(z, a, z, sinpi.(2 .* z ./ 100)) < 1e-10   # orthogonal
+                # Different grids: the Julia modes get resampled onto the Fortran depths.
+                zf = collect(0.0:0.37:100.0)
+                @test KR.mode_correlation(z, a, zf, sinpi.(zf ./ 100)) > 0.9999
+            end
+
+            @testset "group speeds against krakenc" begin
+                # Off by default because it costs a ForwardDiff pass through the whole solver and
+                # because the jll's kraken.exe reports no group speeds -- the comparison silently
+                # re-runs with krakenc.exe to get them.
+                c = KR.compare_with_fortran(pekeris, 100.0; group_speeds=true)
+                @test c.group_speed_julia !== nothing
+                @test c.group_speed_fortran !== nothing
+                @test length(c.group_speed_reldiff) == 5
+                @test all(1400.0 .< c.group_speed_julia .< 1600.0)
+                # The .prt prints group speed with G14.6, and the highest-order mode sits nearest
+                # the bottom cutoff where the two solvers' meshes disagree most; 1e-3 covers both.
+                @test KR.max_group_speed_reldiff(c) < 1e-3
+                @test occursin("max relative group-speed difference", sprint(show, MIME"text/plain"(), c))
+            end
+
+            @testset "a mode-count mismatch is reported, not thrown" begin
+                # Kraken.jl searches kr in [ω/(0.9999 cb), max(ω/c)] while the .env asks KRAKEN for
+                # phase speeds up to cb exactly, so Kraken.jl's window is very slightly narrower and
+                # can miss a mode right at cutoff. That must surface as a number, not an exception.
+                c = KR.compare_with_fortran(UnderwaterEnv(munk_env()...), 100.0)
+                @test c.n_compared == min(c.n_julia, c.n_fortran)
+                @test abs(c.n_julia - c.n_fortran) <= 1
+                @test KR.max_kr_reldiff(c) < 1e-5
+                @test KR.min_mode_corr(c) > 0.999
+                if c.n_julia != c.n_fortran
+                    @test occursin("mode-count mismatch", sprint(show, MIME"text/plain"(), c))
+                end
+            end
+        end
+
         @testset "env writer accepted by kraken.exe" begin
             @testset "$(case.name)" for case in env_writer_cases
                 mktempdir() do dir

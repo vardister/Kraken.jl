@@ -187,6 +187,25 @@ These are facts established by running the code, not assumptions. Tasks below re
   with `DO mode = 1, M, MAX( 1, M / 30 )`, so a 102-mode run lists 34 rows, every third mode. That is
   why `read_grp` returns mode *indices* alongside values; `length(grp.m) < nmodes` is normal.
 
+- **The solver is right.** First end-to-end measurement (3.5, 2026-08-08): across the five standard
+  environments at 25/50/100/200/400 Hz, the maximum relative wavenumber difference against
+  `kraken.exe` is **2.7e-5** (worst case: `two_layer_slope` at 25 Hz; the canonical Pekeris case is
+  **1.7e-9**) and the minimum mode-shape correlation is **0.99995**. Mode counts agree in 23 of 25
+  cases. This is the number the plan's premise — "everything depends on being able to trust the
+  forward solve" — was waiting on.
+
+- **Mode counts can differ by one at cutoff, and that is a report, not an error** (established
+  during 3.5). `bisection` searches `kr ∈ [ω/(0.9999 cb), max(ω/c)]`, while the generated `.env`
+  asks KRAKEN for phase speeds up to `cb` exactly. Kraken.jl's window is therefore very slightly
+  *narrower*, so it can miss a mode sitting right at the bottom cutoff — observed on `munk` at 100 Hz
+  (204 vs 205) and 400 Hz (817 vs 818), always with Julia one short, exactly as that reasoning
+  predicts. `compare_with_fortran` reports both counts and compares the leading `min` of them.
+
+- **Julia mode shapes have no `z = 0` row.** `get_z_vec` starts each layer at `z0 + Δz`, so the mesh
+  excludes the surface while KRAKEN's `zTab` includes it. Resampling for the correlation prepends the
+  exact pressure-release value `φ(0) = 0` rather than extrapolating — without it the comparison
+  clamps to the first interior sample right where the mode is steepest.
+
 - **The declared `julia = "1.10"` compat bound is real and enforced** (established during 2.6). It was
   not: `@views x[1:(end-1)] .-= y` is a syntax error on 1.10, so the package could not even load
   there. Fixed in `create_finite_diff_matrix!`/`return_finite_diff_matrix!` rather than raising the
@@ -559,7 +578,7 @@ the package's public surface. KrakenFortran.jl is not touched.
   rather than failing on a missing `.mod` file.
 - **Dependencies:** 3.3
 
-### 3.5 [ ] Implement the comparison utility
+### 3.5 [x] Implement the comparison utility *(completed 2026-08-08)*
 - **Files:** `test/reference/compare.jl`
 - **What:** `compare_with_fortran(env, freq)` runs both solvers and returns a structured comparison. Mode
   shapes cannot be compared elementwise because the two solvers use different depth meshes — interpolate the
