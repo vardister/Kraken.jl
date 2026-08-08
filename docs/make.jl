@@ -9,7 +9,7 @@ makedocs(;
     modules=[Kraken],
     authors="Ariel Vardi",
     format=Documenter.HTML(;
-        prettyurls=get(ENV, "CI", "false") == "true", canonical="https://vardister.github.io/KRAKEN.jl"
+        prettyurls=get(ENV, "CI", "false") == "true", canonical="https://vardister.github.io/Kraken.jl"
     ),
     pages=["Home" => "index.md", "API reference" => "api.md"],
     # Every exported name currently has a docstring, so this is enforced rather than warned about:

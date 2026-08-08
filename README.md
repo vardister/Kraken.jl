@@ -1,7 +1,7 @@
 # Kraken.jl
 
-[![CI](https://github.com/vardister/KRAKEN.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/vardister/KRAKEN.jl/actions/workflows/CI.yml)
-[![Format](https://github.com/vardister/KRAKEN.jl/actions/workflows/Format.yml/badge.svg)](https://github.com/vardister/KRAKEN.jl/actions/workflows/Format.yml)
+[![CI](https://github.com/vardister/Kraken.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/vardister/Kraken.jl/actions/workflows/CI.yml)
+[![Format](https://github.com/vardister/Kraken.jl/actions/workflows/Format.yml/badge.svg)](https://github.com/vardister/Kraken.jl/actions/workflows/Format.yml)
 
 **❗Documentation is currently under construction.**
 
