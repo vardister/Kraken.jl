@@ -590,7 +590,7 @@ the package's public surface. KrakenFortran.jl is not touched.
   correlations above 0.999; the returned object prints a readable summary table.
 - **Dependencies:** 3.4
 
-### 3.6 [ ] Cross-validation regression suite
+### 3.6 [x] Cross-validation regression suite *(completed 2026-08-08)*
 - **Files:** create `test/fortran_reference_tests.jl`, edit `test/runtests.jl`, `test/README.md`
 - **What:** Run `compare_with_fortran` across all five standard environments at several frequencies (at
   minimum 25, 50, 100, 200, 400 Hz where modes exist), asserting per-environment tolerances. Structure the

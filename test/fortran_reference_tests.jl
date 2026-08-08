@@ -4,9 +4,12 @@ using Kraken
 include("reference/KrakenReference.jl")
 const KR = KrakenReference
 
-# Cross-validation against unmodified Fortran KRAKEN. Plan tasks 3.3-3.7 extend this file with the
-# .mod/.prt readers, the runner, and the per-environment comparison suite; for now it covers binary
-# resolution and the .env writer.
+# Cross-validation against unmodified Fortran KRAKEN: binary resolution, the .env writer, the
+# .mod/.prt readers, the runner, the comparison utility, and the per-environment regression sweep.
+# Plan task 3.7 extends the sweep with cases parsed from OALIB's own .env files.
+#
+# The measured agreement the sweep asserts against is recorded in test/README.md -- update it there
+# when a tolerance changes, so a loosened bound shows up in a diff.
 #
 # Everything here is gated on KR.fortran_available(): a platform with no AcousticsToolbox_jll build
 # and no KRAKEN_FORTRAN_BIN must skip with a message, never error.
@@ -254,6 +257,32 @@ const KR = KrakenReference
                 end
             end
 
+            @testset "wavenumbers spanning several records" begin
+                # LRecordLength is `MAX(2*Nfreq, 2*NzTab, 32, 3*nmedia)` longwords, and each complex
+                # wavenumber takes two -- so few receivers plus many modes forces KRAKEN to split
+                # the wavenumbers across records. Reading them all from one record, as both
+                # published readers do, silently truncates here.
+                result = KR.run_fortran_kraken(
+                    UnderwaterEnv(munk_env()...), 200.0; rd=range(0.0, 5000.0; length=51), keep_files=true
+                )
+                try
+                    lrecl = open(f -> Int(read(f, Int32)), joinpath(result.dir, "case.mod"))
+                    records = 1 + (2 * result.nmodes - 1) ÷ lrecl
+                    @test records > 1                       # the case is actually exercising it
+                    @test result.nmodes > lrecl ÷ 2
+                    @test length(result.kᵣ) == result.nmodes
+                    # Wavenumbers descend across the whole set: a truncated read leaves zeros or
+                    # garbage past the first record and breaks this.
+                    @test issorted(real.(result.kᵣ); rev=true)
+                    @test all(>(0), real.(result.kᵣ))
+                    grp = result.grp
+                    @test last(grp.m) > lrecl ÷ 2           # the .prt reaches past the first record
+                    @test maximum(abs.(real.(result.kᵣ[grp.m]) .- real.(grp.kᵣ)) ./ abs.(real.(grp.kᵣ))) < 1e-6
+                finally
+                    rm(result.dir; recursive=true, force=true)
+                end
+            end
+
             @testset "group speeds" begin
                 mktempdir() do dir
                     # AcousticsToolbox_jll v2025.9's kraken.exe zeroes the Group Speed column while
@@ -472,6 +501,71 @@ const KR = KrakenReference
                 @test KR.min_mode_corr(c) > 0.999
                 if c.n_julia != c.n_fortran
                     @test occursin("mode-count mismatch", sprint(show, MIME"text/plain"(), c))
+                end
+            end
+        end
+
+        # --- cross-validation regression suite ---------------------------------------------
+        #
+        # Adding an environment is one row. `kr_rtol` and `corr_min` are per-environment because the
+        # error is genuinely environment-dependent: a two-point isovelocity layer is nearly exact,
+        # while a stack of gradient layers accumulates discretization error. Each bound is roughly
+        # 3-10x the measured worst case (recorded in test/README.md) -- tight enough that a real
+        # regression trips it, loose enough not to flake between binaries and platforms.
+        #
+        # `count_slack` is how many modes the two solvers may disagree on. It is 0 everywhere except
+        # munk, where Kraken.jl finds one fewer mode at some frequencies: `bisection` searches phase
+        # speeds up to `0.9999 cb` while the .env asks KRAKEN for up to `cb` exactly, so a mode
+        # sitting right at the bottom cutoff can fall outside Kraken.jl's window.
+        regression_cases = [
+            (name="pekeris", build=() -> UnderwaterEnv(pekeris_env()...), kr_rtol=1e-6, corr_min=0.9999, count_slack=0),
+            (
+                name="one_layer",
+                build=() -> UnderwaterEnv(one_layer_env()...),
+                kr_rtol=1e-6,
+                corr_min=0.9999,
+                count_slack=0,
+            ),
+            (
+                name="one_layer_slope",
+                build=() -> UnderwaterEnv(one_layer_slope_env()...),
+                kr_rtol=2e-5,
+                corr_min=0.9999,
+                count_slack=0,
+            ),
+            (
+                name="two_layer_slope",
+                build=() -> UnderwaterEnv(two_layer_slope_env()...),
+                kr_rtol=1e-4,
+                corr_min=0.9995,
+                count_slack=0,
+            ),
+            (name="munk", build=() -> UnderwaterEnv(munk_env()...), kr_rtol=5e-5, corr_min=0.9999, count_slack=1),
+        ]
+
+        regression_freqs = [25.0, 50.0, 100.0, 200.0, 400.0]
+
+        @testset "cross-validation against kraken.exe" begin
+            @testset "$(case.name)" for case in regression_cases
+                @testset "$(freq) Hz" for freq in regression_freqs
+                    c = KR.compare_with_fortran(case.build(), freq)
+
+                    # Both solvers must find something, or the comparison is vacuous.
+                    @test c.n_julia > 0
+                    @test c.n_fortran > 0
+                    @test abs(c.n_julia - c.n_fortran) <= case.count_slack
+                    @test c.n_compared == min(c.n_julia, c.n_fortran)
+
+                    @test KR.max_kr_reldiff(c) < case.kr_rtol
+                    @test KR.min_mode_corr(c) > case.corr_min
+
+                    # Wavenumbers are ordered and physical: a trapped mode has phase speed between
+                    # the slowest sound speed and the bottom half-space speed.
+                    env = case.build()
+                    @test issorted(c.kr_julia; rev=true)
+                    @test all(2π * freq / env.cb .< c.kr_julia .< 2π * freq / minimum(env.c.c))
+
+                    isempty(c.warnings) || @info "kraken.exe warnings for $(case.name) at $freq Hz" c.warnings
                 end
             end
         end

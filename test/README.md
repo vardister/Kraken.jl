@@ -18,23 +18,26 @@ KRAKEN_RUN_PERFORMANCE_TESTS=true julia --project=. -e 'using Pkg; Pkg.test()'
 Julia 1.12.6, macOS arm64 (M1), 1 thread inside `Pkg.test()`. Every run below is green: 0 failures,
 0 errors, 0 broken.
 
-| Run | End of M1 (`df99dfb`) | End of M2 (`ce38000`) |
-|---|---|---|
-| `Pkg.test()` | **258** / 2m05s | **380** / 2m05s |
-| `KRAKEN_RUN_PERFORMANCE_TESTS=true Pkg.test()` | **282** / 2m25s | **404** / 2m20s |
+| Run | End of M1 (`df99dfb`) | End of M2 (`ce38000`) | End of M3 |
+|---|---|---|---|
+| `Pkg.test()` | **258** / 2m05s | **380** / 2m05s | **816** / 2m51s |
+| `KRAKEN_RUN_PERFORMANCE_TESTS=true Pkg.test()` | **282** / 2m25s | **404** / 2m20s | **840** / 3m09s |
 
 Per file, so a silent drop in coverage is visible in a diff:
 
-| File | End of M1 | End of M2 |
-|---|---|---|
-| `environment_tests.jl` | 39 | 161 |
-| `integration_tests.jl` | 98 | 98 |
-| `numerical_methods_tests.jl` | 73 | 73 |
-| `automatic_differentiation_tests.jl` | 48 | 48 |
-| `performance_tests.jl` (opt-in) | 24 | 24 |
+| File | End of M1 | End of M2 | End of M3 |
+|---|---|---|---|
+| `environment_tests.jl` | 39 | 161 | 161 |
+| `integration_tests.jl` | 98 | 98 | 98 |
+| `numerical_methods_tests.jl` | 73 | 73 | 73 |
+| `automatic_differentiation_tests.jl` | 48 | 48 | 48 |
+| `fortran_reference_tests.jl` | — | — | 436 |
+| `performance_tests.jl` (opt-in) | 24 | 24 | 24 |
 
 The M2 jump is the B1–B5 regression tests added in task 2.5; the B4 bisection sweep (8 environments
-× 4 frequencies) is 82 of the 122 new assertions on its own.
+× 4 frequencies) is 82 of the 122 new assertions on its own. The M3 jump is the Fortran
+cross-validation harness, which also accounts for the ~50 s of added wall time — two thirds of it in
+the `munk` sweep alone, which solves for up to 817 modes at 400 Hz.
 
 The suite also runs on Julia 1.10, the declared compat lower bound — verified directly, not assumed
 (see the note in the plan's Architecture Decisions).
@@ -102,6 +105,40 @@ unconditionally from `runtests.jl`.
 > for details` to stderr and stops with a zero status. Anything driving it must scan the generated
 > `.prt` file for `ERROR`, never trust the exit code.
 
+#### Measured agreement
+
+The numbers the cross-validation suite asserts against. Measured 2026-08-08 on macOS arm64, five
+standard environments at 25 / 50 / 100 / 200 / 400 Hz — **identical against `AcousticsToolbox_jll`
+and against a local 2023 OALIB build**, so these are properties of the solver, not of one binary.
+
+`max rel Δkᵣ` is the largest relative wavenumber difference over all modes and all five frequencies;
+`min corr` is the smallest mode-shape correlation. Update this table when the tolerances in
+`fortran_reference_tests.jl` change, so a loosened bound is visible in a diff.
+
+| Environment | Modes found (25→400 Hz) | max rel Δkᵣ | min corr | tolerance asserted |
+|---|---|---|---|---|
+| `pekeris_env` | 1, 2, 5, 9, 19 | 2.1e-8 | 0.9999997 | 1e-6 / 0.9999 |
+| `one_layer_env` | 1, 3, 5, 10, 21 | 1.4e-7 | 0.9999996 | 1e-6 / 0.9999 |
+| `one_layer_slope_env` | 1, 2, 5, 10, 21 | 3.8e-6 | 0.9999994 | 2e-5 / 0.9999 |
+| `two_layer_slope_env` | 2, 5, 10, 19, 39 | 2.7e-5 | 0.9999484 | 1e-4 / 0.9995 |
+| `munk_env` | 51, 102, 204, 409, 817 | 6.4e-6 | 0.9999720 | 5e-5 / 0.9999 |
+
+Error grows with the number of gradient layers, not with frequency — `two_layer_slope_env` is the
+worst case at its *lowest* frequency, where the mesh is coarsest relative to the mode structure.
+
+Two caveats the suite encodes rather than hides:
+
+- **Mode counts may differ by one at cutoff.** `bisection` searches phase speeds up to `0.9999·cb`
+  while the generated `.env` asks KRAKEN for up to `cb` exactly, so Kraken.jl's window is marginally
+  narrower and can miss a mode sitting right at the bottom cutoff. Seen on `munk_env` at 100 Hz
+  (204 vs 205) and 400 Hz (817 vs 818), always with Julia one short. Only that environment is
+  allowed any slack; anywhere else a count mismatch fails.
+- **`AcousticsToolbox_jll`'s `kraken.exe` reports every group speed as `0.00000`.** Wavenumbers and
+  mode shapes are correct and match the 2023 OALIB build digit for digit; only `VG` is lost, and the
+  same jll's `krakenc.exe` is unaffected. `compare_with_fortran(...; group_speeds=true)` therefore
+  re-runs with `krakenc.exe` to get a reference. Group speeds are off by default because obtaining
+  the Julia side means a ForwardDiff pass through the whole solver (~4 s).
+
 The old `fortran_interface_tests.jl` and its `KRAKEN_RUN_FORTRAN_TESTS` switch were removed in plan
 task 1.4: they called an `EnvKRAKEN` API that exists in no module, so they could never have run.
 
@@ -144,3 +181,12 @@ Required packages (in test/Project.toml):
 - `ForwardDiff`, `FiniteDiff` - AD testing
 - `BenchmarkTools` - Performance tests
 - `Roots` - Root finding methods
+- `AcousticsToolbox_jll` - reference `kraken.exe`/`krakenc.exe` binaries
+- `Printf`, `LinearAlgebra` - used by the `test/reference/` harness
+
+> **Stdlibs must be listed too, and `Pkg.test()` is the only check that catches a missing one.**
+> `--project=test` resolves against a manifest that already contains every stdlib as an indirect
+> dependency, so `using LinearAlgebra` there succeeds even when `test/Project.toml` never declared
+> it. `Pkg.test()` builds the environment from the declared dependencies only and fails with
+> `ArgumentError: Package LinearAlgebra not found in current path`. Run the full `Pkg.test()` before
+> pushing; a green single-file run proves less than it appears to.

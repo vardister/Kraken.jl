@@ -94,11 +94,24 @@ function _is_uniform(v::AbstractVector{<:Real})
     return all(abs(Float64(v[i]) - (lo + (i - 1) * δ)) <= tol for i in eachindex(v))
 end
 
+# ...but `SubTab` reconstructs in **single** precision (`ReadVector_sngl` declares `REAL :: x(Nx)`),
+# as `x(1) + (i-1) * deltax`. That can land the last point past the endpoint: a 0-120 m grid of 101
+# points gives deltax = 1.2f0 and a final value of 120.00001, which is *below the seabed*. KRAKEN
+# then prints "Warning in ReadSzRz : Receiver depth exceeds bottom bdry has been moved up" and
+# clamps it. Harmless, but it is our grid that provoked it, so the terse form is used only when the
+# reconstruction is exact and the vector is written out in full otherwise.
+function _subtab_is_exact(v::AbstractVector{<:Real})
+    n = length(v)
+    lo, hi = Float32(first(v)), Float32(last(v))
+    δ = (hi - lo) / (n - 1)
+    return lo + Float32(n - 1) * δ <= hi
+end
+
 function _write_vector(io::IO, v::AbstractVector{<:Real}, label::AbstractString)
     n = length(v)
     n >= 1 || error("$label must contain at least one value")
     println(io, rpad(string(n), 40), "! N", uppercase(label))
-    if _is_uniform(v)
+    if _is_uniform(v) && _subtab_is_exact(v)
         # Two endpoints + `/`; SubTab fills in the other n-2 points.
         println(io, rpad(_fmt(first(v)) * "  " * _fmt(last(v)) * " /", 40), "! $label(1) ... $label($n), subtabulated")
     else
