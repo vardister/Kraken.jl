@@ -359,12 +359,27 @@ These are facts established by running the code, not assumptions. Tasks below re
   arbiter when the two differ; and this task's "matches ForwardDiff to 1e-9" is a statement about
   ForwardDiff's convergence, met at 50 and 100 Hz for every mode, not a bound on the rule.
 
-- **Zygote's overhead is in `finite_difference_coefficients`, not in the rules** (measured during
-  4.2 — this is the number Milestone 4.7 has to move). A 5-parameter reverse gradient costs 1.1 ms
-  against a 22 µs primal solve at N = 125, while the rule itself is 12% of the solve. The tape is
-  spent on the coefficient assembly, and most of that on
-  `map(k -> k in interfaces ? ... : ..., eachindex(a_raw))` — O(N × n_layers) with a closure pullback
-  per element. The milestone's "~3× a forward solve" target is a statement about that function.
+- **Zygote's overhead is in constructing the SSP interpolant, not in the rules or the solver**
+  (measured during 4.2 while writing `examples/reverse_ad.jl` — this is the number 4.7 has to move,
+  and it is a much smaller target than it first looked). Reverse mode is currently **correct but not
+  yet fast**: against a 50-point sound-speed profile at 100 Hz it costs 7.5 ms versus forward mode's
+  1.7 ms, and it does not flatten with parameter count the way the milestone's success criterion
+  requires. Decomposed:
+
+  | | ms (M = 50) |
+  |---|---|
+  | whole reverse gradient | 7.5 |
+  | …of which just building `UnderwaterEnv` | 7.0 |
+  | …of which one `SampledSSP` interpolant | 3.5 |
+  | everything else — mesh, coefficients, solve, both rules | 0.5 |
+
+  So **93% of the time is Zygote tracing the two `DataInterpolations` constructors** inside
+  `UnderwaterEnv`; evaluating the interpolant afterwards costs ~0.14 ms and the rules are ~12% of a
+  wavenumber solve. The fix is therefore small and local — an `rrule` for `SampledSSP`/
+  `SampledDensity` construction, which only stores its arguments — rather than a rewrite of
+  `finite_difference_coefficients` as previously supposed. Forward mode's cost grows linearly with
+  parameter count exactly as predicted (2.5× → 25.5× the primal from M = 5 to 50), so the crossover
+  is real and only this overhead is hiding it.
 
 - **The declared `julia = "1.10"` compat bound is real and enforced** (established during 2.6). It was
   not: `@views x[1:(end-1)] .-= y` is a syntax error on 1.10, so the package could not even load
