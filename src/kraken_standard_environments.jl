@@ -1,6 +1,3 @@
-using NamedArrays
-
-
 export pekeris_env
 export one_layer_env
 export one_layer_slope_env
@@ -28,19 +25,12 @@ function pekeris_env(;c0::Real=1500.0, cb::Real=1600.0, ρ0::Real=1000.0, ρb::R
     freq = 100.0
     z0 = depth
 
-    # ssp = NamedArray(
-    #     [0.0 c0 0.0 ρ0 α0 0.0
-    #      depth c0 0.0 ρ0 α0 0.0];
-    #     dimnames = ("i", "Paramater")
-    # )
-    # setnames!(ssp, ["z", "cp", "cs", "ρ", "αp", "αs"], 2)
+    # Columns are [z, cp, cs, ρ, αp, αs] — the KRAKEN .env SSP record layout. Built through a
+    # promoted element type so ForwardDiff.Dual parameters survive into the environment.
     T = promote_type(typeof(c0), typeof(cb), typeof(ρ0), typeof(ρb), typeof(depth))
     ssp = zeros(T, 2, 6)
     ssp[1, :] = [0.0 c0 0.0 ρ0 α0 0.0]
     ssp[2, :] = [depth c0 0.0 ρ0 α0 0.0]
-
-    # ssp = [0.0 c0 0.0 ρ0 α0 0.0
-           # depth  c0 0.0 ρ0 α0 0.0]
 
     layers = [0.0 0.0 depth]
 
@@ -68,14 +58,7 @@ function one_layer_env(
     z0 = h0
     z1 = h0 + h1
 
-    ssp = NamedArray(
-        [0.0 c0 0.0 ρ0 α0 0.0
-         z0 c0 0.0 ρ0 α0 0.0
-         z0+eps(z0) c1 0.0 ρ1 α1 0.0
-         z1 c1 0.0 ρ1 α1 0.0];
-        dimnames = ("i", "Paramater")
-    )
-    setnames!(ssp, ["z", "cp", "cs", "ρ", "αp", "αs"], 2)
+    # Columns are [z, cp, cs, ρ, αp, αs] — the KRAKEN .env SSP record layout.
     ssp = [0.0 c0 0.0 ρ0 α0 0.0
            z0 c0 0.0 ρ0 α0 0.0
            z0+eps(z0) c1 0.0 ρ1 α1 0.0
@@ -104,15 +87,7 @@ function one_layer_slope_env(;c0 = 1500.0, c1_1 = 1550.0, c1_2 = 1580.0, cb = 16
     z0 = h0
     z1 = h0 + h1
 
-    ssp = NamedArray(
-        [0.0 c0 0.0 ρ0 α0 0.0
-         z0 c0 0.0 ρ0 α0 0.0
-         z0+eps(z0) c1_1 0.0 ρ1 α1 0.0
-         z1 c1_2 0.0 ρ1 α1 0.0];
-        dimnames = ("i", "Paramater")
-    )
-    setnames!(ssp, ["z", "cp", "cs", "ρ", "αp", "αs"], 2)
-
+    # Columns are [z, cp, cs, ρ, αp, αs] — the KRAKEN .env SSP record layout.
     ssp = [0.0 c0 0.0 ρ0 α0 0.0
            z0 c0 0.0 ρ0 α0 0.0
            z0+eps(z0) c1_1 0.0 ρ1 α1 0.0
@@ -145,17 +120,7 @@ function two_layer_slope_env(;
     z1 = h0 + h1
     z2 = h0 + h1 + h2
 
-    ssp = NamedArray(
-        [0.0 c0 0.0 ρ0 α0 0.0
-         z0 c0 0.0 ρ0 α0 0.0
-         z0+eps(z0) c1_1 0.0 ρ1 α1 0.0
-         z1 c1_2 0.0 ρ1 α1 0.0
-         z1+eps(z1) c2_1 0.0 ρ2 α2 0.0
-         z2 c2_2 0.0 ρ2 α2 0.0];
-        dimnames = ("i", "Paramater")
-    )
-    setnames!(ssp, ["z", "cp", "cs", "ρ", "αp", "αs"], 2)
-
+    # Columns are [z, cp, cs, ρ, αp, αs] — the KRAKEN .env SSP record layout.
     ssp = [0.0 c0 0.0 ρ0 α0 0.0
            z0 c0 0.0 ρ0 α0 0.0
            z0+eps(z0) c1_1 0.0 ρ1 α1 0.0
