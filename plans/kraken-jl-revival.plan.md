@@ -60,6 +60,7 @@ These are facts established by running the code, not assumptions. Tasks below re
 | `docs/make.jl` cannot run | `using Documenter, KRAKEN` — module is named `Kraken` |
 | No CI whatsoever | no `.github/` directory |
 | `soundspeed`, `maxsoundspeed`, `density` are defined but **not exported** | `environment_tests.jl` errors with `UndefVarError` on all three; found during 1.1 once the suite could run — feeds task 1.5 |
+| The removed `EnvKRAKEN` API is called from **6 more live files** | `test/performance_tests.jl:273`, `test/timings_vs_fortran.jl:36`, and `examples/testkrak{3,4,5,6}.jl` + `testkrak_mnulti_processing.jl`. Found during 1.4 — feeds tasks 1.6 (perf suite errors on it) and 8.3 (every example is broken) |
 | `Kraken` is **already registered in General** (uuid `269dd85f-…`) | so `--project=test` without a dev-link silently resolves to the *released* version, not the working tree; found during 1.1 — also settles the registration question in 8.4 |
 | `AcousticsToolbox_jll` ships prebuilt reference binaries | confirmed installed: `kraken.exe`, `krakenc.exe`, `field.exe`, `bounce.exe`, … for all platforms |
 
@@ -226,7 +227,7 @@ five wired-in test files to completion and reports zero failures.
   `munk_env`'s coefficients are perturbed.
 - **Dependencies:** 1.2
 
-### 1.4 [ ] Remove dead and untracked-scratch test files
+### 1.4 [x] Remove dead and untracked-scratch test files *(completed 2026-08-08)*
 - **Files:** delete `test/fortran_interface_tests.jl`, `test/ad_tests.jl`, `test/integration_tests.jl.4320.cov`, `test/.DS_Store`; edit `test/runtests.jl`, `test/README.md`, `CLAUDE.md`
 - **What:** `fortran_interface_tests.jl` references `EnvKRAKEN` and `kraken`, which exist in no loaded module —
   it cannot ever have run. Milestone 3 replaces it, so delete it along with its `KRAKEN_RUN_FORTRAN_TESTS`
@@ -253,6 +254,9 @@ five wired-in test files to completion and reports zero failures.
 - **What:** `performance_tests.jl` runs only under `KRAKEN_RUN_PERFORMANCE_TESTS=true` and has the same
   never-executed risk as 1.5. Run it and fix what breaks — note it contains at least one certain bug, a
   Python-style format string `"$(elapsed_time:.3f)s"` around line 75 which is not valid Julia interpolation.
+  It also contains a "Julia vs Fortran Performance" testset at line ~273 calling the removed `EnvKRAKEN`
+  API (found during 1.4) — delete that testset rather than repairing it, since the Fortran comparison is
+  rebuilt on a different architecture in Milestone 3 and timing comparisons belong with it.
   Timing thresholds should be generous enough not to flake on CI; if a threshold cannot be made both
   meaningful and stable, convert that assertion into a reported measurement rather than a pass/fail.
 - **Acceptance:** `KRAKEN_RUN_PERFORMANCE_TESTS=true julia --project=. -e 'using Pkg; Pkg.test()'` passes.
@@ -949,8 +953,9 @@ a doctest.
 - **What:** Rewrite the README around what the package now does. The current group-speed example passes
   `method=Roots.A42()` to a `find_kr` that now takes `ITP()` — convert the README's code blocks to doctests so
   this class of drift fails CI. Audit the seven `examples/testkrak*.jl` files: they predate several API
-  changes. Rewrite the ones worth keeping with descriptive names and delete the rest rather than leaving
-  numbered scripts of unknown provenance.
+  changes. Five of the seven (`testkrak{3,4,5,6}.jl` and `testkrak_mnulti_processing.jl`) call the removed
+  `EnvKRAKEN` API and cannot run at all — established during 1.4. Rewrite the ones worth keeping with
+  descriptive names and delete the rest rather than leaving numbered scripts of unknown provenance.
 - **Acceptance:** README doctests pass in CI; every file in `examples/` runs.
 - **Dependencies:** 8.2
 

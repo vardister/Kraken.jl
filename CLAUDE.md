@@ -30,9 +30,6 @@ julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'
 # Include performance benchmarks (skipped by default, can be slow)
 KRAKEN_RUN_PERFORMANCE_TESTS=true julia --project=. -e 'using Pkg; Pkg.test()'
 
-# Include Fortran comparison tests (requires the external KrakenFortran.jl package)
-KRAKEN_RUN_FORTRAN_TESTS=true julia --project=. -e 'using Pkg; Pkg.test()'
-
 # ONE-TIME setup, REQUIRED before the single-file invocations below.
 # `Kraken` is registered in General, and test/Manifest.toml is gitignored — so on a fresh
 # clone `--project=test` silently resolves Kraken to the RELEASED version from the registry
@@ -58,8 +55,13 @@ make
 
 Test files fall into three categories (see `test/README.md` for the up-to-date table):
 - **TestItems** files (`environment_tests.jl`, `integration_tests.jl`) — use `@testitem`, run via `@run_package_tests` in `runtests.jl`.
-- **Test** files (`numerical_methods_tests.jl`, `automatic_differentiation_tests.jl`, `performance_tests.jl`, `fortran_interface_tests.jl`) — plain `@testset`, `include`d from `runtests.jl`.
-- **Manual scripts** (`timings_vs_fortran.jl` needs DrWatson, `ad_tests.jl` is Enzyme.jl experimentation) — not wired into `runtests.jl`, run by hand.
+- **Test** files (`numerical_methods_tests.jl`, `automatic_differentiation_tests.jl`, `performance_tests.jl`) — plain `@testset`, `include`d from `runtests.jl`.
+- **Manual scripts** (`timings_vs_fortran.jl` needs DrWatson) — not wired into `runtests.jl`, run by hand.
+
+There is deliberately no Fortran comparison layer right now. The old `fortran_interface_tests.jl`
+and the `KRAKEN_RUN_FORTRAN_TESTS` switch were deleted in plan task 1.4 because they called an
+`EnvKRAKEN` API that no longer exists anywhere. Milestone 3 replaces them with `test/reference/`,
+driving unmodified `kraken.exe` from `AcousticsToolbox_jll` over `.env`/`.mod` files.
 
 ## Architecture
 

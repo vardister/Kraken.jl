@@ -35,14 +35,22 @@ KRAKEN_RUN_PERFORMANCE_TESTS=true julia --project=. -e 'using Pkg; Pkg.test()'
 | File | Env Variable | Description |
 |------|--------------|-------------|
 | `performance_tests.jl` | `KRAKEN_RUN_PERFORMANCE_TESTS=true` | Benchmarks, memory usage, scaling |
-| `fortran_interface_tests.jl` | `KRAKEN_RUN_FORTRAN_TESTS=true` | Requires KrakenFortran.jl package |
 
 ### Script Files (manual execution)
 
 | File | Description |
 |------|-------------|
-| `timings_vs_fortran.jl` | Manual timing comparisons (requires DrWatson) |
-| `ad_tests.jl` | Enzyme.jl AD experiments |
+| `timings_vs_fortran.jl` | Manual timing comparisons (requires DrWatson; calls the removed `EnvKRAKEN` API, so it does not currently run) |
+
+### Fortran cross-validation
+
+There is none at present. `fortran_interface_tests.jl` and the `KRAKEN_RUN_FORTRAN_TESTS` switch were
+removed in plan task 1.4: they called an `EnvKRAKEN` API that exists in no module, so they could never
+have run. Milestone 3 replaces them with a `test/reference/` harness that drives unmodified
+`kraken.exe` from `AcousticsToolbox_jll` over `.env`/`.mod` files.
+
+Prior Enzyme.jl AD experiments lived in `test/ad_tests.jl`, deleted in the same task. They are
+recoverable if Milestone 4 wants them: `git show 580649c:test/ad_tests.jl`.
 
 ## Running Individual Test Files
 
