@@ -187,7 +187,10 @@ function munk_env()
     zvec = 0:100:5000
     cvec = c.(zvec)
 
-    ssp = transpose(hcat([[x[1], x[2], 0.0, ρ0, α0, 0.0] for x in zip(zvec, cvec)]...))
+    # `permutedims`, not `transpose`: transpose returns a lazy Transpose wrapper, and every other
+    # standard environment returns a plain Matrix. UnderwaterEnvFORTRAN promotes its three inputs
+    # to a common type, which fails outright on Transpose-vs-Matrix.
+    ssp = permutedims(hcat([[x[1], x[2], 0.0, ρ0, α0, 0.0] for x in zip(zvec, cvec)]...))
     sspHS = [
         0.0 343.0 0.0 0.00121 0.0 0.0
         zvec[end] cb 0.0 ρb αb 0.0

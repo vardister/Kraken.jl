@@ -82,7 +82,9 @@ SampledDensity(depth, ρ) = SampledDensity1D(depth, ρ, DataInterpolations.Linea
 SampledDensity(depth, ρ, type::Symbol) = SampledDensity1D(depth, ρ, type)
 
 function Base.show(io::IO, ρint::SampledDensity1D{T1,T2,T3}) where {T1,T2,T3}
-    return print(io, "SampledDensity1D{", T1, ",", T2, ",", ρint.type, "}(", length(ρint.z), " points)")
+    # Mirrors the SampledSSP1D method above: the third slot is the interpolant, `f`. There is no
+    # `.type` field on this struct — printing one threw on every `show` of a density profile.
+    return print(io, "SampledDensity1D{", T1, ",", T2, ",", ρint.f, "}(", length(ρint.z), " points)")
 end
 
 ### Underwater Environment
@@ -133,6 +135,12 @@ Constructor for `UnderwaterEnv`.
 
 Create an underwater environment based on the sound speed profile `ssp`, the layer information `layers`, and the sound speed profile
 at the surface and bottom half-space `sspHS`.
+
+`depth` — the interface with the bottom half-space — is taken from `layers[end, 3]` in both this
+constructor and the `UnderwaterEnvFORTRAN` one. `layers` is what defines the media boundaries (it is
+already the sole input to `get_thickness`, which sizes the finite-difference mesh); the `ssp` table
+is only samples *within* those media. They coincide in every well-formed environment, but when they
+disagree it is `ssp` that is short or long, not `layers` that is wrong.
 """
 function UnderwaterEnv(ssp, layers, sspHS)
     c = SampledSSP(ssp[:, 1], ssp[:, 2])
@@ -157,7 +165,7 @@ function UnderwaterEnv(krak_ssp::UnderwaterEnvFORTRAN{T}) where {T}
     cb = krak_ssp.sspHS[2, 2]
     layer_thickness = get_thickness(krak_ssp.layers)
     layer_depth = krak_ssp.layers[:, 3]
-    depth = krak_ssp.ssp[end, 1]
+    depth = krak_ssp.layers[end, 3]  # see the note on the (ssp, layers, sspHS) constructor
     return UnderwaterEnv{typeof(c),typeof(ρ),T}(c, ρ, cb, ρb, layer_thickness, layer_depth, depth)
 end
 
@@ -383,13 +391,19 @@ function scale_const(p1, p2, Φ=1e20, Γ=1e-20)
 end
 
 """
-    det_sturm(
-        kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache;
-        stop_at_k = nothing, return_det = false, scale = true)
+    det_sturm(kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; scale=true)
+
+Evaluate the Sturm sequence of the finite-difference system at trial wavenumber `kr`.
+
+Returns `(det, mode_num)`: the determinant of the tridiagonal system, and the number of modes with
+wavenumber above `kr` (the count decreases as `kr` sweeps up through the trapped band). `scale=true`
+rescales the sequence whenever it would overflow or underflow; the factor is piecewise constant in
+both `kr` and the environment parameters, so it cancels in any derivative of the root and does not
+affect the mode count.
+
+Only defined for `kr >= 2π * freq / cb` — see [`get_g`](@ref).
 """
-function det_sturm(
-    kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; stop_at_k=nothing, scale=true
-)
+function det_sturm(kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; scale=true)
     local p2, p1, p0, λ
     mode_count = 0
     g = get_g(kr, env, props)
@@ -431,9 +445,6 @@ function det_sturm(
                 end
                 p0 = p1
                 p1 = p2
-                if stop_at_k !== nothing && k == stop_at_k
-                    p2, mode_count
-                end
             end
         end
     end
@@ -484,6 +495,10 @@ function bisection(env::UnderwaterEnv, props::AcousticProblemProperties, cache::
                         k2 = kmid
                         kRight[mm] = kmid
                     else
+                        # Reaching here means Δn >= mm >= 1, so `kLeft[Δn]` is in bounds, and
+                        # Δn <= n_max - n_min <= n_max, so `kRight[Δn + 1]` is too (both vectors
+                        # have n_max + 1 entries). Keep that invariant in mind before changing the
+                        # branch condition — indexing here is not otherwise guarded.
                         k1 = kmid
                         if kRight[Δn + 1] >= kmid
                             kRight[Δn + 1] = kmid
