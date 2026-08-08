@@ -163,6 +163,16 @@ function get_modal_function_values(env, krs, freq, zr, zs)
     return modes_zr, modes_zs
 end
 
+"""
+    get_modal_function(env, krs, freq)
+
+Build the Pekeris mode function `Ψ(z, mode)` for wavenumbers `krs` at frequency `freq`.
+
+Returns a closure, so it can be evaluated at any depth: sinusoidal in the water column and
+exponentially decaying below the interface, normalized the same way as
+[`get_modal_function_values`](@ref) (which is the right call when you only need a fixed pair of
+depths).
+"""
 function get_modal_function(env, krs, freq)
     @unpack c1, cb, ρ1, ρb, depth = env
     ω = 2π * freq

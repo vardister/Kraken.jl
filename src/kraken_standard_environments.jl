@@ -5,6 +5,23 @@ export two_layer_slope_env
 export munk_env
 
 ### Standard Pekeris
+"""
+    pekeris_env(; c0=1500.0, cb=1600.0, ρ0=1000.0, ρb=1500.0, depth=100.0)
+
+Canonical Pekeris waveguide: one isovelocity water layer over a homogeneous fluid half-space.
+
+Returns `(ssp, layers, sspHS)` in the KRAKEN `.env` record layout, ready for
+[`UnderwaterEnv`](@ref). `ssp` columns are `[z, cp, cs, ρ, αp, αs]`.
+
+This is the environment with a closed-form solution — see [`PekerisUnderwaterEnv`](@ref) and
+`find_kr(::PekerisUnderwaterEnv, freq)` — which makes it the reference for checking the
+finite-difference solver.
+
+# Arguments
+- `c0`, `ρ0`: water column sound speed (m/s) and density (kg/m³).
+- `cb`, `ρb`: bottom half-space sound speed and density. `cb` must exceed `c0` for trapped modes.
+- `depth`: water depth (m), i.e. the interface with the half-space.
+"""
 function pekeris_env(; c0::Real=1500.0, cb::Real=1600.0, ρ0::Real=1000.0, ρb::Real=1500.0, depth::Real=100.0)
     # Input validation
     # for (param_name, param_value) in zip([:c0, :cb, :ρ0, :ρb, :depth], [c0, cb, ρ0, ρb, depth])
@@ -43,6 +60,15 @@ function pekeris_env(; c0::Real=1500.0, cb::Real=1600.0, ρ0::Real=1000.0, ρb::
 end
 
 ### Standard 1-layer sediment model with constant sound speeds
+"""
+    one_layer_env(; c0=1500.0, c1=1550.0, cb=1600.0, ρ0=1000.0, ρ1=1500.0, ρb=2000.0, h0=100.0, h1=20.0)
+
+Water column over one isovelocity sediment layer over a fluid half-space.
+
+Returns `(ssp, layers, sspHS)`. `h0` is the water depth, `h1` the sediment thickness; `c1`/`ρ1` are
+the sediment properties. The multi-medium case that exercises the interface conditions in
+[`AcousticProblemCache`](@ref).
+"""
 function one_layer_env(; c0=1500.0, c1=1550.0, cb=1600.0, ρ0=1000.0, ρ1=1500.0, ρb=2000.0, h0=100.0, h1=20.0)
     # Water column
     α0 = 0.0
@@ -77,6 +103,14 @@ function one_layer_env(; c0=1500.0, c1=1550.0, cb=1600.0, ρ0=1000.0, ρ1=1500.0
 end
 
 ### Standard 1-layey model with slope in sound speed
+"""
+    one_layer_slope_env(; c0=1500.0, c1_1=1550.0, c1_2=1580.0, cb=1600.0, ρ0=1000.0, ρ1=1500.0, ρb=2000.0, h0=100.0, h1=20.0)
+
+Like [`one_layer_env`](@ref), but the sediment sound speed ramps linearly from `c1_1` at its top to
+`c1_2` at its base.
+
+Returns `(ssp, layers, sspHS)`.
+"""
 function one_layer_slope_env(;
     c0=1500.0, c1_1=1550.0, c1_2=1580.0, cb=1600.0, ρ0=1000.0, ρ1=1500.0, ρb=2000.0, h0=100.0, h1=20.0
 )
@@ -113,6 +147,14 @@ function one_layer_slope_env(;
 end
 
 ### Standard 2-layer model with slope in sound speed
+"""
+    two_layer_slope_env(; c0=1500.0, c1_1=1550.0, c1_2=1580.0, c2_1=1600.0, c2_2=1650.0, cb=1800.0, ρ0=1000.0, ρ1=1500.0, ρ2=1600.0, ρb=2000.0, h0=100.0, h1=20.0, h2=20.0)
+
+Water column over two sediment layers, each with a linear sound-speed gradient, over a fluid
+half-space.
+
+Returns `(ssp, layers, sspHS)`. Layer `i` ramps from `ci_1` to `ci_2` over thickness `hi`.
+"""
 function two_layer_slope_env(;
     c0=1500.0,
     c1_1=1550.0,
@@ -166,6 +208,20 @@ function two_layer_slope_env(;
     return ssp, layers, sspHS
 end
 
+"""
+    munk_env()
+
+Munk canonical deep-water sound-speed profile, 5000 m of water over a fluid half-space.
+
+Returns `(ssp, layers, sspHS)`, sampled every 100 m. The profile is
+
+```math
+c(z) = 1500 \\, [1 + ε (ẑ - 1 + e^{-ẑ})], \\quad ẑ = 2(z - 1300)/1300, \\quad ε = 0.00737
+```
+
+so its minimum is exactly 1500.0 m/s at the 1300 m sound channel axis, where `ẑ = 0`. That value and
+location are the defining property of the profile — the environment tests assert both.
+"""
 function munk_env()
     function c(z)
         ϵ = 0.00737
