@@ -76,10 +76,17 @@ include("kraken_pekeris.jl")               # closed-form Pekeris (2-layer) analy
 include("kraken_standard_environments.jl") # canned test environments (pekeris_env, one_layer_env, munk_env, ...)
 ```
 
-`src/kraken_broadband.jl` and `src/kraken_plots.jl` exist in the tree but are **not** `include`d from
-`Kraken.jl` — they're standalone scripts you `include(...)` manually when needed (broadband pulse
-synthesis from mode sums, and CairoMakie mode plots respectively). If you promote either to a real
-part of the package, add the `include` to `Kraken.jl` and add its deps to `Project.toml`.
+`src/kraken_broadband.jl` exists in the tree but is **not** `include`d from `Kraken.jl` — it is a
+standalone script you `include(...)` manually when needed (broadband pulse synthesis from mode sums).
+If you promote it to a real part of the package, add the `include` to `Kraken.jl` and add its deps to
+`Project.toml`.
+
+Plotting lives in **`ext/KrakenMakieExt.jl`**, a package extension triggered by `Makie` (a
+`[weakdeps]` entry, so it costs nothing unless you ask for it). `using CairoMakie` or `using GLMakie`
+both pull in Makie and activate it. `plot_modes` and `plot_ssp` are exported stubs in `src/Kraken.jl`;
+without a backend loaded they raise an actionable error rather than a `MethodError`. The old
+`src/kraken_plots.jl` is gone — it took the `Dict` returned by the removed Fortran `kraken` function,
+not a `NormalModeSolution`, so it could not have run against the current API.
 
 ### Solve pipeline (`kraken_core.jl`)
 
