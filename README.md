@@ -1,25 +1,26 @@
 # Kraken.jl
 
+[![CI](https://github.com/vardister/KRAKEN.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/vardister/KRAKEN.jl/actions/workflows/CI.yml)
+[![Format](https://github.com/vardister/KRAKEN.jl/actions/workflows/Format.yml/badge.svg)](https://github.com/vardister/KRAKEN.jl/actions/workflows/Format.yml)
+
 **❗Documentation is currently under construction.**
 
 KRAKEN.jl is a Normal-Mode based simulation package for underwater acoustic propagation. It's heavily based on [Michael Porter's KRAKEN Fortran code located in the Acoustics Toolbox](https://oalib-acoustics.org/models-and-software/normal-modes/) and [UnderwaterAcoustics.jl](https://github.com/org-arl/UnderwaterAcoustics.jl).
 
 This reimplementation is fully written in Julia, and is designed to be more user-friendly, and easier to extend. It is also designed to be more efficient, and to take advantage of Julia's parallelization capabilities.
 
-Access to the Fortran code is also available through Julia calls to the shared library, which can be useful for comparison and validation purposes.
-
-
 ## Features
 
 - Normal-Mode based simulation for underwater acoustic propagation fully written in Julia
 - User-friendly and easy to extend
-- Differential code (❗ currently only using [ForwardDiff.jl](https://github.com/JuliaDiff/ForwardDiff.jl))
-- Access to the Fortran code through Julia calls to the shared library
+- Differentiable code (❗ currently only using [ForwardDiff.jl](https://github.com/JuliaDiff/ForwardDiff.jl))
 - Re-using existing environmental data files from the Acoustics Toolbox
+- Optional plotting via a package extension — `using CairoMakie` (or `GLMakie`) enables `plot_modes` and `plot_ssp` at no cost to anyone who does not
 
 ## Missing features
 - [ ] Compressional wave attenuation in environment
 - [ ] Inclusion of shear wave properties in environment
+- [ ] Cross-validation against the unmodified Fortran `kraken.exe` (in progress — it will be a test-only harness driving `AcousticsToolbox_jll`, not a shared library shipped with this package)
 
 ## Installation
 
@@ -76,7 +77,10 @@ group_speeds = 2pi ./ ForwardDiff.derivative(calculate_kr_pekeris, freq)
 
 
 ## More examples
-More examples can be accessed in the `examples` folder.
+
+More examples can be accessed in the `examples` folder. ❗Most of them do not currently run: they
+call an `EnvKRAKEN` API that was removed when the Fortran sources moved out of this repository.
+They are being rewritten against the current API.
 
 ## Contributing
 

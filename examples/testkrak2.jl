@@ -100,7 +100,7 @@ ssp1 = [
     5000.000 1536.150 0.000 1.03000 0.000 0.000
 ]
 
-ssp1=ssp1[1:55,:]
+ssp1=ssp1[1:55, :]
 b2 = [300.0 0.0 1300.0]
 ssp2 = [
     1000.000 1467.0 0.0 1.75100 0.000 0.000
@@ -126,24 +126,17 @@ sspHS = [sspTHS; sspBHS]
 
 nz = nsr + nrc
 
-
 env = UnderwaterEnv(ssp, b, sspHS)
 res = kraken_jl(env, frq)
 
-
 f = Figure();
 
-ax1 = Axis(
-    f[1, 1],
-    xlabel = "Sound Speed (m/s)",
-    ylabel = "Depth (km)",
-    title = "Sound Speed Profile",
-)
+ax1 = Axis(f[1, 1]; xlabel="Sound Speed (m/s)", ylabel="Depth (km)", title="Sound Speed Profile")
 lines!(ax1, ssp[:, 2], -ssp[:, 1] / 1000)
 
-ax2 = Axis(f[1, 2], xlabel = "Mode Amplitude ϕ", title = "Modes")
+ax2 = Axis(f[1, 2]; xlabel="Mode Amplitude ϕ", title="Modes")
 for (i, mode) in enumerate(eachcol(res.modes[:, 1:5]))
     lines!(ax2, mode, -vec(vcat(res.props.zn_vec...) / 1000); label="mode $i")
 end
-axislegend(ax2; position = :rb)
+axislegend(ax2; position=:rb)
 display(f)

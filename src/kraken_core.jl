@@ -571,9 +571,12 @@ end
 function create_finite_diff_matrix!(kr, env, props, cache)
     g = get_g(kr, env, props)
 
-    # Update the diagonal elements
+    # Update the diagonal elements.
+    # Spelled `.= x .- y` rather than `.-=`: `@views` on an updating broadcast is a syntax error on
+    # Julia 1.10 ("invalid let syntax"), which is the lower bound declared in Project.toml. Same
+    # allocation behaviour — @views makes both sides views either way.
     cache.a_vec[end] = 0.5 * cache.a_vec[end] - kr^2 .* cache.λ_scaling[end] - g
-    @views cache.a_vec[1:(end - 1)] .-= kr^2 .* cache.λ_scaling[1:(end - 1)]
+    @views cache.a_vec[1:(end - 1)] .= cache.a_vec[1:(end - 1)] .- kr^2 .* cache.λ_scaling[1:(end - 1)]
 
     # The Tridiagonal matrix will automatically reflect these changes
     # since it's using views of the vectors
@@ -583,7 +586,7 @@ end
 function return_finite_diff_matrix!(kr, env, props, cache)
     g = get_g(kr, env, props)
     cache.a_vec[end] = 2 * (cache.a_vec[end] + kr^2 .* cache.λ_scaling[end] + g)
-    @views cache.a_vec[1:(end - 1)] .+= kr^2 .* cache.λ_scaling[1:(end - 1)]
+    @views cache.a_vec[1:(end - 1)] .= cache.a_vec[1:(end - 1)] .+ kr^2 .* cache.λ_scaling[1:(end - 1)]  # see above
     # The Tridiagonal matrix will automatically reflect these changes
     # since it's using views of the vectors
     return nothing
@@ -650,6 +653,36 @@ function richard_extrap(h_meshes, krs_meshes)
     return sqrt(sol[1])
 end
 
+"""
+    kraken_jl(env, freq; n_meshes=5, rmax=10_000, method=ITP(), dont_break=false, abstol=1e-6, reltol=1e-6)
+
+Solve the normal-mode problem for environment `env` at frequency `freq` (Hz). Top-level entry point.
+
+Discretizes the depth-separated wave equation on a sequence of successively finer meshes, brackets
+each mode with [`bisection`](@ref), refines it with [`solve_for_kr`](@ref), recovers the mode shapes
+with [`inverse_iteration`](@ref), and Richardson-extrapolates the squared wavenumbers across mesh
+levels until they converge.
+
+Returns a `NormalModeSolution` with fields `kr` (horizontal wavenumbers, descending), `modes` (one
+column per mode, sampled on the finest mesh), `env`, and `props`. Returns an empty solution when the
+environment supports no trapped modes at this frequency.
+
+# Keyword arguments
+- `n_meshes`: maximum number of mesh refinement levels to extrapolate across.
+- `rmax`: maximum range of interest (m). Sets the convergence criterion — refinement stops once the
+  wavenumber change would shift phase by less than one radian over `rmax`.
+- `method`: bracketing solver passed to `IntervalNonlinearProblem`.
+- `dont_break`: run all `n_meshes` levels even after convergence. Useful for studying mesh error.
+- `abstol`, `reltol`: tolerances forwarded to the root solver.
+
+# Example
+```julia
+env = UnderwaterEnv(pekeris_env()...)
+sol = kraken_jl(env, 100.0)
+sol.kr        # 5 wavenumbers
+sol.modes     # mode shapes, one column each
+```
+"""
 function kraken_jl(env, freq; n_meshes=5, rmax=10_000, method=ITP(), dont_break=false, abstol=1e-6, reltol=1e-6)
     # First mesh first
     local rich_krs

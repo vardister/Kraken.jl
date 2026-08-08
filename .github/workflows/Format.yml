@@ -1,0 +1,44 @@
+name: Format
+
+on:
+  push:
+    branches: [master, revival]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    name: JuliaFormatter
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1"
+      - uses: julia-actions/cache@v2
+      - name: Install JuliaFormatter
+        # Pinned to the major version the repo was formatted with. JuliaFormatter changes its
+        # output between majors, so an unpinned install turns this job into a random failure.
+        run: julia -e 'using Pkg; Pkg.add(PackageSpec(name="JuliaFormatter", version="2"))'
+      - name: Check formatting
+        # Settings come from .JuliaFormatter.toml (blue style, indent 4, margin 120).
+        # `format` returns true when nothing needed changing; the diff is printed so the failure
+        # says what to fix rather than only that something is wrong.
+        run: |
+          julia -e '
+            using JuliaFormatter
+            if format(".", verbose=true)
+                println("All files are formatted.")
+            else
+                write(stdout, read(`git diff`, String))
+                @error "Some files are not formatted. Run: julia -e '"'"'using JuliaFormatter; format(\".\")'"'"'"
+                exit(1)
+            end'

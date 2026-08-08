@@ -6,31 +6,23 @@ using Distributed # to get `pmap` and `@everywhere`
 addprocs(4) # Add 4 processes
 @everywhere using Kraken
 
-
 using CairoMakie
 using BenchmarkTools
 
 @everywhere function main(freq)
+    nm = 41
+    hw = 71.0
 
-nm = 41
-hw = 71.0
+    ssp, b, sspHS = env_builder(hw=hw)
 
-ssp, b, sspHS = env_builder(hw=hw)
+    nsr = 1
+    zsr = 18.0
+    nrc = 70
+    zrc = [0.0, hw]
 
-nsr = 1
-zsr = 18.0
-nrc = 70
-zrc = [0.0, hw]
+    env_temp = EnvKRAKEN(ssp, b, sspHS, zrc, zsr)
 
-env_temp = EnvKRAKEN(
-    ssp,
-    b,
-    sspHS,
-    zrc,
-    zsr,
-)
-
-return kraken(env_temp, freq; n_modes=nm)
+    return kraken(env_temp, freq; n_modes=nm)
 end
 
 freqs = fill(500.0, 100)
