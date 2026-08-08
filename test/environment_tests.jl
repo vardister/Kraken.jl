@@ -95,15 +95,31 @@ end
         ssp, layers, sspHS = munk_env()
 
         @test size(ssp, 1) > 10  # Should have many depth points
-        @test minimum(ssp[:, 2]) < 1490.0  # Should have sound speed minimum
-        @test maximum(ssp[:, 2]) > 1520.0  # Should have sound speed maximum
 
-        # Test that Munk profile has the characteristic minimum
-        depths = -ssp[:, 1]
+        # Depths in column 1 are already positive (z increases downwards from the
+        # surface); do NOT negate them.
+        depths = ssp[:, 1]
         speeds = ssp[:, 2]
         min_idx = argmin(speeds)
-        min_depth = depths[min_idx]
-        @test min_depth > 1000.0 && min_depth < 1500.0  # Munk minimum around 1300m
+
+        # The Munk profile is *defined* by its sound-channel axis at z = 1300 m, where
+        # ẑ = 2(z - 1300)/1300 vanishes and the perturbation term ε(ẑ - 1 + exp(-ẑ))
+        # is therefore exactly zero. So the minimum is exactly 1500.0 m/s at exactly
+        # 1300 m -- not "around" either value. If this fails, the profile coefficients
+        # have moved; do not repair it by loosening the bounds.
+        @test speeds[min_idx] ≈ 1500.0 atol = 1e-10
+        @test depths[min_idx] ≈ 1300.0
+
+        # Sound speed increases monotonically away from the axis in both directions.
+        @test issorted(speeds[1:min_idx]; rev=true)
+        @test issorted(speeds[min_idx:end])
+        @test maximum(speeds) > 1520.0
+
+        # The two assertions above are insensitive to ε, because the ε term vanishes
+        # identically at the axis. Pinning the endpoints is what guards ε itself:
+        # ε = 0.00737 -> c(0) = 1548.52, whereas ε = 0.0080 -> c(0) = 1541.86.
+        @test speeds[1] ≈ 1548.5210151736783 atol = 1e-6
+        @test speeds[end] ≈ 1551.9107368195284 atol = 1e-6
     end
 end
 

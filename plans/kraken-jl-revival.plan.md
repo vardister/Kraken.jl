@@ -214,7 +214,7 @@ five wired-in test files to completion and reports zero failures.
   `UndefVarError`.
 - **Dependencies:** 1.1
 
-### 1.3 [ ] Correct the two wrong Munk assertions
+### 1.3 [x] Correct the two wrong Munk assertions *(completed 2026-08-08)*
 - **Files:** `test/environment_tests.jl`
 - **What:** Both failures at lines 98 and 106 are defective assertions, not solver bugs — do not weaken them,
   fix them. Line 98 asserts the Munk minimum sound speed is below 1490 m/s; the canonical Munk profile as
