@@ -276,6 +276,128 @@ const KR = KrakenReference
             end
         end
 
+        @testset "runner" begin
+            pekeris = UnderwaterEnv(pekeris_env()...)
+
+            @testset "solves the canonical Pekeris case" begin
+                result = KR.run_fortran_kraken(pekeris, 100.0)
+                @test result.nmodes == 5
+                @test real(result.kᵣ[1]) ≈ 0.4179 atol = 1e-4
+                @test result.freq == 100.0
+                @test result.dir === nothing            # cleaned up when keep_files is false
+                @test isempty(result.warnings)
+                @test length(result.grp.m) == result.nmodes
+                @test real(result.grp.kᵣ[1]) ≈ 0.4179 atol = 1e-4
+                @test size(result.ϕ, 2) == result.nmodes
+                @test size(result.ϕ, 1) == length(result.depths)
+            end
+
+            @testset "keyword arguments reach the .env writer" begin
+                # `rd` is the mode-shape grid, so setting it must change what comes back.
+                result = KR.run_fortran_kraken(pekeris, 100.0; rd=range(0.0, 100.0; length=51))
+                @test length(result.depths) == 52       # 51 receivers plus the source depth
+                @test result.nmodes == 5
+            end
+
+            @testset "broadband returns one result per frequency" begin
+                results = KR.run_fortran_kraken(pekeris, [50.0, 100.0, 200.0])
+                @test length(results) == 3
+                @test [r.freq for r in results] == [50.0, 100.0, 200.0]
+                @test [r.nmodes for r in results] == [2, 5, 9]
+                @test issorted([r.nmodes for r in results])
+            end
+
+            @testset "krakenc.exe via complex=true" begin
+                result = KR.run_fortran_kraken(pekeris, 100.0; complex=true)
+                @test result.nmodes == 5
+                @test occursin("krakenc", result.binary)
+                # This is the binary that actually reports group speeds -- see has_group_speeds.
+                @test KR.has_group_speeds(result.grp)
+                @test all(1400.0 .< result.grp.v .< 1600.0)
+            end
+
+            @testset "a failed run raises, quoting the Fortran" begin
+                # NMESH=1 is below half the mesh KRAKEN wants, which ReadEnvironment rejects. The
+                # binary still exits 0, so this is exactly the case an exit-code check would miss
+                # and then misreport as a missing .mod file.
+                err = try
+                    KR.run_fortran_kraken(pekeris, 100.0; nmesh=1)
+                    nothing
+                catch e
+                    e
+                end
+                @test err isa KR.FortranKrakenError
+                message = sprint(showerror, err)
+                @test occursin("FATAL ERROR", message)
+                @test occursin("Mesh is too coarse", message)
+                @test occursin("ReadEnvironment", message)
+                @test occursin("kraken.exe", message)
+                @test occursin("Mesh is too coarse", err.report)
+            end
+
+            # Run directories are `mktempdir()` children holding a `case.env`. Identifying them by
+            # that file rather than by counting entries keeps these assertions honest when another
+            # process is also writing to the system temp directory.
+            run_dirs() = filter(readdir(tempdir(); join=true)) do path
+                isdir(path) && isfile(joinpath(path, "case.env"))
+            end
+
+            @testset "temporary directories are cleaned up" begin
+                before = Set(run_dirs())
+                KR.run_fortran_kraken(pekeris, 100.0)
+                for _ in 1:3
+                    try
+                        KR.run_fortran_kraken(pekeris, 100.0; nmesh=1)
+                    catch
+                    end
+                end
+                # Successful and failed runs alike must leave nothing behind.
+                @test isempty(setdiff(Set(run_dirs()), before))
+            end
+
+            @testset "keep_files preserves the run directory" begin
+                result = KR.run_fortran_kraken(pekeris, 100.0; keep_files=true)
+                try
+                    @test result.dir !== nothing
+                    @test isdir(result.dir)
+                    @test sort(readdir(result.dir)) == ["case.env", "case.mod", "case.prt"]
+                finally
+                    rm(result.dir; recursive=true, force=true)
+                end
+
+                # keep_files survives a failure too -- that is exactly when you want to look at the
+                # inputs. The directory is not reachable through the exception, so find it by diff.
+                before = Set(run_dirs())
+                try
+                    KR.run_fortran_kraken(pekeris, 100.0; nmesh=1, keep_files=true)
+                catch
+                end
+                kept = collect(setdiff(Set(run_dirs()), before))
+                @test length(kept) == 1
+                for dir in kept
+                    @test isfile(joinpath(dir, "case.env"))     # the input that caused the failure
+                    @test isfile(joinpath(dir, "case.prt"))     # and the Fortran's own diagnosis
+                    rm(dir; recursive=true, force=true)
+                end
+            end
+
+            @testset "bindir overrides the binary" begin
+                local_build = "/Users/arielv/programs/AcousticsToolboxOALIB/bin"
+                if isfile(joinpath(local_build, "kraken.exe"))
+                    result = KR.run_fortran_kraken(pekeris, 100.0; bindir=local_build)
+                    @test result.binary == joinpath(local_build, "kraken.exe")
+                    @test result.nmodes == 5
+                    # The 2023 build does report group speeds where the jll's kraken.exe does not.
+                    @test KR.has_group_speeds(result.grp)
+                else
+                    @info "No local Acoustics Toolbox build at $local_build — bindir test skipped."
+                end
+                @test_throws ErrorException KR.run_fortran_kraken(
+                    pekeris, 100.0; bindir=joinpath(tempdir(), "not-a-toolbox")
+                )
+            end
+        end
+
         @testset "env writer accepted by kraken.exe" begin
             @testset "$(case.name)" for case in env_writer_cases
                 mktempdir() do dir

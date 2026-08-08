@@ -547,7 +547,7 @@ the package's public surface. KrakenFortran.jl is not touched.
   property, and it works on a fresh clone and in CI, which reading an untracked file would not.
 - **Dependencies:** 3.2
 
-### 3.4 [ ] Implement the runner
+### 3.4 [x] Implement the runner *(completed 2026-08-08)*
 - **Files:** `test/reference/runner.jl`
 - **What:** `run_fortran_kraken(env, freq; complex=false, keep_files=false)` writes the `.env` into a temporary
   directory, invokes `kraken.exe` (or `krakenc.exe` when `complex=true`) with the file root as its single
