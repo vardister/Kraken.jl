@@ -274,6 +274,18 @@ These are facts established by running the code, not assumptions. Tasks below re
   `path = ".."` on the `[[deps.Kraken]]` entry. `Pkg.test()` from the *root* env is immune, which is
   why the two runs disagreed and why the immune one is not the one to trust here.
 
+  **Prevention is a startup guard, not more documentation** — `CLAUDE.md` and `test/README.md`
+  already warned about this and it still happened, because both said "fresh clone" and a worktree
+  does not read as one. `test/runtests.jl` now calls `check_testing_this_checkout()` before any
+  testset: it compares `pkgdir(Kraken)` with the directory `test/` lives in and aborts with the
+  exact `Pkg.develop` command when they differ. Works on every Julia version and in both run modes.
+  Committing `test/Manifest.toml` was considered and **rejected**: Kraken.jl is a library, so an
+  un-pinned test env is what makes CI report upstream breakage; a committed manifest also pins one
+  `julia_version` against a 1.10 CI leg, and stays correct only while the `[[deps.Kraken]]` entry
+  is relative (`Pkg.develop` from outside the repo writes an absolute path, hard-coding one
+  machine into the repo). A `[sources]` entry in `test/Project.toml` would be the declarative fix
+  but needs Pkg 1.11+; revisit when the `julia = "1.10"` bound is dropped.
+
 - **The declared `julia = "1.10"` compat bound is real and enforced** (established during 2.6). It was
   not: `@views x[1:(end-1)] .-= y` is a syntax error on 1.10, so the package could not even load
   there. Fixed in `create_finite_diff_matrix!`/`return_finite_diff_matrix!` rather than raising the

@@ -196,10 +196,29 @@ julia --project=test -e 'using Kraken; println(pathof(Kraken))'
 ```
 
 > **Why this is required, and not optional.** `Kraken` is registered in the General registry, and
-> `test/Manifest.toml` is gitignored. On a fresh clone, `--project=test` therefore resolves `Kraken`
-> from the *registry* — you would be testing the last released version instead of your working tree,
-> silently and with no error. The `Pkg.develop` call above overrides that with a path entry.
-> `Pkg.test()` from the root environment is immune to this: it always uses the local package.
+> `test/Manifest.toml` is gitignored — `.gitignore` carries a bare `Manifest.toml` pattern, which
+> matches at *every* depth, so the rule aimed at the root manifest catches the test one too. On a
+> fresh clone — **or in a new git worktree**, which is the easy case to forget, since ignored files
+> are not carried over — `--project=test` therefore resolves `Kraken` from the *registry*. You would
+> be testing the last released version instead of your working tree, silently and with no error; it
+> surfaces as `UndefVarError` on every symbol added since that release. The `Pkg.develop` call above
+> overrides that with a path entry. `Pkg.test()` from the root environment is immune: it always uses
+> the local package, which is why the two run modes can disagree — and the immune one is not the one
+> to trust when they do.
+>
+> `test/runtests.jl` guards this on startup: `check_testing_this_checkout()` compares
+> `pkgdir(Kraken)` against the directory `test/` lives in and aborts with the fix command if they
+> differ, so the mistake can no longer be mistaken for a code failure.
+>
+> **The manifest stays gitignored on purpose.** Committing it would pin the dev-link for every
+> clone, but Kraken.jl is a library: an un-pinned test environment is what makes CI re-resolve and
+> tell you when a new `DataInterpolations`/`NonlinearSolve` release breaks the package. A committed
+> manifest also couples the tree to one Julia version (CI runs a 1.10 leg) and only works while the
+> `[[deps.Kraken]]` entry stays relative — `Pkg.develop` from outside the repo writes an *absolute*
+> path, which would hard-code one developer's machine into the repo. The startup guard is the fix
+> that has none of those costs. (Once the `julia = "1.10"` bound is dropped, a `[sources]` entry in
+> `test/Project.toml` — Pkg 1.11+ — would make the dev-link declarative and tracked; it is not
+> usable while the LTS is supported.)
 
 ```bash
 # Run a single TestItems file. `t.filename` is an ABSOLUTE path, so match with `endswith`

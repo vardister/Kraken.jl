@@ -58,10 +58,13 @@ KRAKEN_OALIB_TESTS=~/programs/AcousticsToolboxOALIB/tests \
   julia --project=. -e 'using Pkg; Pkg.test()'
 
 # ONE-TIME setup, REQUIRED before the single-file invocations below.
-# `Kraken` is registered in General, and test/Manifest.toml is gitignored — so on a fresh
-# clone `--project=test` silently resolves Kraken to the RELEASED version from the registry
-# instead of your working tree, and you test code you did not write. This dev-links it.
-# (`Pkg.test()` from the root env is immune — it always uses the local package.)
+# Run it once per clone AND once per git worktree — `.gitignore`'s bare `Manifest.toml` pattern
+# matches at every depth, so test/Manifest.toml is never carried into a new worktree either.
+# `Kraken` is registered in General, so without this dev-link `--project=test` silently resolves
+# Kraken to the RELEASED version from the registry instead of your working tree, and you test code
+# you did not write. (`Pkg.test()` from the root env is immune — it always uses the local package,
+# which is why the two run modes can disagree.) `test/runtests.jl` now checks this on startup and
+# fails with the fix command rather than letting the suite run against the wrong package.
 julia --project=test -e 'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'
 
 # Verify the link points at the working tree, not ~/.julia/packages/Kraken/...
