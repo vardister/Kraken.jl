@@ -15,23 +15,29 @@ KRAKEN_RUN_PERFORMANCE_TESTS=true julia --project=. -e 'using Pkg; Pkg.test()'
 
 ## Baseline
 
-Recorded at the end of Milestone 1 (commit `df99dfb`, 2026-08-08) on Julia 1.12.6, macOS
-arm64 (M1), 1 thread inside `Pkg.test()`. Both runs are green: 0 failures, 0 errors, 0 broken.
+Julia 1.12.6, macOS arm64 (M1), 1 thread inside `Pkg.test()`. Every run below is green: 0 failures,
+0 errors, 0 broken.
 
-| Run | Tests | Suite time |
+| Run | End of M1 (`df99dfb`) | End of M2 (`ce38000`) |
 |---|---|---|
-| `Pkg.test()` | **258** | 2m05s |
-| `KRAKEN_RUN_PERFORMANCE_TESTS=true Pkg.test()` | **282** | 2m25s |
+| `Pkg.test()` | **258** / 2m05s | **380** / 2m05s |
+| `KRAKEN_RUN_PERFORMANCE_TESTS=true Pkg.test()` | **282** / 2m25s | **404** / 2m20s |
 
 Per file, so a silent drop in coverage is visible in a diff:
 
-| File | Tests |
-|---|---|
-| `environment_tests.jl` | 39 |
-| `integration_tests.jl` | 98 |
-| `numerical_methods_tests.jl` | 73 |
-| `automatic_differentiation_tests.jl` | 48 |
-| `performance_tests.jl` (opt-in) | 24 |
+| File | End of M1 | End of M2 |
+|---|---|---|
+| `environment_tests.jl` | 39 | 161 |
+| `integration_tests.jl` | 98 | 98 |
+| `numerical_methods_tests.jl` | 73 | 73 |
+| `automatic_differentiation_tests.jl` | 48 | 48 |
+| `performance_tests.jl` (opt-in) | 24 | 24 |
+
+The M2 jump is the B1–B5 regression tests added in task 2.5; the B4 bisection sweep (8 environments
+× 4 frequencies) is 82 of the 122 new assertions on its own.
+
+The suite also runs on Julia 1.10, the declared compat lower bound — verified directly, not assumed
+(see the note in the plan's Architecture Decisions).
 
 The suite time is dominated by `automatic_differentiation_tests.jl` (~70 s: it runs `kraken_jl`
 under `ForwardDiff` *and* `FiniteDiff` across dozens of parameter points). Add roughly 4 minutes

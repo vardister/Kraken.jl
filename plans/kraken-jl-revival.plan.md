@@ -136,6 +136,18 @@ These are facts established by running the code, not assumptions. Tasks below re
 - **Breaking API changes are permitted.** Nothing depends on this package yet, and the current names
   (`one_layer_test_dict_KRAKEN` returning a tuple, not a dict) are actively misleading.
 
+- **Plotting extension triggers on `Makie`, not `CairoMakie`** (revised during 2.2). CairoMakie depends
+  on Makie, so `using CairoMakie` activates the extension exactly as originally planned — but so does
+  `using GLMakie`, which a CairoMakie-only trigger would have excluded for no benefit. The extension
+  uses nothing backend-specific: `Figure`, `Axis`, `lines!` are all Makie's API.
+
+- **The declared `julia = "1.10"` compat bound is real and enforced** (established during 2.6). It was
+  not: `@views x[1:(end-1)] .-= y` is a syntax error on 1.10, so the package could not even load
+  there. Fixed in `create_finite_diff_matrix!`/`return_finite_diff_matrix!` rather than raising the
+  bound, because 1.10 is the current LTS. Keep new code loadable on 1.10 — CI's `1.10` matrix entry
+  is what catches this, and it exists precisely because developing on 1.12 while claiming 1.10 is how
+  the bound rotted in the first place.
+
 ## Diagrams
 
 Where the reference oracle attaches:
@@ -333,7 +345,7 @@ makes local Fortran compilation unnecessary anyway.
 | B1–B5 (see Context) | fix, each with a regression test | |
 | `.github/workflows/CI.yml` | add | test matrix + format check |
 
-### 2.1 [ ] Prune unused dependencies
+### 2.1 [x] Prune unused dependencies *(completed 2026-08-08)*
 - **Files:** `Project.toml`
 - **What:** Remove the eight dependencies listed in the spec table above, along with their `[compat]` entries.
   Before removing each, re-confirm with a grep across `src/` that it is genuinely unreferenced (`Statistics`,
@@ -346,7 +358,7 @@ makes local Fortran compilation unnecessary anyway.
   removed package.
 - **Dependencies:** 1.7
 
-### 2.2 [ ] Move plotting into a package extension
+### 2.2 [x] Move plotting into a package extension *(completed 2026-08-08)*
 - **Files:** create `ext/KrakenMakieExt.jl`, delete `src/kraken_plots.jl`, edit `Project.toml`, `src/Kraken.jl`
 - **What:** Declare `CairoMakie` under `[weakdeps]` with an `[extensions]` entry, move the plotting functions
   from `kraken_plots.jl` into the extension module, and define the function stubs they extend in
@@ -356,7 +368,7 @@ makes local Fortran compilation unnecessary anyway.
   work; calling a plot function without CairoMakie loaded gives an actionable error, not a `MethodError`.
 - **Dependencies:** 2.1
 
-### 2.3 [ ] Delete dead source files and stage the broadband code
+### 2.3 [x] Delete dead source files and stage the broadband code *(completed 2026-08-08)*
 - **Files:** delete `src/kraken_basic.jl`, `Makefile`, `KRAKEN.jl.sublime-workspace`; move `src/kraken_broadband.jl` → `dev/kraken_broadband.jl`; edit `src/Kraken.jl`, `CLAUDE.md`
 - **What:** `kraken_basic.jl` is a zero-byte file that `Kraken.jl` `include`s — remove both. The `Makefile`
   builds `src_fortran/source/*.f90`, which this repo does not contain (moved to KrakenFortran.jl in `49d9343`),
@@ -367,7 +379,7 @@ makes local Fortran compilation unnecessary anyway.
   `using Kraken` still works.
 - **Dependencies:** 2.2
 
-### 2.4 [ ] Untrack binaries and generated artifacts
+### 2.4 [x] Untrack binaries and generated artifacts *(completed 2026-08-08)*
 - **Files:** `.gitignore`, `git rm` of `src/kraken.so`, `src/kraken.dll`, `docs/build/**`, `docs/Manifest.toml`, all `.DS_Store`
 - **What:** Remove the tracked Fortran shared libraries — Milestone 3 obtains reference binaries from
   `AcousticsToolbox_jll`, so no binary belongs in this tree. `git rm --cached` the generated `docs/build/` and
@@ -378,7 +390,7 @@ makes local Fortran compilation unnecessary anyway.
   `git status` is clean after a docs build.
 - **Dependencies:** 2.3
 
-### 2.5 [ ] Fix bugs B1–B5 with regression tests
+### 2.5 [x] Fix bugs B1–B5 with regression tests *(completed 2026-08-08)*
 - **Files:** `src/kraken_core.jl`, `src/kraken_pekeris.jl`, `test/numerical_methods_tests.jl`, `test/environment_tests.jl`
 - **What:** Fix each defect from the Context table and add a test that fails without the fix. **B1**: the
   `SampledDensity1D` show method prints a nonexistent `.type` field — mirror the working `SampledSSP1D` method.
@@ -391,7 +403,7 @@ makes local Fortran compilation unnecessary anyway.
 - **Acceptance:** Five new tests, each verified to fail on the pre-fix code and pass after.
 - **Dependencies:** 2.4
 
-### 2.6 [ ] Add GitHub Actions CI
+### 2.6 [x] Add GitHub Actions CI *(completed 2026-08-08)*
 - **Files:** create `.github/workflows/CI.yml`, `.github/workflows/Format.yml`, `README.md`
 - **What:** Test matrix over Julia `1.10` (the declared lower bound), `lts`, and `1`, on `ubuntu-latest` and
   `macos-latest`, running `Pkg.test()` from the root env. A separate job runs JuliaFormatter in check mode
@@ -402,7 +414,7 @@ makes local Fortran compilation unnecessary anyway.
   reformatted and fixed if `format(".")` is run.
 - **Dependencies:** 2.5
 
-### 2.7 [ ] Repair the docs build
+### 2.7 [x] Repair the docs build *(completed 2026-08-08)*
 - **Files:** `docs/make.jl`, `docs/Project.toml`, `docs/src/index.md`
 - **What:** `docs/make.jl` says `using Documenter, KRAKEN` but the module is `Kraken`, so the build has never
   run. Fix the module name, give `makedocs` a real `sitename` and `modules=[Kraken]`, and replace the

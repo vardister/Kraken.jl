@@ -48,9 +48,22 @@ julia --project=test -e 'using TestItemRunner; @run_package_tests filter=t->ends
 # Run a single @testset-based file (numerical_methods_tests.jl, automatic_differentiation_tests.jl)
 julia --project=test -e 'using Kraken; include("test/numerical_methods_tests.jl")'
 
-# Format (JuliaFormatter, config in .JuliaFormatter.toml: indent=4, style=blue, margin=120)
-julia -e 'using JuliaFormatter; format(".")'
+# Format (JuliaFormatter, config in .JuliaFormatter.toml: indent=4, style=blue, margin=120).
+# Formats in place AND reports — this is both the fix command and exactly what CI runs, so run it
+# before pushing. Do NOT use `format(".")`: JuliaFormatter ignores .gitignore and descends into
+# .git/, where this repo has branch refs whose names end in `.jl`.
+julia .github/format_check.jl
+
+# Build the docs. CI builds them too, so this must stay green.
+julia --project=docs -e 'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'   # one-time
+julia --project=docs docs/make.jl
 ```
+
+**Julia 1.10 is the declared lower bound and it is real** — CI runs the suite on it. Two things bite:
+`@views x[1:(end-1)] .-= y` (an updating broadcast under `@views`) is a *syntax error* on 1.10, so
+write `@views x[1:(end-1)] .= x[1:(end-1)] .- y` instead. Verify locally with
+`juliaup add 1.10 && julia +1.10 --startup-file=no --project=. -e 'using Pkg; Pkg.test()'` — note
+`--startup-file=no`, or the user's `startup.jl` fails on a missing Revise in that depot.
 
 Test files fall into three categories (see `test/README.md` for the up-to-date table):
 - **TestItems** files (`environment_tests.jl`, `integration_tests.jl`) — use `@testitem`, run via `@run_package_tests` in `runtests.jl`.

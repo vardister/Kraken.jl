@@ -29,16 +29,6 @@ jobs:
         # output between majors, so an unpinned install turns this job into a random failure.
         run: julia -e 'using Pkg; Pkg.add(PackageSpec(name="JuliaFormatter", version="2"))'
       - name: Check formatting
-        # Settings come from .JuliaFormatter.toml (blue style, indent 4, margin 120).
-        # `format` returns true when nothing needed changing; the diff is printed so the failure
-        # says what to fix rather than only that something is wrong.
-        run: |
-          julia -e '
-            using JuliaFormatter
-            if format(".", verbose=true)
-                println("All files are formatted.")
-            else
-                write(stdout, read(`git diff`, String))
-                @error "Some files are not formatted. Run: julia -e '"'"'using JuliaFormatter; format(\".\")'"'"'"
-                exit(1)
-            end'
+        # The check lives in .github/format_check.jl so YAML and shell quoting cannot mangle it.
+        # Run the same thing locally with: julia .github/format_check.jl
+        run: julia .github/format_check.jl
