@@ -4,9 +4,9 @@ using Kraken
 include("reference/KrakenReference.jl")
 const KR = KrakenReference
 
-# Cross-validation against unmodified Fortran KRAKEN. Plan tasks 3.2-3.7 extend this file with the
-# .env writer, the .mod/.prt readers, the runner, and the per-environment comparison suite; for now
-# it covers binary resolution only.
+# Cross-validation against unmodified Fortran KRAKEN. Plan tasks 3.3-3.7 extend this file with the
+# .mod/.prt readers, the runner, and the per-environment comparison suite; for now it covers binary
+# resolution and the .env writer.
 #
 # Everything here is gated on KR.fortran_available(): a platform with no AcousticsToolbox_jll build
 # and no KRAKEN_FORTRAN_BIN must skip with a message, never error.
@@ -80,6 +80,103 @@ const KR = KrakenReference
             end
         finally
             restore!()
+        end
+    end
+
+    # --- .env writer -------------------------------------------------------------------------
+
+    # The environments the writer has to cover, paired with the checked-in file that documents the
+    # format for that shape. `nothing` means there is no companion file — those cases exist to
+    # exercise a many-point profile and the broadband record block.
+    env_writer_cases = [
+        (name="pekeris", env=UnderwaterEnv(pekeris_env()...), freq=100.0, ref="Pekeris_AV.env"),
+        (name="onelayer", env=UnderwaterEnv(one_layer_env()...), freq=100.0, ref="onelayer_AV.env"),
+        (name="onelayer_slope", env=UnderwaterEnv(one_layer_slope_env()...), freq=100.0, ref="onelayer_slope_AV.env"),
+        (name="twolayer_slope", env=UnderwaterEnv(two_layer_slope_env()...), freq=100.0, ref="twolayer_slope_AV.env"),
+        (name="munk", env=UnderwaterEnv(munk_env()...), freq=50.0, ref=nothing),
+        (name="pekeris_broadband", env=UnderwaterEnv(pekeris_env()...), freq=[50.0, 100.0, 200.0], ref=nothing),
+    ]
+
+    # Numeric tokens on one .env record: strip the `!` comment, the quoted strings (title,
+    # top/bottom options) and the `/` terminator, then parse what is left.
+    function env_numbers(line)
+        text = replace(first(split(line, '!')), r"'[^']*'" => " ", '/' => ' ')
+        return Float64[v for v in (tryparse(Float64, t) for t in split(text)) if v !== nothing]
+    end
+
+    # Split an .env file into the three groups the writer is responsible for getting right, without
+    # reimplementing the full reader that task 3.7 will write. The bottom-option record is the
+    # anchor: it is the first quoted record after the top options on line 4, and everything before
+    # it is the environment proper (freq, nmedia, and the per-medium mesh + SSP rows).
+    function env_sections(path)
+        lines = filter(l -> !isempty(strip(first(split(l, '!')))), collect(eachline(path)))
+        bot = findfirst(i -> i > 4 && occursin('\'', lines[i]), eachindex(lines))
+        bot === nothing && error("No bottom-option record found in $path")
+        return (
+            environment=reduce(vcat, env_numbers.(lines[1:(bot - 1)]); init=Float64[]),
+            halfspace=env_numbers(lines[bot + 1]),
+            speed_limits=env_numbers(lines[bot + 2]),
+        )
+    end
+
+    @testset "env writer" begin
+        @testset "$(case.name)" for case in env_writer_cases
+            text = KR.env_file_string(case.env, case.freq)
+
+            # Structural invariants that hold for every environment, checked on the text itself so
+            # a failure points at the record rather than at a Fortran error message.
+            @test occursin("! NMEDIA", text)
+            @test occursin("! CLOW  CHIGH (m/s)", text)
+            @test occursin(r"'CVW", text)                          # C-linear SSP, vacuum surface
+            @test count(l -> occursin("! NMESH", l), split(text, '\n')) == length(case.env.layer_depth)
+            @test occursin("! NFREQ", text) == (case.freq isa AbstractVector)
+
+            if case.ref !== nothing
+                # The generated file and the checked-in one describe the same environment, so every
+                # record that *defines* the environment has to agree numerically. The three places
+                # they legitimately differ are all search/output settings rather than physics:
+                # CLOW (1400 by hand vs 0.99*min(c) here), and the source/receiver depth vectors.
+                mine = mktempdir(dir -> env_sections(KR.write_env_file(joinpath(dir, case.name), case.env, case.freq)))
+                theirs = env_sections(joinpath(@__DIR__, "standard_envs", case.ref))
+
+                @test mine.environment == theirs.environment
+                # The checked-in halfspace rows stop after 5 values and let Fortran default ASB to
+                # zero; this writer always emits all 6.
+                @test mine.halfspace[1:5] == theirs.halfspace[1:5]
+                @test mine.halfspace[6] == 0.0
+                # CHIGH is the half-space sound speed in both; CLOW differs by design but must
+                # still sit below every sound speed in the environment.
+                @test mine.speed_limits[2] == theirs.speed_limits[2]
+                @test mine.speed_limits[1] < minimum(case.env.c.c)
+            end
+        end
+    end
+
+    if KR.fortran_available()
+        @testset "env writer accepted by kraken.exe" begin
+            @testset "$(case.name)" for case in env_writer_cases
+                mktempdir() do dir
+                    root = joinpath(dir, case.name)
+                    KR.write_env_file(root, case.env, case.freq)
+                    cmd = Cmd(`$(KR.kraken_cmd()) $(case.name)`; dir=dir)
+                    run(pipeline(ignorestatus(cmd); stdout=devnull, stderr=devnull))
+
+                    # kraken.exe exits 0 even on a fatal error, so the .prt is the only honest
+                    # signal -- see the architecture note in the plan.
+                    prt = root * ".prt"
+                    @test isfile(prt)
+                    report = read(prt, String)
+                    bad = filter(l -> occursin("ERROR", uppercase(l)), split(report, '\n'))
+                    isempty(bad) || @info "kraken.exe reported errors for $(case.name)" bad
+                    @test isempty(bad)
+
+                    # A .mod file that exists and is non-empty means it got all the way through the
+                    # solve, not just through the reader.
+                    @test isfile(root * ".mod")
+                    @test filesize(root * ".mod") > 0
+                    @test occursin("Number of modes", report)
+                end
+            end
         end
     end
 end

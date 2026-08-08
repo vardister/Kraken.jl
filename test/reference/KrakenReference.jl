@@ -17,14 +17,18 @@ KrakenReference.fortran_available()   # false => tests skip rather than error
 KrakenReference.describe()            # one line naming the resolved binary and where it came from
 ```
 
-The `.env` writer, `.mod`/`.prt` readers, runner and comparison utility are added by plan tasks
-3.2-3.5 and `include`d at the bottom of this module.
+```julia
+KrakenReference.write_env_file(joinpath(dir, "case"), UnderwaterEnv(pekeris_env()...), 100.0)
+```
+
+The `.mod`/`.prt` readers, runner and comparison utility are added by plan tasks 3.3-3.5 and
+`include`d at the bottom of this module.
 """
 module KrakenReference
 
 using AcousticsToolbox_jll
 
-export fortran_available
+export fortran_available, write_env_file
 
 """
 Name of the environment variable that overrides the jll binaries with a local Acoustics Toolbox
@@ -150,8 +154,9 @@ function describe()
     return join(parts, ", ")
 end
 
-# Plan tasks 3.2-3.5 add these:
-# include("env_writer.jl")
+include("env_writer.jl")
+
+# Plan tasks 3.3-3.5 add these:
 # include("mod_reader.jl")
 # include("runner.jl")
 # include("compare.jl")

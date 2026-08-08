@@ -146,6 +146,26 @@ These are facts established by running the code, not assumptions. Tasks below re
   *zero* exit status. Task 3.4's runner must therefore scan the generated `.prt` for `ERROR`; an
   exit-code check would silently pass every failed run and then fail confusingly on a missing `.mod`.
 
+- **Generated `.env` files use C-linear interpolation, not the spline the checked-in files use**
+  (decided during 3.2). Every file in `test/standard_envs/` opens with `'SVW'` — cubic spline — but
+  `Kraken.jl` interpolates its SSP linearly (`SampledSSP` wraps `LinearInterpolation`). Writing `'S'`
+  would have the Fortran solve a *different* problem and charge the difference to the solver. The two
+  agree exactly for any medium described by two points, so this only bites `munk_env`, which is
+  precisely the case where it would have been mistaken for solver error. Milestone 6 adds the other
+  interpolators and this becomes a parameter of the comparison rather than a fixed choice.
+
+- **`.env` densities are g/cm³; Kraken.jl's are kg/m³** (established during 3.2). `pekeris_env` uses
+  `ρ0 = 1000.0` where `Pekeris_AV.env` writes `1.0`. The writer applies a `density_scale` factor
+  (default `1e-3`) rather than guessing per environment. Only ratios enter the eigenvalue problem, so
+  this never showed up as a discrepancy before — it would have shown up in mode *normalization*.
+
+- **The receiver-depth vector is not cosmetic** (established during 3.2). `kraken.exe` tabulates mode
+  shapes in the `.mod` file on `zTab`, the merge of the source and receiver depth vectors
+  (`MergeVectors` in `kraken.f90`), so `rd` *is* the resolution at which mode shapes come back and
+  task 3.5's interpolation grid. The writer defaults it to ~20 points per wavelength over the whole
+  water column — the same density KRAKEN picks for its own finite-difference mesh — capped at 2001
+  points to bound the `.mod` record length.
+
 - **The declared `julia = "1.10"` compat bound is real and enforced** (established during 2.6). It was
   not: `@views x[1:(end-1)] .-= y` is a syntax error on 1.10, so the package could not even load
   there. Fixed in `create_finite_diff_matrix!`/`return_finite_diff_matrix!` rather than raising the
@@ -476,7 +496,7 @@ the package's public surface. KrakenFortran.jl is not touched.
   in each case.
 - **Dependencies:** 2.7
 
-### 3.2 [ ] Implement the `.env` writer
+### 3.2 [x] Implement the `.env` writer *(completed 2026-08-08)*
 - **Files:** `test/reference/env_writer.jl`
 - **What:** Serialize an `UnderwaterEnv` (plus frequency and source/receiver settings) into KRAKEN `.env`
   format. Use the checked-in files in `test/standard_envs/` as the format specification — they cover both the
