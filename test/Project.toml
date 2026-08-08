@@ -1,4 +1,5 @@
 [deps]
+AcousticsToolbox_jll = "6380ca6f-c335-511c-b45e-8a1ed8902ca7"
 BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
 FiniteDiff = "6a86dc24-6348-571c-b903-95158fe2bd41"
 ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
@@ -9,6 +10,7 @@ TestItemRunner = "f8b46487-2199-4994-9208-9a1283c18c0a"
 TestItems = "1c621080-faea-4a02-84b6-bbd5e436b8fe"
 
 [compat]
+AcousticsToolbox_jll = "2025.9"
 BenchmarkTools = "1.6"
 FiniteDiff = "2.29"
 ForwardDiff = "1.3"

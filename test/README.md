@@ -59,6 +59,7 @@ of dependency precompilation on the first run after a `Manifest.toml` change.
 | `integration_tests.jl` | TestItems | Full `kraken_jl` workflow, physics validation |
 | `numerical_methods_tests.jl` | Test | Core algorithms: `det_sturm`, `bisection`, `find_kr`, `inverse_iteration` |
 | `automatic_differentiation_tests.jl` | Test | ForwardDiff compatibility, group speed calculations |
+| `fortran_reference_tests.jl` | Test | Cross-validation against unmodified `kraken.exe`; self-skips when no binary resolves |
 
 ### Optional Tests
 
@@ -80,10 +81,29 @@ and those testsets assert a generous absolute ceiling plus the mode counts inste
 
 ### Fortran cross-validation
 
-There is none at present. `fortran_interface_tests.jl` and the `KRAKEN_RUN_FORTRAN_TESTS` switch were
-removed in plan task 1.4: they called an `EnvKRAKEN` API that exists in no module, so they could never
-have run. Milestone 3 replaces them with a `test/reference/` harness that drives unmodified
-`kraken.exe` from `AcousticsToolbox_jll` over `.env`/`.mod` files.
+`fortran_reference_tests.jl` runs the suite against **unmodified** Fortran KRAKEN. The harness lives
+in `test/reference/KrakenReference.jl` — test-only, deliberately not part of the package, because
+validation machinery is not public API.
+
+Binaries come from `AcousticsToolbox_jll`, which ships prebuilt `kraken.exe`/`krakenc.exe` for every
+platform, so **CI needs no Fortran toolchain**. To compare against a local Acoustics Toolbox build
+instead, point `KRAKEN_FORTRAN_BIN` at a directory containing `kraken.exe`:
+
+```bash
+KRAKEN_FORTRAN_BIN=~/programs/AcousticsToolboxOALIB/bin julia --project=. -e 'using Pkg; Pkg.test()'
+```
+
+The override wins when it resolves and falls back to the jll when it does not, so a stale value
+cannot break the suite. Everything is gated on `KrakenReference.fortran_available()`: a platform with
+neither source skips with a message rather than erroring, which is why the file is included
+unconditionally from `runtests.jl`.
+
+> **`kraken.exe` exits 0 even on a fatal error.** It writes `STOP Fatal Error: Check the print file
+> for details` to stderr and stops with a zero status. Anything driving it must scan the generated
+> `.prt` file for `ERROR`, never trust the exit code.
+
+The old `fortran_interface_tests.jl` and its `KRAKEN_RUN_FORTRAN_TESTS` switch were removed in plan
+task 1.4: they called an `EnvKRAKEN` API that exists in no module, so they could never have run.
 
 Prior Enzyme.jl AD experiments lived in `test/ad_tests.jl`, deleted in the same task. They are
 recoverable if Milestone 4 wants them: `git show 580649c:test/ad_tests.jl`.

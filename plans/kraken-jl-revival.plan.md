@@ -141,6 +141,11 @@ These are facts established by running the code, not assumptions. Tasks below re
   `using GLMakie`, which a CairoMakie-only trigger would have excluded for no benefit. The extension
   uses nothing backend-specific: `Figure`, `Axis`, `lines!` are all Makie's API.
 
+- **`kraken.exe` exits 0 even on a fatal error** (established during 3.1). Given a missing or malformed
+  `.env` it writes `STOP Fatal Error: Check the print file for details` to stderr and stops with a
+  *zero* exit status. Task 3.4's runner must therefore scan the generated `.prt` for `ERROR`; an
+  exit-code check would silently pass every failed run and then fail confusingly on a missing `.mod`.
+
 - **The declared `julia = "1.10"` compat bound is real and enforced** (established during 2.6). It was
   not: `@views x[1:(end-1)] .-= y` is a syntax error on 1.10, so the package could not even load
   there. Fixed in `create_finite_diff_matrix!`/`return_finite_diff_matrix!` rather than raising the
@@ -459,7 +464,7 @@ the package's public surface. KrakenFortran.jl is not touched.
 | `compare_with_fortran(env, freq)` | `env`, `freq` | `nmodes`, `atol`, `rtol` | Returns `(; kr_absdiff, kr_reldiff, mode_corr, group_speed_reldiff, n_julia, n_fortran)` |
 | env var `KRAKEN_FORTRAN_BIN` | — | — | Directory overriding the jll's binaries |
 
-### 3.1 [ ] Scaffold the reference module and binary resolution
+### 3.1 [x] Scaffold the reference module and binary resolution *(completed 2026-08-08)*
 - **Files:** create `test/reference/KrakenReference.jl`, edit `test/Project.toml`, `test/runtests.jl`
 - **What:** Create a test-only module `KrakenReference` under `test/reference/`. Add `AcousticsToolbox_jll` to
   `test/Project.toml`. Implement binary resolution: prefer `ENV["KRAKEN_FORTRAN_BIN"]` if set (pointing at a
