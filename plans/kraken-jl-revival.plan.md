@@ -443,6 +443,39 @@ These are facts established by running the code, not assumptions. Tasks below re
   -1.5 under ForwardDiff and 0.0 under Zygote. `test/reverse_ad_tests.jl` carries this as three
   `@test_broken`s so the suite flips green on it when 4.5 lands rather than the gap being rediscovered.
 
+- **`LinearSolve` was not the obstruction at the top level; two lines of bookkeeping were**
+  (established during 4.4, settling that task's own open question). `richard_extrap` needed no
+  change — `Zygote.gradient` through `solve(LinearProblem(A, b))` matches `ForwardDiff` to 14 digits,
+  so the contingency of replacing it with a plain `\` never applied. What blocked reverse mode was
+  the refinement loop's own bookkeeping: `h_meshes[i_power, :] = h_extrap(…)` and
+  `push!(krs_all, …)`, both of which grow state that outlives the expression that made it. They are
+  now `vcat` onto a length-`n_meshes` vector of mesh spacings and a vector of wavenumber vectors,
+  with the Vandermonde matrix broadcast into shape by `h_extrap_matrix(hs) = hs .^ permutedims(0:2:…)`
+  only when the extrapolation needs it. `n_meshes` is 5, so rebuilding both per level is free, and
+  the primal is unchanged: the matrix `h_extrap_matrix` builds is entry-for-entry the submatrix
+  `h_meshes[1:i, 1:i]` used to be sliced out of.
+
+- **At the top level the rule is *not* tolerance-independent, because the root itself moves**
+  (established during 4.4, and it qualifies the 4.2 decision above rather than contradicting it).
+  Tightening `kraken_jl`'s `abstol`/`reltol` from the default `1e-6` to `1e-10` shifts the Zygote
+  gradient by 4.6e-6 and the ForwardDiff one by 6.7e-6, and the two agree with each other to
+  **1.2e-10** at the tight setting versus 6.7e-6 at the loose one. The implicit-function derivative is
+  tolerance-independent *at a fixed root*; end to end the root is an output of the solver, so a loose
+  root tolerance moves the point the rule is evaluated at and everything downstream of it. Central
+  differences on the primal confirm both backends at the tight setting (agreeing to 3.5e-6 at
+  `h = 1e-4`, and diverging below `h = 1e-6` as roundoff takes over — the step has to be *large* here,
+  which is the opposite of the usual instinct). Consequence for 4.6 and 4.7: any end-to-end backend
+  comparison must tighten the tolerance first, or it measures the root solver.
+
+- **`kraken_jl` forwards `abstol`/`reltol` to the coarsest mesh only** (noticed during 4.4; left
+  alone deliberately). Levels 2…`n_meshes` call `find_kr(env, props_new, cache; method=method)` and
+  get NonlinearSolve's own defaults, which are *tighter* than the documented `1e-6` — so the keyword
+  makes the level-1 roots looser than the refinement levels rather than controlling the solve as a
+  whole. Fixing it would change the primal on every refinement level, and the plan has already
+  established (see the `range` entry above) that the Richardson extrapolation is more sensitive to
+  small perturbations than the cross-validation tolerances suggest. Left as a separate change so it
+  can be re-validated against `kraken.exe` on its own rather than inside an AD task.
+
 - **`integral_trapz` was reimplemented and `Integrals` dropped as a dependency** (during 4.3). The
   mode normalization is on the seam, so its integral has to be traceable; `Integrals`'
   `SampledIntegralProblem` was pulling a solver stack into a two-line trapezoid rule that reverse mode
@@ -953,8 +986,9 @@ Correctness is judged against `ForwardDiff` and `FiniteDiff`, not against Fortra
   one-layer environments.
 - **Dependencies:** 4.2
 
-### 4.4 [ ] Make the top-level `kraken_jl` differentiable end to end
-- **Files:** `src/kraken_ad.jl`, `src/kraken_core.jl`
+### 4.4 [x] Make the top-level `kraken_jl` differentiable end to end *(completed 2026-08-08)*
+- **Files:** `src/kraken_core.jl`, `test/reverse_ad_tests.jl` (`src/kraken_ad.jl` needed no change —
+  the obstruction was mutation in the refinement loop, not a missing rule)
 - **What:** With 4.2 and 4.3 in place, the remaining path through `kraken_jl` is the Richardson extrapolation
   and the mesh-refinement loop. `richard_extrap` is a linear solve followed by `sqrt` and is traceable as-is —
   confirm it, and if `LinearSolve` obstructs reverse mode, replace that specific call with a plain `\`. The

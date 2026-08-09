@@ -125,6 +125,34 @@ function mode_integral(envf, θ; freq=100.0, mode=1)
 end
 
 """
+The tolerances the top-level tests below run `kraken_jl` at, and the reason they are not the defaults.
+
+`kraken_jl`'s default `abstol = reltol = 1e-6` is *looser* than what `find_kr` gets on the refinement
+meshes, which are left to NonlinearSolve's own (much tighter) defaults — so at the default the level-1
+roots carry ~1e-6 of truncation and everything downstream inherits it. Unlike the isolated
+`solve_for_kr` case above, that moves the *rule's* answer too, by 4.6e-6: the implicit-function
+derivative is tolerance-independent at a fixed root, but here the root itself has moved. ForwardDiff
+shifts by 6.7e-6 over the same change. Tightening to 1e-10 removes both effects and lets the
+comparison measure the rules rather than the root solver.
+"""
+const TOL = (abstol=1e-10, reltol=1e-10)
+
+"""
+The sum of every wavenumber `kraken_jl` returns — the whole solve, Richardson extrapolation included.
+"""
+kr_sum(envf, θ; freq=100.0, kws...) = sum(kraken_jl(envf(θ), freq; TOL..., kws...).kr)
+
+"""
+A loss over the whole `NormalModeSolution`, so the gradient travels the extrapolated wavenumbers *and*
+the mode shapes. The `1e6` puts the two terms on a comparable scale — `kr ~ 0.4` against mode-shape
+energies of order 1.
+"""
+function solution_loss(envf, θ; freq=100.0, kws...)
+    sol = kraken_jl(envf(θ), freq; TOL..., kws...)
+    return 1e6 * sum(sol.kr) + sum(abs2, sol.modes)
+end
+
+"""
 A loss over *every* mode at once, so the gradient also has to travel the vectorized paths —
 `find_kr` and the `Vector` method of `inverse_iteration`, both of which used to fill preallocated
 arrays and had to be rewritten for this milestone.
@@ -267,6 +295,29 @@ end
         # …and once through the vectorized paths, all modes at once.
         f_all = θ_ -> all_modes_loss(envf, θ_)
         @test relerr(Zygote.gradient(f_all, θ)[1], ForwardDiff.gradient(f_all, θ)) < 1e-8
+    end
+
+    @testset "kraken_jl end to end — $name" for (name, envf, θ) in
+                                                (("pekeris", pekeris, θ0), ("one_layer", onelayer, θ1))
+        # The top-level entry point, which is everything the two testsets above cover *plus* the
+        # mesh-refinement loop and the Richardson extrapolation. The loop was rewritten for this: it
+        # grew `h_meshes` and `krs_all` by `setindex!`/`push!`, which reverse mode cannot follow, and
+        # now grows them with `vcat`. `richard_extrap` needed nothing — `LinearSolve` carries its own
+        # rules and `sqrt` is `sqrt`.
+        for f in (θ_ -> kr_sum(envf, θ_), θ_ -> solution_loss(envf, θ_))
+            @test relerr(Zygote.gradient(f, θ)[1], ForwardDiff.gradient(f, θ)) < 1e-8
+        end
+    end
+
+    @testset "kraken_jl end to end — mesh schedules" begin
+        # Each of the loop's three exits reaches the return by a different route, and only the middle
+        # one is what the default call does: `n_meshes = 1` returns before the extrapolation exists,
+        # the convergence test breaks out partway, and `dont_break` runs every level. All three have
+        # to be traceable, because the schedule is chosen by the environment, not by the caller.
+        for kws in ((n_meshes=1,), (n_meshes=5,), (dont_break=true, n_meshes=3))
+            f = θ_ -> kr_sum(pekeris, θ_; kws...)
+            @test relerr(Zygote.gradient(f, θ0)[1], ForwardDiff.gradient(f, θ0)) < 1e-8
+        end
     end
 
     @testset "known gap: a profile that varies inside a layer whose depth is a parameter" begin

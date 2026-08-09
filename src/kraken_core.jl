@@ -6,6 +6,9 @@ using LinearSolve
 using UnPack
 using DataInterpolations
 import NaNMath as nm
+# `ignore_derivatives` marks the mesh-refinement loop's convergence test as the discrete decision it
+# is. The rules themselves live in `kraken_ad.jl`; this is the one place the seam needs the package.
+using ChainRulesCore: ignore_derivatives
 
 ### Docs
 using DocStringExtensions
@@ -32,7 +35,9 @@ export finite_difference_coefficients, mode_eigenvector, normalize_mode
 #   * `AcousticProblemCache(env, props)`                   — a thin wrapper over the above
 #   * `get_g`                                              — bottom half-space term, also used inside the rules
 #   * `get_Nz_vec`, `get_z_vec`, `AcousticProblemProperties` — the mesh; see the caveat below
-#   * `richard_extrap`, and the arithmetic in `kraken_jl` between the two seam calls
+#   * `richard_extrap`, `h_extrap_matrix`, and the mesh-refinement loop in `kraken_jl` — which is
+#     why that loop grows `h_list`/`krs_all` with `vcat` instead of `push!`ing into them, and why
+#     its convergence test sits under `ignore_derivatives`
 #   * `normalize_mode`, `integral_trapz`                   — the mode's energy normalization
 #   * `find_kr`, `inverse_iteration`                       — the loops over the two rule-bearing
 #                                                            functions below; both had to stop
@@ -772,7 +777,16 @@ function inverse_iteration(
 end
 
 ### Full KRAKEN solve with Richardson's Extrapolation
-h_extrap(h, Nh) = [h^pow for pow in 0:2:(2Nh - 2)]
+"""
+    h_extrap_matrix(hs)
+
+The Vandermonde matrix of the Richardson extrapolation: row `i` is `[1, h_i², h_i⁴, …]` for the mesh
+spacings `hs`, square by construction (one column per level, one row per level).
+
+Built by broadcasting rather than assembled row by row, because `kraken_jl` is on the differentiable
+seam and writing rows into a preallocated matrix is exactly the mutation reverse mode cannot follow.
+"""
+h_extrap_matrix(hs) = hs .^ permutedims(0:2:(2 * length(hs) - 2))
 
 function richard_extrap(h_meshes, krs_meshes)
     # Mesh spacings and wavenumbers do not have to carry the same parameters — differentiating with
@@ -805,6 +819,22 @@ environment supports no trapped modes at this frequency.
 - `dont_break`: run all `n_meshes` levels even after convergence. Useful for studying mesh error.
 - `abstol`, `reltol`: tolerances forwarded to the root solver.
 
+# Differentiability
+
+`kraken_jl` is differentiable end to end in both directions — forward mode straight through, reverse
+mode via the rules in `kraken_ad.jl`. Two things about the returned gradient are worth being explicit
+about, because neither is an approximation that can be tightened away:
+
+  * **It is conditional on the mesh schedule this call selected.** The number of refinement levels is
+    chosen by the convergence test above, which is an integer decision in the parameters; it is
+    wrapped in `ignore_derivatives` so the gradient is taken at *fixed* schedule. That is the correct
+    and standard treatment, but it means the gradient is discontinuous at parameter values where the
+    level count changes — approach such a point from either side and the two one-sided gradients
+    differ by the extrapolation's own error term. Pass `dont_break=true` for a schedule that is fixed
+    by construction if a smooth objective matters more than the cost.
+  * **The mode shapes come from the coarsest mesh**, as they do in the primal — only the wavenumbers
+    are extrapolated. So `∂modes/∂θ` is the derivative of the level-1 solve.
+
 # Example
 ```julia
 env = UnderwaterEnv(pekeris_env()...)
@@ -814,21 +844,17 @@ sol.modes     # mode shapes, one column each
 ```
 """
 function kraken_jl(env, freq; n_meshes=5, rmax=10_000, method=ITP(), dont_break=false, abstol=1e-6, reltol=1e-6)
-    # First mesh first
-    local rich_krs
     # convert frequency to float if needed
     if freq isa Int
         freq = float(freq)
     end
     # generate all problem properties for every mesh
     props = AcousticProblemProperties(env, freq)
-    # Typed from what it actually stores — powers of the mesh spacing. It used to be typed from
-    # `eltype(env.c.c)`, which happened to work only because `pekeris_env` built its `ssp` matrix
-    # through a `promote_type` that included `cb` and `ρb`, parameters that appear nowhere in `ssp`.
-    # Once that over-promotion went away, differentiating with respect to `cb` gave a `Float64`
-    # matrix and a `Dual` right-hand side.
-    h_meshes = zeros(eltype(props.Δz_vec), n_meshes, n_meshes)
-    h_meshes[1, :] = h_extrap(props.Δz_vec[1], n_meshes)
+    # The mesh spacings, one per refinement level, grown by `vcat` as the loop below adds levels.
+    # This used to be an `n_meshes × n_meshes` matrix filled a row at a time; the rows are now
+    # broadcast into shape by `h_extrap_matrix` only when the extrapolation needs them, because
+    # `setindex!` on a matrix that outlives the expression is not traceable in reverse mode.
+    h_list = [props.Δz_vec[1]]
 
     # First Mesh (i_power = 1)
     cache = AcousticProblemCache(env, props)
@@ -848,30 +874,38 @@ function kraken_jl(env, freq; n_meshes=5, rmax=10_000, method=ITP(), dont_break=
     # Initialize
     #TODO: reuse kr_coarse for initial value for root finding for higher meshes
     M = length(krs_coarse)
-    krs_all = Vector{Vector{eltype(krs_coarse)}}()
-    push!(krs_all, krs_coarse .^ 2)
+    # `vcat` rather than `push!`, for the same reason `h_list` above is not a preallocated matrix.
+    # `n_meshes` is 5 by default, so rebuilding these two vectors per level is free.
+    krs_all = [krs_coarse .^ 2]
 
     # Richardson's extrapolation
     krs_old = krs_coarse
+    rich_krs = krs_coarse
     for i_power in 2:n_meshes
         factor = 2^(i_power - 1)
         props_new = AcousticProblemProperties(env, freq; factor=factor)
-        h_meshes[i_power, :] = h_extrap(props_new.Δz_vec[1], n_meshes)
         cache = AcousticProblemCache(env, props_new)
         krs_new = find_kr(env, props_new, cache; method=method)
         if length(krs_new) < M
             M = length(krs_new)
         end
-        push!(krs_all, krs_new .^ 2)
-        rich_krs = [richard_extrap(h_meshes[1:i_power, 1:i_power], [krs_all[ii][mm] for ii in 1:i_power]) for mm in 1:M]
-        # Check if the difference is less than the tolerance
-        errs = abs.(rich_krs[1:M] - krs_old[1:M])
-        err = errs[round(Int, 2 * M / 3)] # apparently this is used in KRAKEN to check for convergence
-        # If the difference is less than the tolerance, or we've reached the maximum number of meshes
-        # interpolate krs_meshes with h_meshes and return the result
-        if !dont_break && err * rmax < 1
-            break
+        h_list = vcat(h_list, [props_new.Δz_vec[1]])
+        krs_all = vcat(krs_all, [krs_new .^ 2])
+        h_meshes = h_extrap_matrix(h_list)
+        rich_krs = map(mm -> richard_extrap(h_meshes, map(ii -> krs_all[ii][mm], 1:i_power)), 1:M)
+        # Whether to refine again is a *discrete* decision — it selects a mesh schedule, it is not a
+        # quantity anything downstream depends on smoothly. Under `ignore_derivatives` it builds no
+        # tape, so the gradient is the one conditional on the schedule this run selected. See the
+        # note in the docstring.
+        stop = ignore_derivatives() do
+            # Check if the difference is less than the tolerance
+            errs = abs.(rich_krs[1:M] - krs_old[1:M])
+            err = errs[round(Int, 2 * M / 3)] # apparently this is used in KRAKEN to check for convergence
+            # If the difference is less than the tolerance, or we've reached the maximum number of
+            # meshes, interpolate krs_meshes with h_meshes and return the result
+            return !dont_break && err * rmax < 1
         end
+        stop && break
         krs_old = krs_new
     end
 
