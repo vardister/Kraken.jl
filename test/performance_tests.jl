@@ -2,6 +2,7 @@ using Test
 using Kraken
 using BenchmarkTools
 using ForwardDiff
+using Zygote
 
 # Enabled with KRAKEN_RUN_PERFORMANCE_TESTS=true. Every timing below is measured *after* a warm-up
 # call, so compilation is not counted; thresholds are set several times above the measured value on
@@ -152,6 +153,100 @@ using ForwardDiff
             @test !any(isnan.(grad))
 
             println("AD gradient: $(fmt(elapsed_time))s (threshold: $(PERFORMANCE_THRESHOLDS[:ad_gradient])s)")
+        end
+
+        # The point of Milestone 4, measured rather than asserted from theory: forward mode costs one
+        # solve per parameter and therefore grows linearly with M, while reverse mode costs a fixed
+        # multiple of the primal no matter how many parameters there are. The two cross near M ≈ 10,
+        # and past that the gap only widens — which is what makes fitting a whole sound-speed profile
+        # practical.
+        #
+        # Assertions here are deliberately loose. The *shape* of the scaling is a property of the
+        # rules and is robust; the individual ratios are sub-millisecond wall-clock measurements and
+        # would flake on a shared CI runner if policed tightly.
+        @testset "Reverse vs Forward Scaling" begin
+            depth = 100.0
+
+            # θ is an M-point sound-speed profile on a fixed depth grid. The grid is built outside
+            # the differentiated function on purpose: it does not depend on the unknowns, and
+            # `range` is one of the few things reverse mode cannot trace.
+            function profile_env(θ, z)
+                M = length(z)
+                # M = 1 means isovelocity, which still needs two knots, so the single parameter is
+                # written into both.
+                cvec = length(θ) == 1 ? fill(θ[1], M) : θ
+                # Columns are [z, cp, cs, ρ, αp, αs] — the KRAKEN .env SSP record layout.
+                ssp = hcat(z, cvec, zero(cvec), fill(1000.0, M), zero(cvec), zero(cvec))
+                layers = [0.0 0.0 depth]
+                sspHS = [
+                    0.0 343.0 0.0 0.00121 0.0 0.0
+                    depth 1600.0 0.0 1500.0 0.0 0.0
+                ]
+                return UnderwaterEnv(ssp, layers, sspHS)
+            end
+
+            function profile_sum(θ, z; freq=100.0)
+                env = profile_env(θ, z)
+                props = AcousticProblemProperties(env, freq)
+                cache = AcousticProblemCache(env, props)
+                spans = bisection(env, props, cache)
+                return sum(solve_for_kr(spans[m, :], env, props, cache) for m in axes(spans, 1))
+            end
+
+            # `minimum` of repeated runs, not `@timed`: these are ~0.1 ms and a single sample is
+            # mostly scheduler noise.
+            bench(f, n=5) = (f(); minimum(@elapsed(f()) for _ in 1:n))
+
+            Ms = (1, 5, 10, 50)
+            t_primal = Float64[]
+            t_forward = Float64[]
+            t_reverse = Float64[]
+
+            for M in Ms
+                z = collect(range(0.0, depth, max(M, 2)))
+                θ = M == 1 ? [1500.0] : 1500.0 .+ 5 .* sin.(range(0, 3, M))
+                f = p -> profile_sum(p, z)
+
+                g_fwd = ForwardDiff.gradient(f, θ)
+                g_rev = Zygote.gradient(f, θ)[1]
+                # A benchmark that measures the wrong answer quickly is worthless, so check first.
+                @test maximum(abs.(g_rev .- g_fwd) ./ max.(abs.(g_fwd), 1e-12)) < 1e-6
+
+                push!(t_primal, bench(() -> f(θ)))
+                push!(t_forward, bench(() -> ForwardDiff.gradient(f, θ)))
+                push!(t_reverse, bench(() -> Zygote.gradient(f, θ)[1]))
+            end
+
+            println("\nGradient cost vs parameter count (Σkr over all modes, Pekeris-like, 100 Hz):")
+            println("      M     primal/ms    forward/ms    reverse/ms      fwd/prim      rev/prim")
+            for (i, M) in enumerate(Ms)
+                println(
+                    "  " *
+                    rpad(M, 5) *
+                    lpad(fmt(t_primal[i] * 1e3), 12) *
+                    lpad(fmt(t_forward[i] * 1e3), 14) *
+                    lpad(fmt(t_reverse[i] * 1e3), 14) *
+                    lpad(fmt(t_forward[i] / t_primal[i]), 14) *
+                    lpad(fmt(t_reverse[i] / t_primal[i]), 14),
+                )
+            end
+
+            # Forward mode scales with M. Measured 18x between M = 1 and M = 50 on a 2021 M1; 5x is
+            # far enough below that to be safe while still failing if the linear growth vanished
+            # (which would mean the benchmark stopped measuring what it claims to).
+            @test t_forward[end] / t_forward[1] > 5
+
+            # Reverse mode does not. Measured ratio is ~0.9 (i.e. flat); 3x leaves room for noise
+            # while still catching a regression that reintroduced per-parameter cost.
+            @test t_reverse[end] / t_reverse[1] < 3
+
+            # And at 50 parameters reverse mode wins outright. Measured 4.4x; assert 2x.
+            @test t_forward[end] / t_reverse[end] > 2
+
+            # Reverse mode's fixed overhead. Measured ~5.8x the primal solve across every M; the
+            # ceiling catches a regression like the one 4.5 fixed, where tracing the interpolant
+            # constructors put it at ~100x.
+            @test t_reverse[end] / t_primal[end] < 25
         end
 
         @testset "Frequency Derivative Performance" begin

@@ -282,6 +282,41 @@ julia --project=test -e 'using TestItemRunner; @run_package_tests filter=t->ends
 julia --project=test -e 'using Kraken; include("test/numerical_methods_tests.jl")'
 ```
 
+### Running the suite through the kaimon MCP
+
+`CLAUDE.md` directs every Julia invocation through the `kaimon` MCP rather than Bash, so that the run
+is visible in the shared REPL. That works for everything here *except* the suite as a single call.
+Since Milestone 4 the full run is past six minutes, and both whole-suite routes fail at that length
+(measured 2026-08-09):
+
+| Route | What happens |
+|---|---|
+| `run_tests(project_path=…)` | The MCP **transport drops mid-call** — "response for tool run_tests was lost". Three times out of three. The server itself stays up; `ping` answers normally straight afterwards. |
+| `ex(e="using Pkg; Pkg.test()")` | Killed by the gate's **10-minute inactivity timeout**, at exactly 10m00s. `ex` strips stdout, so the gate sees no output and concludes the session is stuck. |
+
+Neither is the suite hanging. Run the files individually instead, from a session rooted at `test/` —
+each `include` returns its own `Test Summary`, and none of them is long enough to trip either limit:
+
+```julia
+include(joinpath(@__DIR__, "fortran_reference_tests.jl"))          # ~1-3 min
+include(joinpath(@__DIR__, "numerical_methods_tests.jl"))          # ~3 s
+include(joinpath(@__DIR__, "automatic_differentiation_tests.jl"))  # ~2.5 min
+include(joinpath(@__DIR__, "reverse_ad_tests.jl"))                 # ~5 min
+using TestItemRunner
+@run_package_tests filter = t -> endswith(t.filename, "environment_tests.jl")
+```
+
+Two things to watch. A TestItems filter that matches nothing still reports green, so confirm it
+selected something before believing the result — `filter = t -> (push!(items, t.filename); false)`
+counts the items it would have run (22 across `environment_tests.jl` and `integration_tests.jl`).
+And per-file runs are weaker evidence than `Pkg.test()`: they resolve against `test/Manifest.toml`,
+so they cannot catch an undeclared dependency (see the stdlib note below). Say which one you ran.
+
+Wall-clock times above vary by a factor of three depending on how many Julia sessions are live —
+the same `fortran_reference_tests.jl` took 1m07 on an idle machine and 3m03 with three sessions and
+background jobs competing. Shut down sessions you are not using (`manage_repl(command="shutdown")`)
+before reading anything into a timing.
+
 ## Test Dependencies
 
 Required packages (in test/Project.toml):
