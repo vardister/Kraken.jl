@@ -398,11 +398,11 @@ pure function: it allocates its results and mutates nothing — not its argument
 even a locally allocated buffer. That is what puts it *on the differentiable seam* (see the note at
 the top of this file). Reverse-mode AD traces this function, so keep it free of `setindex!`,
 `push!`, and in-place broadcasts; the mutating hot path lives behind the rules in
-[`create_finite_diff_matrix!`](@ref) and never needs to be traced.
+`create_finite_diff_matrix!` and never needs to be traced.
 
-- `a_vec` — main diagonal, from [`a_element`](@ref); at each interface between two media the value
+- `a_vec` — main diagonal, from `a_element`; at each interface between two media the value
   is the average of the coefficients on either side.
-- `e_vec` — off-diagonals, from [`e_element`](@ref).
+- `e_vec` — off-diagonals, from `e_element`.
 - `λ_scaling` — the factor multiplying `kr²` in the Sturm sequence: a two-point moving average of
   `e_vec * Δz²`, with the final entry halved for the bottom half-space boundary condition.
 

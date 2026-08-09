@@ -1,8 +1,8 @@
 # Kraken.jl
 
 !!! warning "Documentation under construction"
-    This is scaffolding. The guides, tutorials, and worked examples arrive in Milestone 8 of the
-    revival plan; what is here now is the README plus a generated API reference.
+    Most of the guides and tutorials arrive in Milestone 8 of the revival plan; what is here now is
+    the README, the [Automatic differentiation](@ref) guide, and a generated API reference.
 
 Kraken.jl is a normal-mode simulation package for underwater acoustic propagation, written entirely
 in Julia. It is based on [Michael Porter's KRAKEN Fortran code from the Acoustics
@@ -13,7 +13,8 @@ It computes horizontal wavenumbers and mode shapes for a range-independent envir
 finite-difference discretization of the depth-separated wave equation, then uses those modes to
 synthesize the acoustic pressure field. Because the solver is written to be differentiable, you can
 take derivatives of the results with respect to any environment parameter — group speeds, for
-instance, are a derivative with respect to frequency.
+instance, are a derivative with respect to frequency. Both forward and reverse mode work; see
+[Automatic differentiation](@ref).
 
 ## Installation
 
@@ -50,8 +51,10 @@ horizontal wavenumber ``k_{r,m}``:
 c_g = \frac{\partial \omega}{\partial k_{r,m}}
 ```
 
-The solver is differentiable, so this is a direct application of
-[ForwardDiff.jl](https://github.com/JuliaDiff/ForwardDiff.jl):
+That is a derivative with respect to one parameter, so this is a direct application of
+[ForwardDiff.jl](https://github.com/JuliaDiff/ForwardDiff.jl). For gradients with respect to *many*
+parameters — a whole sound-speed profile, say — use reverse mode instead; see
+[Automatic differentiation](@ref).
 
 ```julia
 using ForwardDiff
@@ -108,4 +111,6 @@ To compare against a particular Acoustics Toolbox build instead of the packaged 
 
 ## Where to go next
 
-See [API reference](@ref) for the full list of exported functions and types.
+* [Automatic differentiation](@ref) — forward and reverse mode, the cost of each, and a worked
+  gradient-based sound-speed inversion.
+* [API reference](@ref) — the full list of exported functions and types.

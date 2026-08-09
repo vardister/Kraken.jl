@@ -13,7 +13,7 @@ This reimplementation is fully written in Julia, and is designed to be more user
 
 - Normal-Mode based simulation for underwater acoustic propagation fully written in Julia
 - User-friendly and easy to extend
-- Differentiable code (❗ currently only using [ForwardDiff.jl](https://github.com/JuliaDiff/ForwardDiff.jl))
+- Differentiable in **both** modes — forward via [ForwardDiff.jl](https://github.com/JuliaDiff/ForwardDiff.jl), reverse via [Zygote.jl](https://github.com/FluxML/Zygote.jl) or [Mooncake.jl](https://github.com/chalk-lab/Mooncake.jl), so the gradient with respect to a whole sound-speed profile costs about one solve instead of one solve per point (see below)
 - Re-using existing environmental data files from the Acoustics Toolbox — `.env` files are both read and written
 - Cross-validated against the **unmodified** Fortran `kraken.exe` on every push (see below)
 - Optional plotting via a package extension — `using CairoMakie` (or `GLMakie`) enables `plot_modes` and `plot_ssp` at no cost to anyone who does not
@@ -36,7 +36,7 @@ blocks the other 337.
 - [ ] Inclusion of shear wave properties in environment
 - [ ] Boundary conditions other than a pressure-release surface over a fluid half-space
 - [ ] SSP interpolation other than C-linear
-- [ ] Reverse-mode automatic differentiation
+- [x] Reverse-mode automatic differentiation
 
 ## Installation
 
@@ -64,18 +64,24 @@ wavenumbers = sol.kr
 zn = vcat(sol.props.zn_vec...)
 ```
 
-### Calculating group speeds
+## Automatic differentiation
+
+The solver is differentiable in **both** modes, and which one you want depends on how many parameters
+you are differentiating with respect to. Forward mode costs one solve per parameter; reverse mode
+costs a fixed multiple of one solve regardless of the parameter count. Kraken.jl itself depends only
+on ChainRulesCore.jl — ForwardDiff, Zygote and Mooncake are yours to add.
+
+### Group speeds (forward mode — one parameter)
+
 Group speeds are defined as the derivative of the angular frequency $\omega = 2\pi f$ with respect to the wavenumbers $k_{r,m}$. This is written as
 
 $$ c_g = \frac{\partial \omega}{\partial k_{r,m}} $$
 
-As such, to calculate the group speeds using Kraken.jl we make use of automatic differentiation capabilities using
-_ForwardDiff.jl_ and differentiate directly.
+That is a derivative with respect to a single parameter, so forward mode is the right tool:
 
 ```julia
 using ForwardDiff
 using Kraken
-using Roots
 
 
 function calculate_kr_pekeris(freq)
@@ -83,7 +89,7 @@ function calculate_kr_pekeris(freq)
     env = UnderwaterEnv(ssp, layers, sspHS)
     props = AcousticProblemProperties(env, freq)
     cache = AcousticProblemCache(env, props)
-    wavenumbers = find_kr(env, props, cache; method=Roots.A42())
+    wavenumbers = find_kr(env, props, cache)
     return wavenumbers
 end
 
@@ -91,12 +97,62 @@ freq = 100.0
 group_speeds = 2pi ./ ForwardDiff.derivative(calculate_kr_pekeris, freq)
 ```
 
+These are checked against Fortran KRAKEN's own group-speed table on every push, to within 0.1%.
+
+### Whole-profile gradients (reverse mode — many parameters)
+
+For an inversion the unknown is not one number but a whole sound-speed profile, and reverse mode
+returns every derivative in one pass:
+
+```julia
+using Kraken, Zygote
+
+z = collect(range(0.0, 100.0, 50))     # build the depth grid OUTSIDE the differentiated function
+c = fill(1500.0, 50)
+
+function modal_sum(cvec)
+    ssp = hcat(z, cvec, zero(cvec), fill(1000.0, 50), zero(cvec), zero(cvec))
+    sspHS = [0.0 343.0 0.0 0.00121 0.0 0.0; 100.0 1600.0 0.0 1500.0 0.0 0.0]
+    env = UnderwaterEnv(ssp, [0.0 0.0 100.0], sspHS)
+    return sum(kraken_jl(env, 100.0).kr)
+end
+
+grad = Zygote.gradient(modal_sum, c)[1]   # all 50 derivatives, one pass
+```
+
+Measured on a 2021 M1 — the sum of all modal wavenumbers of that waveguide at 100 Hz, differentiated
+with respect to an `M`-point profile. (The measurement uses the single-mesh
+`bisection`/`solve_for_kr` path rather than `kraken_jl`, so the ratios isolate the cost of
+differentiation from the mesh-refinement loop.)
+
+| `M` | forward / primal | reverse / primal |
+|---:|---:|---:|
+| 1 | 1.1× | 5.3× |
+| 5 | 2.6× | 6.5× |
+| 10 | 5.2× | 6.0× |
+| 50 | 25.7× | 5.8× |
+| 500 | 253× | 5.4× |
+
+Forward mode grows linearly with `M`; reverse mode stays flat. The two cross near a dozen parameters,
+and at a 500-point profile reverse mode is 47× faster.
+The residual 5.8× is mostly Zygote's fixed ~0.3 ms tape overhead on a very small solve — at 400 Hz,
+where the same waveguide carries 18 modes, a 50-parameter gradient costs 1.9× the primal.
+
+Reverse mode goes through wavenumbers, mode shapes, and the top-level `kraken_jl`, and works with
+Zygote and Mooncake alike — the rules are written once with ChainRulesCore.
+
+The [documentation's AD page](https://vardister.github.io/Kraken.jl/dev/ad/) has the details,
+including a worked gradient-based inversion that recovers a sound-speed profile from synthetic
+wavenumbers, and the caveats (the top-level gradient is conditional on the mesh schedule).
 
 ## More examples
 
-More examples can be accessed in the `examples` folder. ❗Most of them do not currently run: they
-call an `EnvKRAKEN` API that was removed when the Fortran sources moved out of this repository.
-They are being rewritten against the current API.
+[`examples/reverse_ad.jl`](examples/reverse_ad.jl) is a runnable tour of the AD support:
+`julia --project=test examples/reverse_ad.jl`.
+
+❗The other files in `examples/` do not currently run: they call an `EnvKRAKEN` API that was removed
+when the Fortran sources moved out of this repository. They are being rewritten against the current
+API.
 
 ## Contributing
 

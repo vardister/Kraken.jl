@@ -418,7 +418,7 @@ end
     shifted_matrix(kr, env, props, cache)
 
 The finite-difference matrix at wavenumber `kr` — the same `M(kr, θ)` that
-[`create_finite_diff_matrix!`](@ref) writes into `cache.A`, assembled here into fresh storage.
+`create_finite_diff_matrix!` writes into `cache.A`, assembled here into fresh storage.
 
 The rule below needs this matrix *after* the primal has run, and the primal restores the cache to its
 unshifted state on the way out. Rebuilding costs one O(N) allocation and keeps the pullback from

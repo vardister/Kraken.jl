@@ -494,7 +494,8 @@ These are facts established by running the code, not assumptions. Tasks below re
 
   Reverse mode is now flat in `M` — 19× faster at M = 50 than before — and crosses forward mode at
   about a dozen parameters. It is 6× the primal rather than the milestone's stated ~3×; that gap is
-  4.8's to characterize, and it is a constant, not a scaling problem.
+  4.8's to characterize, and it is a constant, not a scaling problem. (4.8 characterized it: a ~0.3 ms
+  Zygote tape floor, so the ratio falls to 1.9× on a 400 Hz solve. See the decision below.)
 
 - **"One set of rules serves Zygote and Mooncake at once" was half true, and the other half is a
   package extension** (established during 4.6). Mooncake does not consume `ChainRulesCore.rrule`s.
@@ -612,6 +613,61 @@ These are facts established by running the code, not assumptions. Tasks below re
   `∂kᵣ/∂h1` at 1.3e-7 while the two methods agree to 2.1e-11 on scale — the entrywise bound was
   demanding precision below what either method reaches, not detecting an error. `reverse_ad_tests.jl`
   had already established this idiom as `relerr_norm`; 4.7 rediscovered it the hard way.
+
+- **The scaling claim holds out to 500 parameters** (measured during 4.8). Σkr over an `M`-point
+  profile at 100 Hz: forward mode goes 1.1× → 25.7× → 47.3× → **253×** the primal at M = 1, 50, 100,
+  500, while reverse mode reads 5.3× → 5.8× → 5.7× → **5.4×**. At M = 500 reverse mode is 47× faster
+  in wall clock (0.42 ms vs 20.0 ms). `test/performance_tests.jl` asserts the M ∈ {1, 5, 10, 50}
+  rows — the shape, not the values — because these are sub-millisecond timings and a tight bound
+  would flake on a CI runner.
+
+- **The milestone's "~3× a forward solve" target is met — the 6× was a fixed overhead measured on a
+  problem too small to amortize it** (established during 4.8, closing the question 4.5 left open).
+  Reverse mode's *absolute* cost has a ~0.3 ms floor that is Zygote's tape, not the rules: at M = 50
+  the forward pass under Zygote costs 2.7× the plain primal and the pullback another 4.2×. That floor
+  is constant, so the ratio is worst when the solve is trivially cheap. Holding the parameter count
+  at 50 and making the physics bigger instead:
+
+  | Frequency | Modes | primal | reverse | reverse / primal |
+  |---|---|---|---|---|
+  | 25 Hz | 1 | 0.008 ms | 0.349 ms | 46× |
+  | 100 Hz | 5 | 0.064 ms | 0.431 ms | 6.7× |
+  | 200 Hz | 9 | 0.214 ms | 0.667 ms | **3.1×** |
+  | 400 Hz | 18 | 0.835 ms | 1.60 ms | **1.9×** |
+
+  So the milestone's success criterion holds on any problem where the cost matters, and the 6.1×
+  recorded in 4.5 should be read as "0.3 ms of overhead on a 0.07 ms solve" rather than as a
+  multiplier that follows you to larger problems. Quote a *ratio* only alongside the problem size it
+  was measured at.
+
+- **The docs build was already red before 4.8 touched it, and CI had not caught it** (found during
+  4.8). Four `@ref`s added with the 4.1/4.2 docstrings — `create_finite_diff_matrix!` in
+  `kraken_core.jl` and `kraken_ad.jl`, `a_element` and `e_element` in `kraken_core.jl` — point at
+  internals that have no docstring, and Documenter 1 treats an unresolvable `@ref` as a build
+  failure. `@autodocs Modules=[Kraken]` documents everything *documented*, exported or not, so an
+  `@ref` to an unexported name is fine **iff** that name has a docstring: `layer_mesh` and
+  `linear_interp_partials` are unexported and resolve, these four are undocumented and do not. Fixed
+  by demoting them to plain code spans. The reason CI stayed green is that the docs job only runs on
+  `master`, `revival` and pull requests, and Milestone 4 has been developed on `plan-4-reverse-ad`
+  without one — worth remembering before trusting a green badge on a topic branch.
+
+- **`docs/src/ad.md`'s example blocks execute, on purpose** (decided during 4.8). The inversion is an
+  `@example`, not a fenced `julia` block, so the docs build is what verifies it still converges — an
+  inversion example that has quietly stopped converging is worse than none. The cost is Zygote and
+  ForwardDiff in `docs/Project.toml` and ~60 s of docs build time. The static tables (cost vs
+  parameter count) stay hand-written, because they are wall-clock timings and would turn every docs
+  build into a benchmark run on whatever runner CI allocated; `test/performance_tests.jl` is where
+  those are actually asserted.
+
+- **Modal inversion is non-convex and reverse-mode AD does not change that** (established during
+  4.8). The docs example recovers an 8-point sound-speed profile from 14 wavenumbers at three
+  frequencies, and where it starts decides whether it works: from a linear prior 5.3 m/s away it
+  converges to 0.2 m/s RMSE in 400 Adam iterations, and from truth + 3 m/s to 1e-3; from a flat
+  1500 m/s profile it stalls ~18 m/s away with the misfit five orders of magnitude above zero. The
+  misfit *is* exactly 0 at the truth, so this is the optimizer meeting a local minimum, not a broken
+  gradient. Any future inversion work here needs a prior, restarts, or a global stage — not a better
+  AD backend. Also: fix the mode count per frequency from the data, since a trial profile can support
+  a different number of modes than the truth (the flat start has 9 at 200 Hz where the truth has 8).
 
 - **The declared `julia = "1.10"` compat bound is real and enforced** (established during 2.6). It was
   not: `@views x[1:(end-1)] .-= y` is a syntax error on 1.10, so the package could not even load
@@ -1189,8 +1245,12 @@ Correctness is judged against `ForwardDiff` and `FiniteDiff`, not against Fortra
   truncation error (~1% at the steps the `.prt`'s 10 printed digits allow).
 - **Dependencies:** 4.6, 3.6
 
-### 4.8 [ ] Benchmark and document the scaling win
-- **Files:** `test/performance_tests.jl`, `docs/src/ad.md`, `README.md`
+### 4.8 [x] Benchmark and document the scaling win *(completed 2026-08-09)*
+- **Files:** `test/performance_tests.jl`, `docs/src/ad.md` (new), `README.md` — plus, as it turned
+  out, `docs/make.jl` + `docs/Project.toml` (the new page's `@example` blocks execute, so the docs
+  environment needs Zygote and ForwardDiff), `docs/src/index.md` (pointers to the new page), and
+  `src/kraken_core.jl` + `src/kraken_ad.jl`: the docs build was **already red** on four
+  `@ref`s added during 4.1/4.2 that point at undocumented internals (see the Architecture Decisions)
 - **What:** Benchmark gradient cost against parameter count (1, 5, 10, 50 SSP points) for reverse vs forward
   mode, confirming reverse is roughly constant while forward scales linearly. Write a docs page with a worked
   gradient-based inversion example — recover a sound-speed profile from synthetic wavenumbers — since that is
