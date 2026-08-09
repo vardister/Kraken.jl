@@ -65,6 +65,7 @@ of dependency precompilation on the first run after a `Manifest.toml` change.
 | `integration_tests.jl` | TestItems | Full `kraken_jl` workflow, physics validation |
 | `numerical_methods_tests.jl` | Test | Core algorithms: `det_sturm`, `bisection`, `find_kr`, `inverse_iteration` |
 | `automatic_differentiation_tests.jl` | Test | ForwardDiff compatibility, group speed calculations |
+| `reverse_ad_tests.jl` | Test | The `ChainRulesCore` rules in `src/kraken_ad.jl`: each rule in isolation, then Zygote and Mooncake against ForwardDiff and central differences across three environments and three targets, plus `ChainRulesTestUtils.test_rrule` |
 | `fortran_reference_tests.jl` | Test | Cross-validation against unmodified `kraken.exe`; self-skips when no binary resolves |
 
 ### Optional Tests

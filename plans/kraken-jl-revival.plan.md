@@ -496,6 +496,68 @@ These are facts established by running the code, not assumptions. Tasks below re
   about a dozen parameters. It is 6× the primal rather than the milestone's stated ~3×; that gap is
   4.8's to characterize, and it is a constant, not a scaling problem.
 
+- **"One set of rules serves Zygote and Mooncake at once" was half true, and the other half is a
+  package extension** (established during 4.6). Mooncake does not consume `ChainRulesCore.rrule`s.
+  It derives its own rules from the IR unless a signature is declared a primitive, and left to
+  itself on this solver it does not merely run slowly — it stops outright with *"It is not
+  permissible to bitcast to a differentiable type during AD"*, from the `TwicePrecision` arithmetic
+  inside `range`. The milestone's key decision still holds, but it needs `ext/KrakenMooncakeExt.jl`
+  to hold it: one `Mooncake.@from_rrule` per rule in `kraken_ad.jl`, plus a `@zero_derivative` for
+  `bisection`, and nothing that states a derivative.
+
+  What the extension actually had to supply is the **tangent bridge**. `@from_rrule` translates
+  between the two tangent representations on every call, and Mooncake's translation covers scalars,
+  arrays and tuples but not `ChainRulesCore.Tangent`s over composite types — which is what all three
+  of this package's rules return, since their arguments are `UnderwaterEnv`,
+  `AcousticProblemProperties`, `AcousticProblemCache` and the two sampled profiles. Nor does it
+  cover `ZeroTangent` (only `NoTangent`), which the `solve_for_kr` rule emits for the root bracket.
+  Four `increment_and_get_rdata!` methods close both gaps, walking Mooncake's fdata/rdata field
+  split and pulling the matching ChainRules field. They are mechanical, but they use Mooncake
+  internals (`FData`/`RData`/`MutableTangent`), which is why `Project.toml` pins `Mooncake = "0.5"`.
+  Result: Zygote and Mooncake agree with each other to **3e-14** on every environment × target in
+  the table, which is the tightest comparison in the milestone — they are evaluating the same rules,
+  so anything looser would mean the bridge, not the rules.
+
+- **Finite differences cannot measure `∂/∂cb` or `∂/∂thickness` here, and the reason is the mesh
+  rather than the rules** (established during 4.6, and the direct consequence of 4.4's decision).
+  `Nz = max(10, ceil(h / Δz))` with `Δz = c_b / (20 f)`, so the mesh point count is a step function
+  of `cb` and of every layer thickness — and of nothing else. The gradient is the derivative at a
+  fixed mesh schedule, which is correct and standard, but it makes the primal genuinely
+  discontinuous in those parameters, and a central difference straddles the jumps. `∂(∫ψ dz)/∂depth`
+  for `pekeris_env` at 100 Hz, by relative step:
+
+  | step | 1e-6 | 1e-5 | 1e-4 | AD (all four backends) |
+  |---|---|---|---|---|
+  | central difference | 5.29 | 1.82 | 1.47 | **1.4356** |
+
+  There is no window that converges: shrinking the step lands on more jumps, growing it adds
+  truncation. So the multi-backend table finite-differences only the parameters that leave the mesh
+  alone — the sound speeds and densities — where central differences agree with all four backends to
+  **2.6e-7**. Differencing the others measures the mesh, not the gradient. Note what this does *not*
+  say: ForwardDiff, Zygote and Mooncake agree with each other on those parameters to 1e-12, and
+  4.5's Fortran table shows the layer-thickness derivatives are right; it is only the finite
+  difference that cannot see them.
+
+- **`test_rrule` reaches `solve_for_kr` but cannot reach `mode_eigenvector`, for a reason worth
+  keeping** (established during 4.6). It runs clean on `solve_for_kr` (32 assertions across two
+  environments) once told three things: that the `DataInterpolations` interpolant is opaque (its
+  `EnumX` extrapolation field has no `to_vec`), that `props.Nz_vec` is an `Int` count carried across
+  unperturbed, and that the step must be capped at `max_range=1e-6` — the adaptive default is ~1e-3
+  against `a_vec` entries of ~2e-3, which perturbs the discretized problem by tens of percent until
+  the root leaves its bracket.
+
+  `mode_eigenvector` fails all three ways at once, and the first is structural: **`test_rrule`
+  requires a non-mutating primal**, and this one shifts `cache.a_vec` in place and unshifts it on
+  the way out. A backend never sees that, because the cache is restored; `to_vec` does, because its
+  reconstruction hands the same arrays to every probe. Measured with the cotangent pinned so both
+  sides compute the same scalar: with respect to `kr` alone, finite differences give 3.9617 against
+  the rule's 3.96168 — add `cache` to the argument list and the same finite difference collapses to
+  1e-14. Behind that sit two more: the primal is the last iterate of an iteration and is not smooth
+  at the scale the adaptive stepper probes (the 4.3 finding), and `get_g`'s `sqrt(kr² - q²)` makes
+  `kr` inadmissible a short way below the root, which the stepper's magnitude estimation walks into
+  (`DomainError`). The rule's direct check stays what 4.3 built for it: hand-stepped central
+  differences, every partial family, entry by entry.
+
 - **`LinearSolve` was not the obstruction at the top level; two lines of bookkeeping were**
   (established during 4.4, settling that task's own open question). `richard_extrap` needed no
   change — `Zygote.gradient` through `solve(LinearProblem(A, b))` matches `ForwardDiff` to 14 digits,
@@ -991,6 +1053,7 @@ Correctness is judged against `ForwardDiff` and `FiniteDiff`, not against Fortra
 | `rrule(::Type{SampledSSP1D \| SampledDensity1D}, …)` | Constructor stores its arguments; keeps reverse mode out of `DataInterpolations` entirely, which is where 93% of its time went |
 | `@non_differentiable bisection(...)` | Mode counting is integer / piecewise constant |
 | `frule`-compatibility retained | Existing ForwardDiff path must not regress |
+| `ext/KrakenMooncakeExt.jl` | Declares each of the rules above a Mooncake primitive and bridges the two tangent representations — added in 4.6, because Mooncake does not read `rrule`s |
 | `test/reverse_ad_tests.jl` | Zygote + Mooncake vs ForwardDiff + FiniteDiff, on `kr`, on modes, on a scalar loss |
 | Benchmark | gradient cost vs parameter count, reverse vs forward |
 
@@ -1078,9 +1141,13 @@ Correctness is judged against `ForwardDiff` and `FiniteDiff`, not against Fortra
   Decisions is reproduced with Zygote in the ForwardDiff column.
 - **Dependencies:** 4.4
 
-### 4.6 [ ] Multi-backend AD test suite
+### 4.6 [x] Multi-backend AD test suite *(completed 2026-08-08)*
 - **Files:** extend `test/reverse_ad_tests.jl` (created in 4.2, along with the `Zygote` entry in
-  `test/Project.toml` and the `include` in `test/runtests.jl`)
+  `test/Project.toml` and the `include` in `test/runtests.jl`) — plus, as it turned out,
+  `ext/KrakenMooncakeExt.jl` (new) and `Project.toml`: Mooncake does not read `ChainRulesCore`
+  rules, so "one set of rules serves Zygote and Mooncake at once" needed a translation layer to
+  be true, and that layer belongs in the package rather than in the test file (see the
+  Architecture Decisions)
 - **What:** Add `Mooncake`, `DifferentiationInterface`, and `ChainRulesTestUtils` to the test
   environment. Test three targets — wavenumbers, mode shapes, and a scalar loss over both — across the
   Pekeris, one-layer, and Munk environments, comparing Zygote and Mooncake against ForwardDiff and FiniteDiff

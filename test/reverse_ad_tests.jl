@@ -2,7 +2,15 @@ using Test
 using Kraken
 using ForwardDiff
 using Zygote
+using Mooncake
+using FiniteDiff
+using DifferentiationInterface
+using ChainRulesTestUtils
+using ChainRulesCore
+using DataInterpolations
+using FiniteDifferences: FiniteDifferences, central_fdm
 using LinearAlgebra
+using Random: AbstractRNG
 
 # Reverse-mode AD through the solver. `src/kraken_ad.jl` attaches two ChainRules `rrule`s, so that
 # neither the bracketing solver nor the inverse iteration is ever traced:
@@ -93,6 +101,13 @@ end
 # Componentwise relative error, floored so a gradient entry near zero is not compared with its own
 # roundoff (the density derivatives are ~1e-7 while ∂kr/∂c0 is ~1e-4).
 relerr(x, y) = maximum(abs.(x .- y) ./ max.(abs.(y), 1e-12))
+
+# The same disagreement measured against the gradient's own scale instead of entrywise. The right
+# choice wherever a gradient spans many orders of magnitude — `two_layer_slope_env`'s spans seven,
+# and Munk's `∂/∂cb` is 3e-6 against a 1.3 largest entry — because there the smallest entries are
+# below the precision *either* method reaches and comparing them entrywise measures nothing but
+# their roundoff.
+relerr_norm(x, y) = maximum(abs.(x .- y)) / maximum(abs.(y))
 
 # Central difference in a single argument, stepped relative to the point itself.
 central(f, x; h=1e-6) = (f(x * (1 + h)) - f(x * (1 - h))) / (2 * x * h)
@@ -402,7 +417,6 @@ end
         # gradient's own scale rather than entrywise: this environment's wavenumber gradient spans
         # seven orders of magnitude, and the smallest entries are below the precision either method
         # reaches.
-        relerr_norm(x, y) = maximum(abs.(x .- y)) / maximum(abs.(y))
         for f in (θ_ -> last(setup(twolayer, θ_)), θ_ -> mode_integral(twolayer, θ_), θ_ -> kr_sum(twolayer, θ_))
             g_zy = Zygote.gradient(f, θ2)[1]
             g_fw = ForwardDiff.gradient(f, θ2)
@@ -410,4 +424,213 @@ end
             @test relerr_norm(g_zy[11:13], g_fw[11:13]) < 1e-8
         end
     end
+end
+
+### The multi-backend table -----------------------------------------------------------------------
+#
+# Everything above pins Zygote against ForwardDiff by hand. What follows makes that comparison a
+# table — backends down one axis, environments and targets across the others — so that adding a
+# backend is one entry in `BACKENDS` rather than a copy of a testset. `DifferentiationInterface`
+# supplies the uniform `gradient(f, backend, θ)` that makes that possible; each of the four has its
+# own calling convention otherwise (`Zygote.gradient` returns a tuple, Mooncake wants a prepared
+# cache, `FiniteDiff` takes its step configuration in the type), and the table would be four
+# near-copies of one loop.
+#
+# What each axis is for:
+#
+#   * **Backends.** Zygote and Mooncake reach the same rules by different routes, and the route is
+#     the thing being tested — a rule can be correct and still be reached wrongly. Zygote consumes
+#     `ChainRulesCore.rrule`s directly. Mooncake does not: it derives its own rules from the IR
+#     unless a signature is declared a primitive, so `ext/KrakenMooncakeExt.jl` declares each of
+#     ours and translates between the two tangent representations. Without that extension Mooncake
+#     does not merely run slowly, it stops with a `bitcast` error inside `range`.
+#   * **References.** ForwardDiff differentiates the same code by an unrelated mechanism, so it
+#     catches an error in a rule's content. Finite differences differentiate no code at all, so they
+#     catch what the two AD systems could get wrong together — a rule that is internally consistent
+#     and still not the derivative of the primal. That is exactly the shape of the interpolant gap
+#     4.5 closed, and finite differences (of Fortran, there) are what settled it.
+#
+# Task 4.7 adds the third kind of reference: Fortran's own numbers, finite-differenced across
+# perturbed `.env` files, which is the only oracle here that shares no code with Kraken.jl at all.
+
+"""
+Munk profile as a function of the five parameters that define it: `θ = [c_ref, ε, z_axis, cb, ρb]`.
+
+`munk_env()` takes no arguments — the canonical profile is one fixed curve — so a differentiable
+parameterization has to be introduced here rather than imported. At `θ3` this reproduces
+`munk_env()` exactly, which the first testset below asserts.
+
+The knot depths are constants, and they are built by comprehension rather than with `range`: a
+`range` of `Float64`s is a `StepRangeLen` over `Base.TwicePrecision`, and Zygote has no adjoint for
+that constructor even when — as here — its arguments carry no derivative. `src/kraken_ad.jl` meets
+the same wall in `layer_mesh`, where the depths *are* parameters, and answers it with a rule.
+"""
+function munk(θ; depth=5000.0, nsamples=51)
+    c_ref, ϵ, z_axis, cb, ρb = θ
+    ρ0 = 1000.0
+    zs = [depth * (k - 1) / (nsamples - 1) for k in 1:nsamples]
+    profile(z) = (ẑ=2 * (z - z_axis) / z_axis; c_ref * (1 + ϵ * (ẑ - 1 + exp(-ẑ))))
+    ssp = reduce(vcat, [[z profile(z) 0.0 ρ0 0.0 0.0] for z in zs])
+    return UnderwaterEnv(ssp, [0.0 0.0 depth], [0.0 343.0 0.0 0.00121 0.0 0.0; depth cb 0.0 ρb 0.0 0.0])
+end
+
+θ3 = [1500.0, 0.00737, 1300.0, 1600.0, 1500.0]
+
+# Zygote reads the rules in `src/kraken_ad.jl` directly; Mooncake reads them through
+# `ext/KrakenMooncakeExt.jl`. Adding a third is one line here.
+const BACKENDS = [("Zygote", AutoZygote()), ("Mooncake", AutoMooncake())]
+
+# `munk` runs at 10 Hz rather than 100: 5000 m of water at 100 Hz is a 6600-point mesh with hundreds
+# of modes, and the finite-difference reference alone would then need ten of those solves. At 10 Hz
+# it is 625 points and 20 modes, which still exercises every path in the table.
+#
+# The last column lists the parameters a *finite difference* can measure, and it is a shorter list
+# than θ for a reason that is a documented property of the solver rather than a limitation of the
+# test. `Nz_vec = max(10, ceil(h / Δz))` with `Δz = c_b / (20 f)`, so the mesh point count is a step
+# function of `cb` and of every layer thickness — and of nothing else. Task 4.4 settled what the
+# gradient means there: it is the derivative at a *fixed* mesh schedule, which is the standard
+# treatment and the only one that is well defined, but it makes the primal genuinely discontinuous
+# in those parameters. A central difference straddles the jumps: on `∂(∫ψ dz)/∂depth` for Pekeris it
+# reads 5.29 at a 1e-6 relative step, 1.82 at 1e-5 and 1.47 at 1e-4, wandering toward — and never
+# reaching — the 1.4356 that ForwardDiff, Zygote and Mooncake all agree on. Differencing the
+# remaining parameters is a real check; differencing those is measuring the mesh.
+const ENVIRONMENTS = [
+    ("pekeris", pekeris, θ0, 100.0, [1, 3, 4]),          # θ0 = [c0, cb, ρ0, ρb, depth]
+    ("one_layer", onelayer, θ1, 100.0, [1, 2, 4, 5, 6]),  # θ1 = [c0, c1, cb, ρ0, ρ1, ρb, h0, h1]
+    ("munk", munk, θ3, 10.0, [1, 2, 3, 5]),               # θ3 = [c_ref, ε, z_axis, cb, ρb]
+]
+
+# The three things a user differentiates: the wavenumbers, a mode shape, and a scalar loss over both
+# at once. All three go through `kraken_jl` or its two rule-bearing pieces, so between them they
+# cover every seam in `src/kraken_core.jl`'s list.
+const TARGETS = [
+    ("wavenumbers", (envf, θ, freq) -> kr_sum(envf, θ; freq=freq)),
+    ("mode shape", (envf, θ, freq) -> mode_integral(envf, θ; freq=freq)),
+    ("scalar loss", (envf, θ, freq) -> solution_loss(envf, θ; freq=freq)),
+]
+
+@testset "Reverse-mode AD across backends" begin
+    @testset "the parameterized Munk profile reproduces munk_env()" begin
+        # The table below is only a test of the Munk environment if `munk(θ3)` is that environment.
+        reference = UnderwaterEnv(munk_env()...)
+        built = munk(θ3)
+        @test built.c.c ≈ reference.c.c
+        @test built.c.z == reference.c.z
+        @test (built.cb, built.ρb, built.depth) == (reference.cb, reference.ρb, reference.depth)
+    end
+
+    @testset "$env_name / $target_name" for (env_name, envf, θ, freq, differenceable) in ENVIRONMENTS,
+        (target_name, target) in TARGETS
+
+        f = θ_ -> target(envf, θ_, freq)
+
+        # ForwardDiff at 1e-7 rather than the 1e-8 the hand-written testsets above use, because at
+        # 20 modes ForwardDiff is the side that moves: it differentiates the arithmetic of the root
+        # solver's last iterate, so its answer carries the iteration's truncation (4.2's finding,
+        # sharpened in 4.3). It shows only on `munk`, and only on the wavenumber sum — 8.9e-9 there
+        # against 1e-12 everywhere else in this table.
+        g_forward = DifferentiationInterface.gradient(f, AutoForwardDiff(), θ)
+
+        # Central differences, and only on the parameters that do not move the mesh — see the
+        # comment on `ENVIRONMENTS`. FiniteDiff's default is *forward* differences, which are not
+        # accurate enough to be a reference here at any parameter (3.7% out on the Pekeris
+        # wavenumber sum).
+        g_finite = DifferentiationInterface.gradient(f, AutoFiniteDiff(; fdtype=Val(:central)), θ)
+
+        gradients = map(BACKENDS) do (backend_name, backend)
+            g = DifferentiationInterface.gradient(f, backend, θ)
+            @testset "$backend_name" begin
+                @test length(g) == length(θ)
+                @test all(isfinite, g)
+                @test relerr_norm(g, g_forward) < 1e-7
+                @test relerr_norm(g[differenceable], g_finite[differenceable]) < 1e-5
+            end
+            return g
+        end
+
+        # The backends evaluate the *same* rules, so they should agree far more closely than either
+        # agrees with a reference — anything else means a backend is reaching the rules differently,
+        # which is exactly the failure mode `ext/KrakenMooncakeExt.jl` could introduce. Observed:
+        # 3e-14 and below.
+        @testset "backends agree with each other" begin
+            for k in 2:length(gradients)
+                @test relerr_norm(gradients[k], gradients[1]) < 1e-11
+            end
+        end
+    end
+end
+
+### The rules on their own, through ChainRulesTestUtils --------------------------------------------
+#
+# Every comparison so far is a gradient of a *composition*, where a wrong term in one rule can be
+# cancelled by a wrong term in another or simply never reached by the cotangent that happens to flow.
+# `test_rrule` asks the narrower question: with a random cotangent, does this one pullback reproduce
+# finite differences of this one primal, over every argument at once? It checks arguments the solver
+# never varies independently — `props.zn_vec` against `cache.a_vec`, say — and it checks the tangent
+# *types*, which is how a rule acquires a `Tangent` field that no backend ever accumulates.
+#
+# It needs to be told three things about these arguments before it can run at all.
+
+# 1. `rand_tangent` and `to_vec` both recurse through a struct's fields, and the interpolant inside
+#    `SampledSSP1D` bottoms out in `DataInterpolations.ExtrapolationType.T` — an `EnumX` value that
+#    neither knows what to do with ("Non-struct types are not supported by this fallback"). Declaring
+#    the interpolant opaque is the honest answer rather than a workaround: the rules in
+#    `src/kraken_ad.jl` already return `f=NoTangent()` for it, because it is fully determined by the
+#    `z` and `c` fields sitting beside it and differentiating both would count the profile twice.
+ChainRulesTestUtils.rand_tangent(::AbstractRNG, ::DataInterpolations.AbstractInterpolation) = NoTangent()
+FiniteDifferences.to_vec(A::DataInterpolations.AbstractInterpolation) = (Float64[], _ -> A)
+
+# 2. `Nz_vec` is a `Vector{Int}`, and the generic struct reconstruction tries to rebuild it out of
+#    perturbed `Float64`s (`TypeError: in new, expected Vector{Int64}`). It is the mesh point count —
+#    the one part of `AcousticProblemProperties` that is deliberately not differentiable, see the
+#    seam note at the top of `src/kraken_core.jl` — so it is carried across unperturbed.
+function FiniteDifferences.to_vec(props::AcousticProblemProperties)
+    v, back = FiniteDifferences.to_vec((props.freq, props.Δz_vec, props.zn_vec))
+    function props_from_vec(x)
+        freq, Δz_vec, zn_vec = back(x)
+        return AcousticProblemProperties{typeof(freq),eltype(Δz_vec)}(freq, props.Nz_vec, Δz_vec, zn_vec)
+    end
+    return v, props_from_vec
+end
+
+# 3. The step has to be capped. FiniteDifferences' adaptive stepper picks ~1e-3 here, and the entries
+#    of `cache.a_vec` are themselves ~2e-3 — so the default probe perturbs the discretized problem by
+#    tens of percent, the root leaves the bracket it was handed, and `BracketingNonlinearSolve` says
+#    so in a warning. `max_range=1e-6` keeps every probe inside the bracket while leaving five
+#    decades of headroom over the 1e-11 at which cancellation would start to matter.
+const RRULE_FDM = central_fdm(5, 1; max_range=1e-6)
+
+@testset "ChainRulesTestUtils" begin
+    # `layer_mesh` is the whole rule: `collect(range(z_top, z_bot, Nz))`, three arguments, one of
+    # them an `Int` that must come back `NoTangent`. Nothing else in this file tests it in isolation.
+    @testset "layer_mesh" begin
+        test_rrule(Kraken.layer_mesh, 0.5, 100.0, 12; check_inferred=false)
+    end
+
+    # `atol = 1e-8` and not smaller because of one specific entry: `∂kr/∂ρb` is ~1.3e-6 on
+    # `one_layer_env`, three decades below the largest cotangent in the same call, and finite
+    # differences resolve it to about 2e-9 absolute. Everything else clears `rtol = 1e-6` on its own.
+    @testset "solve_for_kr — $name" for (name, envf, θ) in (("pekeris", pekeris, θ0), ("one_layer", onelayer, θ1))
+        # 25 Hz keeps the mesh at a few dozen points: `test_rrule` finite-differences *every*
+        # coordinate of every argument, so the cost is quadratic in the mesh, not linear.
+        env, props, cache, _ = setup(envf, θ; freq=25.0)
+        span = bisection(env, props, cache)[1, :]
+        test_rrule(
+            Kraken.solve_for_kr, span, env, props, cache; fdm=RRULE_FDM, rtol=1e-6, atol=1e-8, check_inferred=false
+        )
+    end
+
+    # `mode_eigenvector` is deliberately absent, and it is worth recording why rather than leaving a
+    # gap. `test_rrule` requires a primal that does not mutate its arguments, and this one does:
+    # `create_finite_diff_matrix!` shifts `cache.a_vec` in place and unshifts it on the way out. That
+    # is invisible to a backend, which sees the cache restored, but not to `to_vec`, whose
+    # reconstruction hands the same arrays back to every probe. Measured, with the cotangent fixed so
+    # both sides compute the same number: differentiating with respect to `kr` alone, finite
+    # differences give 3.9617 and the rule gives 3.96168; add `cache` to the argument list and the
+    # same finite difference collapses to 1e-14. Two further blockers sit behind that one — the
+    # primal is the last iterate of an iteration and so is not smooth at the scale the adaptive
+    # stepper probes (4.3's finding), and `get_g`'s `sqrt(kr² - q²)` makes `kr` inadmissible a short
+    # way below the root, which the stepper's magnitude estimation walks straight into
+    # (`DomainError`). The direct check on this rule is the hand-stepped "eigenvector adjoint
+    # content" testset above, which covers every partial family entry by entry.
 end

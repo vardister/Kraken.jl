@@ -18,9 +18,11 @@ UnPack = "3a884ed6-31ef-47d7-9d2a-63182c4928ed"
 
 [weakdeps]
 Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
+Mooncake = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
 
 [extensions]
 KrakenMakieExt = "Makie"
+KrakenMooncakeExt = "Mooncake"
 
 [compat]
 ChainRulesCore = "1"
@@ -28,6 +30,9 @@ DataInterpolations = "8"
 DocStringExtensions = "0.9.3"
 LinearSolve = "3"
 Makie = "0.24"
+# The Mooncake extension reaches into the `FData`/`RData`/`MutableTangent` split to bridge
+# ChainRules struct tangents, which is internal API — so the bound is a minor-version one.
+Mooncake = "0.5"
 NaNMath = "1.0.2"
 NonlinearSolve = "4.2.0"
 Roots = "2.2"
