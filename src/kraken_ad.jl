@@ -11,6 +11,11 @@
 #   * `mode_eigenvector`  — eigenvector adjoint via a bordered tridiagonal solve
 #
 # One set of rules serves Zygote, Mooncake, and Enzyme-via-ChainRules at once.
+#
+# A third group of rules is here for a different reason: `soundspeed` and `density` *are* traceable,
+# but what `DataInterpolations` supplies for them is silently incomplete — its ChainRules rule holds
+# an interpolant's knot vector fixed, so every derivative with respect to a layer thickness comes back
+# missing a term. That is a wrong number rather than an error, so the rules below replace it outright.
 
 using ChainRulesCore
 
@@ -50,6 +55,204 @@ function ChainRulesCore.rrule(::typeof(layer_mesh), z_top, z_bot, Nz)
         return (NoTangent(), sum((1 .- t) .* Δ), sum(t .* Δ), NoTangent())
     end
     return layer_mesh(z_top, z_bot, Nz), layer_mesh_pullback
+end
+
+### The sampled-profile interpolants -------------------------------------------------------------
+#
+# `soundspeed(ssp, z)` and `density(ρ, z)` are `ssp.f(z)`, a `DataInterpolations.LinearInterpolation`
+# with `ExtrapolationType.Constant`. `DataInterpolations` ships a ChainRules rule for that call, but
+# it differentiates only with respect to the *values* and the query point — an interpolant's knots
+# are treated as constants. Here the knots are layer boundaries, and layer boundaries are parameters,
+# so the missing term is not small: on `two_layer_slope_env` it made `∂kr₁/∂h0` 15% wrong and flipped
+# the sign of `∂kr₁/∂h1` and `∂kr₁/∂h2`, with nothing raised. Unmodified `kraken.exe`, finite-
+# differenced across perturbed `.env` files, was the arbiter; the table is in the plan.
+#
+# The three rules below close that. Linear interpolation is local — one query touches exactly two
+# knots — so the whole adjoint is a scatter into two slots per query, O(N) for N queries, and the
+# constructor rule reduces to storing its arguments. That last one is also where the milestone's
+# performance went: tracing the two `DataInterpolations` constructors inside `UnderwaterEnv` was 93%
+# of a reverse gradient's cost, and a rule that never enters them removes it.
+
+"""
+    linear_interp_partials(A, z)
+
+The value of the linear interpolant `A` at `z`, together with the partial derivatives of that value
+with respect to the two knots it lands between and their two values.
+
+Returns `(val, idx, du1, du2, dt1, dt2, dz)`, where `idx`/`idx+1` index `A.t` and `A.u`, so a pullback
+scatters `du1`/`dt1` into slot `idx` and `du2`/`dt2` into slot `idx + 1`.
+
+# Matching the primal rather than re-deriving it
+
+`val` is recomputed here rather than taken from `A(z)` so that the two can be compared: the rule is a
+derivative of the primal only if it selected the same interval, and with duplicated knots — which
+this package uses deliberately, placing `z0` and `z0 + eps(z0)` to represent a discontinuity — the
+interval on either side of a boundary carries a completely different slope. `test/reverse_ad_tests.jl`
+asserts `val == A(z)` bit for bit across every standard environment for exactly that reason.
+
+Three cases, all inherited from `DataInterpolations` instead of chosen:
+
+  * **Constant extrapolation** outside `[t₁, t_N]` — the value is the nearer endpoint's, so it carries
+    the whole cotangent and the knots and the query point carry none. The comparisons are strict
+    (`z < t₁`, `z > t_N`), so *at* the last knot the interior branch runs and `∂val/∂z` is the last
+    interval's slope, not zero.
+  * **Coincident knots** (`t_{i+1} == t_i`) — `linear_interpolation_parameters` forces the slope to
+    zero rather than dividing, making `val = u_i` a constant. Every partial but `∂val/∂u_i` is zero.
+  * **Interior** — with `w = (z - t_i)/Δt` and `slope = Δu/Δt`:
+    `∂val/∂u_i = 1 - w`, `∂val/∂u_{i+1} = w`, `∂val/∂t_i = -slope(1 - w)`,
+    `∂val/∂t_{i+1} = -slope·w`, `∂val/∂z = slope`.
+
+# A query exactly on a knot takes the interval *ending* there
+
+Which of the two adjoining intervals a knot-coincident query belongs to changes no value — both
+branches evaluate to the shared knot's own `u`, bit for bit on every mesh point of every standard
+environment — but it changes the derivative completely, and here it is not a detail: `get_z_vec`
+ends each layer's mesh exactly on that layer's lower boundary, so *every* interface knot is queried
+exactly. Taking the interval that *starts* at the knot means taking the `eps(z0)`-wide seam this
+package uses to spell a discontinuity, whose slope is ~1e15 and whose two huge partials then have to
+cancel through unrelated paths in reverse mode; on `two_layer_slope_env` that left `∂kr₁/∂h0` 8.6%
+wrong. Taking the interval that ends there gives the water column's own slope, which is the answer
+the physics wants and the one ForwardDiff already produced.
+
+That agreement with ForwardDiff is not a coincidence but it *is* an accident: `searchsortedlast` puts
+a tie in the right-hand interval, and ForwardDiff only lands in the left-hand one because its `isless`
+on `Dual` breaks value ties on the partials, so a `Float64` query compares below an equal-valued
+`Dual` knot. Relying on that would be relying on a comparison ForwardDiff does not document, so the
+side is selected explicitly here — `side = :first, idx_shift = -1`, which is `searchsortedfirst - 1`
+and identical to `searchsortedlast` at every query that is *not* exactly on a knot.
+"""
+function linear_interp_partials(A, z)
+    t, u = A.t, A.u
+    N = length(t)
+    T = promote_type(eltype(t), eltype(u), typeof(z))
+    if z < first(t)
+        # Slots 1 and 2, with all the weight on the first — `u[1]` is the extrapolated value.
+        return (first(u) + zero(T), 1, one(T), zero(T), zero(T), zero(T), zero(T))
+    elseif z > last(t)
+        return (last(u) + zero(T), N - 1, zero(T), one(T), zero(T), zero(T), zero(T))
+    end
+    idx = DataInterpolations.get_idx(A, z, A.iguesser; side=:first, idx_shift=-1)
+    t1, t2 = t[idx], t[idx + 1]
+    u1, u2 = u[idx], u[idx + 1]
+    Δt = t2 - t1
+    if iszero(Δt)
+        return (u1 + zero(T), idx, one(T), zero(T), zero(T), zero(T), zero(T))
+    end
+    slope = (u2 - u1) / Δt
+    w = (z - t1) / Δt
+    return (u1 + slope * (z - t1), idx, 1 - w, w, -slope * (1 - w), -slope * w, slope)
+end
+
+"""
+    profile_pullback(A, zs, parts, Δ)
+
+Scatter a cotangent `Δ` on interpolated values back onto `(A.u, A.t, zs)`, given the per-query
+partials `parts` that [`linear_interp_partials`](@ref) produced on the forward pass.
+
+Returns `(Δu, Δt, Δz)`, all three the shape of what they are a cotangent for. `Δz` follows `zs`: a
+scalar query gets a scalar back, a vector query a vector.
+"""
+function profile_pullback(A, zs, parts, Δ)
+    N = length(A.t)
+    T = promote_type(eltype(A.t), eltype(A.u), eltype(zs), eltype(Δ))
+    Δu = zeros(T, N)
+    Δt = zeros(T, N)
+    Δz = zeros(T, length(parts))
+    # A pullback's own arithmetic is never re-differentiated, so accumulating in place is free here —
+    # the no-mutation discipline is about the *primal*, which is what the tape follows.
+    for (k, p) in enumerate(parts)
+        d = Δ isa Number ? Δ : Δ[k]
+        _, idx, du1, du2, dt1, dt2, dz = p
+        Δu[idx] += d * du1
+        Δu[idx + 1] += d * du2
+        Δt[idx] += d * dt1
+        Δt[idx + 1] += d * dt2
+        Δz[k] = d * dz
+    end
+    return Δu, Δt, zs isa Number ? Δz[1] : Δz
+end
+
+"""
+    profile_partials(prof, z)
+
+The forward half shared by the [`soundspeed`](@ref) and [`density`](@ref) rules: the interpolated
+value at `z`, plus the per-query partials the pullback scatters. `z` may be a number or a vector; the
+value returned follows it, exactly as the primal's does.
+"""
+function profile_partials(prof, z::Number)
+    p = linear_interp_partials(prof.f, z)
+    return first(p), (p,)
+end
+
+function profile_partials(prof, z::AbstractVector)
+    parts = map(zk -> linear_interp_partials(prof.f, zk), z)
+    return map(first, parts), parts
+end
+
+# The cotangent goes onto the *struct's* fields — `z` and `c`/`ρ` — and never onto `f`, the
+# interpolant: `f` is fully determined by the other two, and routing through it is precisely what
+# would hand the derivative back to `DataInterpolations` and lose the knot term again.
+#
+# Note the sign. The struct stores `z = -depth` while the interpolant it built is keyed on `depth`,
+# so a cotangent on a knot enters the struct negated. `test/reverse_ad_tests.jl` pins this against
+# ForwardDiff, because getting it backwards is invisible in any environment whose profile is constant
+# within each layer — which is most of them, and is why the gap survived 4.2 and 4.3.
+
+function ChainRulesCore.rrule(::typeof(soundspeed), ssp::SampledSSP1D, z)
+    val, parts = profile_partials(ssp, z)
+    function soundspeed_pullback(Δ)
+        Δ = unthunk(Δ)
+        # A structural zero short-circuits: `profile_pullback` would otherwise widen its accumulators
+        # to `Any` trying to promote against it, and scatter zeros for no reason.
+        Δ isa AbstractZero && return (NoTangent(), ZeroTangent(), ZeroTangent())
+        Δu, Δt, Δz = profile_pullback(ssp.f, z, parts, Δ)
+        return (NoTangent(), Tangent{typeof(ssp)}(; z=(-Δt), c=Δu, f=NoTangent()), Δz)
+    end
+    return val, soundspeed_pullback
+end
+
+function ChainRulesCore.rrule(::typeof(density), prof::SampledDensity1D, z)
+    val, parts = profile_partials(prof, z)
+    function density_pullback(Δ)
+        Δ = unthunk(Δ)
+        Δ isa AbstractZero && return (NoTangent(), ZeroTangent(), ZeroTangent())
+        Δu, Δt, Δz = profile_pullback(prof.f, z, parts, Δ)
+        return (NoTangent(), Tangent{typeof(prof)}(; z=(-Δt), ρ=Δu, f=NoTangent()), Δz)
+    end
+    return val, density_pullback
+end
+
+# Building a profile is one `LinearInterpolation` call plus a negation, and reverse mode has no
+# business inside the first of those — the rules above already state every derivative the interpolant
+# has. Without these two rules the answers are still right (the tangent on `f` is `NoTangent`, so the
+# interpolant is never differentiated), but Zygote still *traces* the constructor to build a pullback
+# it will not use, and that tracing was 93% of a reverse gradient's cost.
+#
+# `f` here is the interpolation constructor, not an interpolant — `SampledSSP(depth, c)` passes
+# `DataInterpolations.LinearInterpolation` itself — so it is a `NoTangent` on both sides.
+
+"""
+    profile_ctor_pullback(Δ, values_field)
+
+Shared pullback body for the two profile constructors: map a tangent on the built struct back onto
+`(depth, values)`. `z = -depth` is the only field that is not stored verbatim.
+"""
+function profile_ctor_pullback(Δ, values_field::Symbol)
+    Δ = unthunk(Δ)
+    Δ isa AbstractZero && return (NoTangent(), ZeroTangent(), ZeroTangent(), NoTangent())
+    Δz = getproperty(Δ, :z)
+    Δdepth = Δz isa AbstractZero ? ZeroTangent() : -Δz
+    return (NoTangent(), Δdepth, getproperty(Δ, values_field), NoTangent())
+end
+
+function ChainRulesCore.rrule(::Type{SampledSSP1D}, depth, c, f)
+    SampledSSP1D_pullback(Δ) = profile_ctor_pullback(Δ, :c)
+    return SampledSSP1D(depth, c, f), SampledSSP1D_pullback
+end
+
+function ChainRulesCore.rrule(::Type{SampledDensity1D}, depth, ρ, f)
+    SampledDensity1D_pullback(Δ) = profile_ctor_pullback(Δ, :ρ)
+    return SampledDensity1D(depth, ρ, f), SampledDensity1D_pullback
 end
 
 """

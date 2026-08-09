@@ -440,8 +440,61 @@ These are facts established by running the code, not assumptions. Tasks below re
   it was invisible through 4.2 only because `pekeris_env` and `one_layer_env` hold the sound speed
   constant within each layer, which makes the missing term identically zero. Isolated, it is one
   line: `soundspeed` at a fixed depth, differentiated with respect to a moving layer boundary, gives
-  -1.5 under ForwardDiff and 0.0 under Zygote. `test/reverse_ad_tests.jl` carries this as three
-  `@test_broken`s so the suite flips green on it when 4.5 lands rather than the gap being rediscovered.
+  -1.5 under ForwardDiff and 0.0 under Zygote. `test/reverse_ad_tests.jl` carried this as three
+  `@test_broken`s so the suite would flip green on it when 4.5 landed rather than the gap being
+  rediscovered. **Closed by 4.5** — the three are plain `@test`s now; the two entries below record
+  what the fix turned out to be, which was not only the missing term.
+
+- **The interpolant gap was an interval-selection bug as much as a missing term, and the two look
+  nothing alike** (established during 4.5). Writing the `∂c/∂t` term was the easy half and it only
+  got `∂kr₁/∂h0` from 15% wrong to **8.6% wrong**, because `get_z_vec` ends each layer's mesh exactly
+  on that layer's lower boundary — which is exactly where these environments place the duplicated
+  knot (`z0`, `z0 + eps(z0)`) that spells a discontinuity. `searchsortedlast`, which is what
+  `DataInterpolations` uses and what the obvious rule copies, puts such a query in the **right-hand**
+  interval: the `eps`-wide seam, whose slope is ~1e15 and whose `∂/∂t` and `∂/∂z` partials are equal
+  and opposite. Forward mode never notices, because it forms `z - t₁` as one dual subtraction and
+  gets an exact zero; reverse mode sends the two 1e15's down unrelated paths and subtracts them at
+  the end. Selecting the interval that *ends* at the query (`side = :first, idx_shift = -1`) removes
+  the cancellation entirely and changes no value — checked `===`, not `≈`, on every mesh point of
+  four standard environments at three frequencies.
+
+  The kicker: ForwardDiff was already taking the left-hand interval, and **by accident**. Its `isless`
+  on `Dual` breaks value ties on the partials, so a `Float64` query compares below an equal-valued
+  `Dual` knot and `searchsortedlast` lands one lower. The correct answer was arriving through an
+  undocumented comparison, which is a good reason not to have used "agrees with ForwardDiff" as the
+  only oracle for this milestone.
+
+- **The gap is closed and the Fortran table's residual was 4.4's, exactly as suspected** (measured
+  during 4.5). With the rules in, Zygote matches ForwardDiff to **2e-12** on all 13 parameters of
+  `two_layer_slope_env`, for the wavenumber, the mode shape, and the full `kraken_jl` solve. Against
+  finite-differenced `kraken.exe` (the `.prt`'s 10 digits — the `.mod` is single precision and cannot
+  resolve `h1`/`h2` at all, returning a flat 0.0):
+
+  | `∂kr₁/∂θ` @ 100 Hz | Fortran FD | Zygote, single mesh | Zygote, `kraken_jl` | rel. err vs Fortran |
+  |---|---|---|---|---|
+  | `h0` | 1.6335e-5 | 1.63421e-5 | 1.63333e-5 | 1.0e-4 |
+  | `h1` | 5.3950e-7 | 5.1129e-7 | 5.39376e-7 | 2.3e-4 |
+  | `h2` | 3.1500e-9 | 2.6845e-9 | 3.14900e-9 | 3.2e-4 |
+  | `c0` (control) | -2.780073e-4 | -2.780071e-4 | -2.780075e-4 | 7.4e-7 |
+
+  The 5% and 15% residuals the 4.3 entry left open on `h1`/`h2` were indeed the Richardson-
+  extrapolated wavenumber against the single-mesh one — differentiating `kraken_jl`, which is what
+  4.4 made possible, closes them to 1e-4, the finite-difference step's own truncation.
+
+- **The performance target was met by the same change, and reverse mode now flattens** (measured
+  during 4.5, against the 4.2 decomposition that predicted it). Σkr over an `M`-point sound-speed
+  profile at 100 Hz, as multiples of the primal solve:
+
+  | M | primal | forward | reverse (before 4.5) | reverse (after) |
+  |---|---|---|---|---|
+  | 5 | 0.063 ms | 2.6× | — | 6.8× |
+  | 10 | 0.063 ms | 4.9× | — | 6.4× |
+  | 25 | 0.061 ms | 13.5× | — | 6.6× |
+  | 50 | 0.065 ms | 25.1× | ~115× (7.5 ms) | **6.1× (0.40 ms)** |
+
+  Reverse mode is now flat in `M` — 19× faster at M = 50 than before — and crosses forward mode at
+  about a dozen parameters. It is 6× the primal rather than the milestone's stated ~3×; that gap is
+  4.8's to characterize, and it is a constant, not a scaling problem.
 
 - **`LinearSolve` was not the obstruction at the top level; two lines of bookkeeping were**
   (established during 4.4, settling that task's own open question). `richard_extrap` needed no
@@ -934,6 +987,8 @@ Correctness is judged against `ForwardDiff` and `FiniteDiff`, not against Fortra
 |---|---|
 | `rrule(::typeof(solve_for_kr), span, env, props, cache)` | Implicit function theorem on `det_sturm(kr; θ) = 0` |
 | `rrule(::typeof(mode_eigenvector), kr, env, props, cache)` | Eigenvector adjoint via bordered tridiagonal solve. Attached to the *eigenvector* half of `inverse_iteration`; the energy normalization stays traced — see the Architecture Decisions |
+| `rrule(::typeof(soundspeed \| density), prof, z)` | Linear-interpolant adjoint over values, knots *and* query depth — added in 4.5, replacing `DataInterpolations`' rule, which holds knots fixed and so drops every layer-thickness term |
+| `rrule(::Type{SampledSSP1D \| SampledDensity1D}, …)` | Constructor stores its arguments; keeps reverse mode out of `DataInterpolations` entirely, which is where 93% of its time went |
 | `@non_differentiable bisection(...)` | Mode counting is integer / piecewise constant |
 | `frule`-compatibility retained | Existing ForwardDiff path must not regress |
 | `test/reverse_ad_tests.jl` | Zygote + Mooncake vs ForwardDiff + FiniteDiff, on `kr`, on modes, on a scalar loss |
@@ -1000,8 +1055,9 @@ Correctness is judged against `ForwardDiff` and `FiniteDiff`, not against Fortra
   to 1e-8 relative for a 5-parameter `θ`.
 - **Dependencies:** 4.3
 
-### 4.5 [ ] Give the SSP and density interpolants their own reverse-mode rule
-- **Files:** `src/kraken_ad.jl`, `test/reverse_ad_tests.jl`
+### 4.5 [x] Give the SSP and density interpolants their own reverse-mode rule *(completed 2026-08-08)*
+- **Files:** `src/kraken_ad.jl`, `test/reverse_ad_tests.jl`, `examples/reverse_ad.jl` (its caveat
+  section and both performance tables described the gap and the old timings)
 - **What:** Added during 4.3, which found the gap and validated it against Fortran (see the
   Architecture Decisions). `DataInterpolations`' ChainRules rule treats an interpolant's knot vector
   as non-differentiable, so Zygote silently returns a gradient that is missing `∂c/∂t` — wrong by 15%

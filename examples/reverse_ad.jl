@@ -16,11 +16,10 @@
 #
 #   The file is written in `#%%` cells, so it also runs block by block in VS Code or as a notebook.
 #
-# WHAT WORKS TODAY, AND WHAT DOES NOT YET
-#   Reverse mode reaches `solve_for_kr` — a single converged wavenumber — and `inverse_iteration`,
-#   which produces the mode shapes (section 8 below), plus everything feeding into either. It does
-#   NOT yet go through `kraken_jl`, the top-level entry point; that is task 4.4 in the plan. So every
-#   example below goes through the lower-level path, which is five lines:
+# WHAT WORKS TODAY
+#   Reverse mode goes all the way through `kraken_jl`, the top-level entry point. The examples below
+#   mostly use the lower-level path instead, because it is the one where each piece can be pointed at
+#   individually — five lines, and every one of them is differentiable:
 #
 #       props = AcousticProblemProperties(env, freq)   # pick the depth mesh
 #       cache = AcousticProblemCache(env, props)       # build the finite-difference coefficients
@@ -28,16 +27,12 @@
 #       kr    = solve_for_kr(spans[m, :], env, props, cache)   # converge mode m
 #       _, ψ  = inverse_iteration(kr, env, props, cache)       # its mode shape
 #
-#   Forward mode (ForwardDiff) is unaffected by all of this and still works through `kraken_jl`.
+#   Section 9 uses `kraken_jl` itself. The one thing to know about the top-level gradient is that it
+#   is conditional on the mesh schedule the call selected — the number of refinement levels is an
+#   integer decision, so it is held fixed and the gradient is discontinuous where it changes. That is
+#   the standard treatment, and `kraken_jl`'s docstring spells it out.
 #
-# ONE CAVEAT WITH TEETH
-#   If the sound speed or density varies *inside* a layer whose thickness is one of your parameters,
-#   the gradient with respect to that thickness is currently incomplete: `DataInterpolations` carries
-#   no derivative for an interpolant's knot positions, so the term is silently dropped rather than
-#   raising an error. Measured against Fortran KRAKEN, that makes ∂kr/∂h₀ come out 15% low on
-#   `two_layer_slope_env`, with two other thicknesses sign-flipped. The environments used below —
-#   `pekeris_env` and `one_layer_env` — are unaffected, because their profiles are constant within
-#   each layer, which makes the missing term identically zero. Plan task 4.5 removes the caveat.
+#   Forward mode (ForwardDiff) is unaffected by all of this and works everywhere too.
 
 using Kraken
 using Zygote        # reverse mode: gradient w.r.t. all inputs in one pass
@@ -219,13 +214,14 @@ println("   (largest near the surface, where the modes have most of their energy
 # 5. Cost against parameter count — the honest picture
 # -----------------------------------------------------------------------------------------------
 # The theory: forward mode costs one solve per parameter, so it grows linearly; reverse mode costs
-# roughly one solve regardless. That is the whole reason for this milestone.
+# roughly one solve regardless. That is the whole reason for this milestone, and it is what the table
+# below shows — forward mode's multiple of the primal climbs with M while reverse mode's sits flat at
+# about 6×, so the two cross somewhere near a dozen parameters and the gap only widens after that.
 #
-# The practice, TODAY: reverse mode is CORRECT but not yet FAST. It is still slower than forward
-# mode at these sizes. The reason is not the differentiation rules — those are cheap, about 12% on
-# top of a wavenumber solve — but Zygote's cost in tracing the construction of the interpolation
-# object inside `UnderwaterEnv`. Making that cheap is task 4.7 in the plan; until then, treat this
-# table as a measurement of the starting point, not of what reverse mode can do.
+# Getting there took one fix rather than a rewrite. Reverse mode used to be flat-ish but *high* — 7.5
+# ms at M = 50 against forward mode's 1.7 — and 93% of that was Zygote tracing the two
+# `DataInterpolations` constructors inside `UnderwaterEnv`, not the solver and not the rules. The
+# interpolants now carry their own rules (`src/kraken_ad.jl`), so the constructors are never entered.
 
 bench(f, n=5) = (f(); minimum(@elapsed(f()) for _ in 1:n))
 
@@ -241,15 +237,14 @@ for M in (5, 10, 25, 50)
     @printf("   %5d %10.3f %10.2f %10.2f %10.1f %10.1f\n", M, t0 * 1e3, tf * 1e3, tz * 1e3, tf / t0, tz / t0)
 end
 println("""
-   Forward mode's column grows linearly with M, exactly as predicted. Reverse mode's does not yet
-   flatten, because the fixed overhead above dominates at these sizes.""")
+   Forward mode's column grows linearly with M, exactly as predicted; reverse mode's stays flat.""")
 
 #%% ---------------------------------------------------------------------------------------------
 # 6. Where the reverse-mode time actually goes
 # -----------------------------------------------------------------------------------------------
-# Worth running once so the number above is not mysterious. Almost all of it is spent building the
-# environment — specifically the two `DataInterpolations` objects inside `UnderwaterEnv` — and
-# almost none in the solver or in the new rules.
+# Worth running once so the number above is not mysterious. This breakdown is how the interpolant
+# rules got written: it used to read 7.0 of 7.5 ms against "just building UnderwaterEnv", which
+# pointed at the two `DataInterpolations` constructors rather than at the solver or the rules.
 
 let
     M = 50
@@ -261,10 +256,10 @@ let
     interp = bench(() -> Zygote.gradient(cc -> sum(SampledSSP(z50, cc).c), c50))
 
     println("\n6. WHERE THE TIME GOES (M = 50)")
-    @printf("   whole gradient                       %8.2f ms\n", full * 1e3)
-    @printf("   ... just building UnderwaterEnv      %8.2f ms\n", envonly * 1e3)
-    @printf("   ... just one SampledSSP interpolant  %8.2f ms\n", interp * 1e3)
-    @printf("   ... everything else (solve + rules)  %8.2f ms\n", (full - envonly) * 1e3)
+    @printf("   whole gradient                       %8.3f ms\n", full * 1e3)
+    @printf("   ... just building UnderwaterEnv      %8.3f ms\n", envonly * 1e3)
+    @printf("   ... just one SampledSSP interpolant  %8.3f ms\n", interp * 1e3)
+    @printf("   ... everything else (solve + rules)  %8.3f ms\n", (full - envonly) * 1e3)
 end
 
 #%% ---------------------------------------------------------------------------------------------
@@ -328,6 +323,102 @@ let g_rev_ψ = Zygote.gradient(mode_shape_integral, θ_1L)[1], g_fwd_ψ = Forwar
         @printf("   %-24s %14.6e %14.6e\n", names_1L[i], g_rev_ψ[i], g_fwd_ψ[i])
     end
     @printf("\n   reverse vs forward: %.2e relative\n", relerr(g_rev_ψ, g_fwd_ψ))
+end
+
+#%% ---------------------------------------------------------------------------------------------
+# 9. THE TOP-LEVEL SOLVE: `kraken_jl` itself
+# -----------------------------------------------------------------------------------------------
+# Everything above uses the five-line path so the pieces can be pointed at individually. In practice
+# you call `kraken_jl`, which adds the mesh-refinement loop and the Richardson extrapolation on top,
+# and reverse mode goes through that too.
+#
+# TWO THINGS TO KNOW ABOUT THE TOP-LEVEL GRADIENT
+#   * It is conditional on the mesh schedule this call selected. How many refinement levels to run is
+#     an integer decision in the parameters, so it is held fixed — which is the correct and standard
+#     treatment, but it makes the gradient discontinuous at parameter values where the level count
+#     changes. `dont_break=true` fixes the schedule by construction if that matters.
+#   * Only the wavenumbers are extrapolated; the mode shapes come from the coarsest mesh. So a
+#     mode-shape gradient here is the level-1 solve's.
+#
+# Note the tightened tolerance. `kraken_jl`'s default `abstol = reltol = 1e-6` leaves ~1e-6 of
+# truncation in the level-1 roots, and both AD modes then differentiate a slightly-wrong root — this
+# is one place where the implicit-function rule's tolerance independence does NOT save you, because
+# the root it is evaluated at is itself a solver output. At 1e-10 the two modes agree to 1e-10.
+
+function kraken_jl_sum(θ; freq=100.0)
+    env = UnderwaterEnv(pekeris_env(; c0=θ[1], cb=θ[2], ρ0=θ[3], ρb=θ[4], depth=θ[5])...)
+    return sum(kraken_jl(env, freq; abstol=1e-10, reltol=1e-10).kr)
+end
+
+println("\n9. TOP-LEVEL SOLVE — ∂(Σkr)/∂θ through `kraken_jl` at 100 Hz")
+let g_rev = Zygote.gradient(kraken_jl_sum, θ_pek)[1], g_fwd = ForwardDiff.gradient(kraken_jl_sum, θ_pek)
+    @printf("   Σkr = %.10f\n", kraken_jl_sum(θ_pek))
+    @printf("\n   %-22s %14s %14s\n", "parameter", "reverse", "forward")
+    for i in eachindex(θ_pek)
+        @printf("   %-22s %14.6e %14.6e\n", names_pek[i], g_rev[i], g_fwd[i])
+    end
+    @printf("\n   reverse vs forward: %.2e relative\n", relerr(g_rev, g_fwd))
+end
+
+#%% ---------------------------------------------------------------------------------------------
+# 10. A PROFILE THAT VARIES INSIDE A LAYER WHOSE THICKNESS IS A PARAMETER
+# -----------------------------------------------------------------------------------------------
+# Worth its own section because it was, for a while, the one thing reverse mode got *wrong* here, and
+# wrong quietly. When the sound speed varies within a layer, moving that layer's boundary moves the
+# interpolant's knots as well as the mesh — and `DataInterpolations`' own ChainRules rule treats an
+# interpolant's knots as constants, so the term was dropped with no error raised. On this environment
+# that made ∂kr₁/∂h₀ 15% low and flipped the sign of the other two thicknesses.
+#
+# It was caught by finite-differencing unmodified Fortran `kraken.exe` across perturbed `.env` files
+# — a gradient oracle that shares no code with any of this — and it is fixed by the interpolant rules
+# in `src/kraken_ad.jl`. The environments in the earlier sections never showed it, because their
+# profiles are constant within each layer, which makes the missing term identically zero.
+
+function slope_kr(θ; freq=100.0, mode=1)
+    env = UnderwaterEnv(
+        two_layer_slope_env(;
+            c0=θ[1],
+            c1_1=θ[2],
+            c1_2=θ[3],
+            c2_1=θ[4],
+            c2_2=θ[5],
+            cb=θ[6],
+            ρ0=θ[7],
+            ρ1=θ[8],
+            ρ2=θ[9],
+            ρb=θ[10],
+            h0=θ[11],
+            h1=θ[12],
+            h2=θ[13],
+        )...,
+    )
+    # `kraken_jl`, not the five-line path, so the Fortran column below is comparable: `kraken.exe`
+    # reports the Richardson-extrapolated wavenumber, and against the single-mesh one these three
+    # derivatives sit 5% and 15% away for a reason that has nothing to do with the interpolants.
+    return kraken_jl(env, freq; abstol=1e-10, reltol=1e-10).kr[mode]
+end
+
+θ_slope = [1500.0, 1550.0, 1580.0, 1600.0, 1650.0, 1800.0, 1000.0, 1500.0, 1600.0, 2000.0, 100.0, 20.0, 20.0]
+
+println("\n10. TWO SLOPED SEDIMENT LAYERS — the three layer-thickness derivatives")
+let g_rev = Zygote.gradient(slope_kr, θ_slope)[1], g_fwd = ForwardDiff.gradient(slope_kr, θ_slope)
+    @printf("\n   %-10s %14s %14s %14s %10s\n", "parameter", "reverse", "forward", "Fortran FD", "rev/FD-1")
+    # The Fortran column is central differences of `kraken.exe`'s own Re(kᵣ), read from the `.prt`'s
+    # ten printed digits — the `.mod` is single precision and cannot resolve h1/h2 at all. Steps are
+    # per-parameter because the three derivatives span four orders of magnitude. Reproducing this
+    # needs the reference harness in `test/reference/`; the numbers are quoted from a run of it, and
+    # turning that into a standing test is plan task 4.7.
+    for (i, name, fortran) in
+        ((11, "h0", 1.6335e-5), (12, "h1", 5.3950e-7), (13, "h2", 3.1500e-9), (1, "c0 (ctrl)", -2.780073e-4))
+        @printf(
+            "   %-10s %14.6e %14.6e %14.6e %10.1e\n", name, g_rev[i], g_fwd[i], fortran, abs(g_rev[i] / fortran - 1)
+        )
+    end
+    @printf("\n   reverse vs forward, all 13 parameters: %.2e relative\n", relerr(g_rev, g_fwd))
+    println("""
+   Before the interpolant rules, the reverse column read 1.3836e-05, -1.72e-08 and -4.80e-10 for the
+   three thicknesses — 15% low and then sign-flipped — while the control row was already right. That
+   is what a silently dropped term looks like: not an error, and not wrong everywhere.""")
 end
 
 println("\nDone.")

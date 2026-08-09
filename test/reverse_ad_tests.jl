@@ -320,37 +320,94 @@ end
         end
     end
 
-    @testset "known gap: a profile that varies inside a layer whose depth is a parameter" begin
+    @testset "interpolant rule: the primal value, exactly — $name" for (name, envf, θ) in (
+        ("pekeris", pekeris, θ0), ("one_layer", onelayer, θ1), ("two_layer_slope", twolayer, θ2)
+    )
+        # `linear_interp_partials` recomputes the interpolated value instead of asking the primal for
+        # it, so that this comparison exists: the partials are derivatives of the primal only if the
+        # rule landed in the same interval. `===` rather than `≈` — the rule reproduces the arithmetic,
+        # it does not approximate it.
+        #
+        # The queries that matter are the mesh points, because `get_z_vec` ends each layer's mesh
+        # exactly on that layer's lower boundary, which is exactly where these environments place a
+        # duplicated knot. The extra queries cover both extrapolation branches and both endpoints.
+        env = envf(θ)
+        for freq in (25.0, 100.0, 400.0)
+            props = AcousticProblemProperties(env, freq)
+            zn = reduce(vcat, props.zn_vec)
+            queries = vcat(zn, env.layer_depth, [-5.0, 0.0, env.depth, env.depth + 10.0])
+            @test all(z -> soundspeed(env.c, z) === first(Kraken.linear_interp_partials(env.c.f, z)), queries)
+            @test all(z -> density(env.ρ, z) === first(Kraken.linear_interp_partials(env.ρ.f, z)), queries)
+        end
+    end
+
+    @testset "interpolant rule: all five partial families" begin
+        # The rule's content in isolation, against ForwardDiff on the same three inputs — the knot
+        # depths, the values, and the query point. `two_layer_slope_env` is the one standard
+        # environment where all three are simultaneously non-trivial.
+        ssp = twolayer(θ2).c
+        depths, values = -ssp.z, ssp.c        # the struct stores `z = -depth`; see the rule's comment
+        rebuild(d, v) = SampledSSP(d, v)
+
+        for z in (37.0, 110.0, 130.0)         # water column, first sediment layer, second
+            @test Zygote.gradient(d -> soundspeed(rebuild(d, values), z), depths)[1] ≈
+                ForwardDiff.gradient(d -> soundspeed(rebuild(d, values), z), depths) rtol = 1e-10
+            @test Zygote.gradient(v -> soundspeed(rebuild(depths, v), z), values)[1] ≈
+                ForwardDiff.gradient(v -> soundspeed(rebuild(depths, v), z), values) rtol = 1e-10
+            @test Zygote.gradient(zz -> soundspeed(ssp, zz), z)[1] ≈
+                ForwardDiff.derivative(zz -> soundspeed(ssp, zz), z) rtol = 1e-10
+        end
+
+        # Constant extrapolation: the nearer endpoint's *value* carries the whole cotangent, and the
+        # knots and the query point carry none. Zero here is structural, not small.
+        for z in (-5.0, 200.0)
+            @test all(iszero, Zygote.gradient(d -> soundspeed(rebuild(d, values), z), depths)[1])
+            @test iszero(Zygote.gradient(zz -> soundspeed(ssp, zz), z)[1])
+            @test sum(Zygote.gradient(v -> soundspeed(rebuild(depths, v), z), values)[1]) ≈ 1.0
+        end
+
+        # The vector method is not the scalar one in a loop — it has its own rule — so it gets its own
+        # check that it agrees with summing the scalar rule.
+        zs = [17.0, 100.0, 110.0, 137.0]
+        @test Zygote.gradient(d -> sum(soundspeed(rebuild(d, values), zs)), depths)[1] ≈
+            sum(z -> Zygote.gradient(d -> soundspeed(rebuild(d, values), z), depths)[1], zs) rtol = 1e-12
+
+        # The sign on the constructor. `z = -depth`, so a cotangent on the knots enters the struct
+        # negated; getting this backwards is invisible in any environment whose profile is constant
+        # within each layer, which is most of them.
+        @test Zygote.gradient(d -> sum(SampledSSP(d, values).z), depths)[1] ≈ fill(-1.0, length(depths))
+    end
+
+    @testset "a profile that varies inside a layer whose depth is a parameter" begin
         # `two_layer_slope_env` has a sound-speed gradient *within* each sediment layer, so moving a
-        # layer boundary moves the interpolant's knots as well as the mesh. `DataInterpolations`'
-        # ChainRules rule treats an interpolant's knot vector as non-differentiable, so Zygote
-        # silently drops that term — it returns a gradient, just not the whole one. ForwardDiff and
-        # central differences both carry it.
+        # layer boundary moves the interpolant's knots as well as the mesh. This used to be the
+        # milestone's one wrong answer: `DataInterpolations`' ChainRules rule holds an interpolant's
+        # knots fixed, so Zygote dropped that term silently — `∂kr₁/∂h0` came out 15% low and `∂h1`,
+        # `∂h2` had the wrong sign, with nothing raised. The rules in `src/kraken_ad.jl` replace it.
         #
-        # This is upstream of both rules in this file: it hits the wavenumber gradient too, which is
-        # why it does not show up as an eigenvector-rule failure. The fix is an `rrule` for
-        # `SampledSSP`/`SampledDensity`, which the plan carries as its own task (4.5).
-        #
-        # Which side is wrong was settled against Fortran, not against ForwardDiff — finite
+        # Which side was wrong was settled against Fortran, not against ForwardDiff: finite
         # differences of `kraken.exe`'s own `Re(kᵣ)` across perturbed `.env` files put `∂kr₁/∂h0` at
-        # 1.6344e-5, where ForwardDiff says 1.6342e-5 and Zygote says 1.3836e-5; on `h1` and `h2`
-        # Zygote has the sign wrong. The numbers are tabulated in the plan's Architecture Decisions.
+        # 1.6344e-5, against ForwardDiff's 1.6342e-5 and the old Zygote's 1.3836e-5. The full table is
+        # in the plan's Architecture Decisions; turning that one-off measurement into a standing test
+        # is plan task 4.7, so what is pinned *here* is agreement with ForwardDiff, which the Fortran
+        # run vouched for.
+        #
         # The cause, isolated: the sound speed at a fixed depth inside the first sediment layer, as
-        # that layer's upper boundary moves.
+        # that layer's upper boundary moves. It read 0.0 under Zygote and -1.5 under everything else.
         c_at(x) = soundspeed(twolayer([θ2[1:10]; x; θ2[12:13]]).c, 110.0)
         @test ForwardDiff.derivative(c_at, 100.0) ≈ central(c_at, 100.0) rtol = 1e-6
-        @test_broken isapprox(Zygote.gradient(c_at, 100.0)[1], central(c_at, 100.0); rtol=1e-6)
+        @test Zygote.gradient(c_at, 100.0)[1] ≈ central(c_at, 100.0) rtol = 1e-6
 
-        # The consequence, at the level a user sees it: every sound-speed and density derivative is
-        # right, and only the layer-thickness ones (11:13) are wrong. Compared against the gradient's
-        # own scale rather than entrywise — this environment's wavenumber gradient spans seven orders
-        # of magnitude, and the smallest entries are below the precision either method reaches.
+        # And end to end, on every parameter — the three thicknesses included. Compared against the
+        # gradient's own scale rather than entrywise: this environment's wavenumber gradient spans
+        # seven orders of magnitude, and the smallest entries are below the precision either method
+        # reaches.
         relerr_norm(x, y) = maximum(abs.(x .- y)) / maximum(abs.(y))
-        for f in (θ_ -> last(setup(twolayer, θ_)), θ_ -> mode_integral(twolayer, θ_))
+        for f in (θ_ -> last(setup(twolayer, θ_)), θ_ -> mode_integral(twolayer, θ_), θ_ -> kr_sum(twolayer, θ_))
             g_zy = Zygote.gradient(f, θ2)[1]
             g_fw = ForwardDiff.gradient(f, θ2)
-            @test relerr_norm(g_zy[1:10], g_fw[1:10]) < 1e-8
-            @test_broken relerr_norm(g_zy[11:13], g_fw[11:13]) < 1e-8
+            @test relerr_norm(g_zy, g_fw) < 1e-8
+            @test relerr_norm(g_zy[11:13], g_fw[11:13]) < 1e-8
         end
     end
 end
