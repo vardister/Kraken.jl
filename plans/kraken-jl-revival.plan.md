@@ -598,6 +598,21 @@ These are facts established by running the code, not assumptions. Tasks below re
   summation order — and only rescales mode shapes, so unlike the `range` case above it is nowhere
   near the Richardson extrapolation's sensitivity.
 
+- **The AD is right, and the last disagreement with Fortran was Fortran's mesh** (established during
+  4.7). Finite-differencing `kraken.exe` itself gives a gradient oracle for any parameter, and every
+  row clears it: sound-speed, density and thickness derivatives for the Pekeris and one-layer
+  environments agree with reverse mode to between 6e-7 and 2.1e-3, against a 1% bound. Group speeds
+  agree to ≤1.2e-4 across all five standard environments. Two things this pinned down:
+  **(a)** `two_layer_slope`'s group speeds looked 3.4e-3 off, above the 0.1% bar, and the cause was
+  KRAKEN's *automatic* mesh being too coarse across its 20 m layers to compute an accurate numerical
+  `dω/dkᵣ` — tightening Kraken.jl's tolerances moved it in the sixth digit, pinning `nmesh = 4000`
+  dropped it 29× to 1.2e-4. Any future derivative comparison against Fortran should pin the mesh.
+  **(b)** Reverse-vs-forward agreement must be measured against the gradient's *scale*, not
+  entrywise. These gradients span four orders of magnitude, and an entrywise `rtol = 1e-8` fails on
+  `∂kᵣ/∂h1` at 1.3e-7 while the two methods agree to 2.1e-11 on scale — the entrywise bound was
+  demanding precision below what either method reaches, not detecting an error. `reverse_ad_tests.jl`
+  had already established this idiom as `relerr_norm`; 4.7 rediscovered it the hard way.
+
 - **The declared `julia = "1.10"` compat bound is real and enforced** (established during 2.6). It was
   not: `@views x[1:(end-1)] .-= y` is a syntax error on 1.10, so the package could not even load
   there. Fixed in `create_finite_diff_matrix!`/`return_finite_diff_matrix!` rather than raising the
@@ -1157,7 +1172,7 @@ Correctness is judged against `ForwardDiff` and `FiniteDiff`, not against Fortra
 - **Acceptance:** All backend × environment × target combinations pass; adding a backend is a one-line change.
 - **Dependencies:** 4.5
 
-### 4.7 [ ] Validate AD gradients against Fortran
+### 4.7 [x] Validate AD gradients against Fortran *(completed 2026-08-09)*
 - **Files:** `test/fortran_reference_tests.jl`
 - **What:** Two independent checks, neither of which shares any code with the AD implementation.
   First, group speeds: KRAKEN computes them numerically and writes them into the `.prt` Group Speed

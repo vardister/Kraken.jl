@@ -1,6 +1,11 @@
 using Test
 using Kraken
 
+# Task 4.7 validates the Milestone 4 gradients against kraken.exe, so this file needs both AD
+# backends. Both are already test-environment dependencies for test/reverse_ad_tests.jl.
+using ForwardDiff
+using Zygote
+
 include("reference/KrakenReference.jl")
 const KR = KrakenReference
 
@@ -566,6 +571,158 @@ const KR = KrakenReference
                     @test all(2π * freq / env.cb .< c.kr_julia .< 2π * freq / minimum(env.c.c))
 
                     isempty(c.warnings) || @info "kraken.exe warnings for $(case.name) at $freq Hz" c.warnings
+                end
+            end
+        end
+
+        # --- AD gradients against Fortran (plan task 4.7) ------------------------------------
+        #
+        # Milestone 4's gradients are already checked against ForwardDiff and FiniteDiff in
+        # test/reverse_ad_tests.jl. Those are strong tests of the *rules*, but every one of them
+        # differentiates the same `det_sturm`: an error in the determinant itself moves the rrule,
+        # ForwardDiff and FiniteDiff together and none of them notices. The two checks below use
+        # kraken.exe as the oracle, so nothing they measure comes from Kraken.jl's differentiation.
+        #
+        # Fortran's mesh is pinned for both. KRAKEN's automatic mesh (NMESH = 0) is picked per
+        # medium and is too coarse across two_layer_slope's 20 m layers to give an accurate
+        # numerical dω/dkᵣ -- the group-speed disagreement there is 3.4e-3 on the automatic mesh
+        # and 1.2e-4 on this one, a 29x improvement that tightening Kraken.jl's own tolerances
+        # does not touch (measured 2026-08-09). Pinning also stops the mesh moving underneath a
+        # finite difference, which would make the two perturbed runs incomparable.
+        fine_mesh = 4000
+
+        @testset "AD against Fortran" begin
+            @testset "group speeds vs the .prt table" begin
+                # KRAKEN computes group speeds numerically and prints them; Kraken.jl gets them by
+                # differentiating the solver. Agreement is evidence about the derivative that does
+                # not pass through any Kraken.jl AD code.
+                #
+                # Measured max relative difference on the pinned mesh (2026-08-09):
+                #   pekeris 1.8e-6 | one_layer 2.6e-6 | one_layer_slope 3.0e-6
+                #   two_layer_slope 1.2e-4 | munk 8.8e-5
+                # The bound is the plan's 0.1%, which leaves 8-500x of headroom -- deliberately
+                # loose, because this compares against whichever Fortran binary is present.
+                @testset "$(case.name)" for case in regression_cases
+                    c = KR.compare_with_fortran(case.build(), 100.0; group_speeds=true, nmesh=fine_mesh)
+
+                    if c.group_speed_reldiff === nothing
+                        # No binary here reports group speeds (AcousticsToolbox_jll's kraken.exe
+                        # writes 0.00000 for every VG). compare_with_fortran already retries with
+                        # krakenc; if that also fails there is nothing to compare against.
+                        @info "no group speeds reported for $(case.name); skipping" maxlog = 5
+                        @test_skip false
+                    else
+                        @test KR.max_group_speed_reldiff(c) < 1e-3
+                        @test all(isfinite, c.group_speed_julia)
+                        # A trapped mode's group speed is bounded by the medium sound speeds.
+                        @test all(1000.0 .< c.group_speed_julia .< 2000.0)
+                    end
+                end
+            end
+
+            @testset "gradients vs finite-differenced kraken.exe" begin
+                # The sharper of the two checks: perturb one environment parameter, write two .env
+                # files, run the Fortran binary on each and central-difference its Re(kᵣ). That is
+                # a gradient oracle for *any* parameter, not just frequency, and it is what caught
+                # the layer-thickness derivatives being 15% off and sign-flipped during 4.3 while
+                # ForwardDiff agreed with Zygote to 1e-9.
+
+                # θ -> UnderwaterEnv, the same parameterizations test/reverse_ad_tests.jl uses.
+                # Kept local rather than shared: these files are `include`d independently, and a
+                # cross-file dependency would make either one unrunnable on its own.
+                pekeris_θ(θ) = UnderwaterEnv(pekeris_env(; c0=θ[1], cb=θ[2], ρ0=θ[3], ρb=θ[4], depth=θ[5])...)
+                onelayer_θ(θ) = UnderwaterEnv(
+                    one_layer_env(; c0=θ[1], c1=θ[2], cb=θ[3], ρ0=θ[4], ρ1=θ[5], ρb=θ[6], h0=θ[7], h1=θ[8])...
+                )
+
+                # Tight tolerances so the comparison measures the rules and not the root solver --
+                # see the TOL docstring in test/reverse_ad_tests.jl.
+                tol = (abstol=1e-10, reltol=1e-10)
+                kr_of(envf, θ, freq, mode) = kraken_jl(envf(θ), freq; tol...).kr[mode]
+
+                # Re(kᵣ) straight out of kraken.exe, at the best precision the run reports: the
+                # .prt's ten printed digits where it lists the mode, the .mod's single precision
+                # otherwise.
+                function fortran_kr(envf, θ, freq, mode)
+                    ref = KR.run_fortran_kraken(envf(θ), freq; nmesh=fine_mesh)
+                    return KR._best_fortran_kr(ref)[mode]
+                end
+
+                function fortran_derivative(envf, θ, k, freq, mode, h)
+                    θp = copy(θ)
+                    θp[k] *= (1 + h)
+                    θm = copy(θ)
+                    θm[k] *= (1 - h)
+                    return (fortran_kr(envf, θp, freq, mode) - fortran_kr(envf, θm, freq, mode)) / (2 * θ[k] * h)
+                end
+
+                # Each row carries its own step, because the right step is set by the size of the
+                # derivative rather than by the parameter. The .prt gives ten digits of kᵣ ~ 0.42,
+                # so a difference below ~1e-10 is quantization noise: ∂kᵣ/∂h1 is 3.7e-8, and at
+                # h = 1e-3 the two runs differ by only ~14 units in the last printed place, which
+                # shows up as a 4.6% error. At h = 1e-2 the same row lands at 0.21%. Stepping the
+                # other way is not free either -- cb at h = 1e-1 puts the half-space *below* the
+                # water column and the run is rejected as unphysical before it starts.
+                #
+                # `rel` is the measured Zygote-vs-Fortran difference (2026-08-09); the assertion is
+                # the plan's flat 1%, which every row clears by at least 4x.
+                gradient_cases = [
+                    (
+                        env="pekeris",
+                        envf=pekeris_θ,
+                        θ=[1500.0, 1600.0, 1000.0, 1500.0, 100.0],
+                        rows=[
+                            (name="c0 (sound speed)", k=1, h=1e-3, rel=6.1e-7),
+                            (name="ρ0 (density)", k=3, h=1e-2, rel=6.1e-5),
+                            (name="depth (thickness)", k=5, h=1e-3, rel=1.8e-5),
+                            (name="cb (control)", k=2, h=1e-3, rel=1.2e-4),
+                        ],
+                    ),
+                    (
+                        env="one_layer",
+                        envf=onelayer_θ,
+                        θ=[1500.0, 1550.0, 1600.0, 1000.0, 1500.0, 2000.0, 100.0, 20.0],
+                        rows=[
+                            (name="c1 (sound speed)", k=2, h=1e-3, rel=4.0e-4),
+                            (name="ρ1 (density)", k=5, h=1e-3, rel=1.8e-4),
+                            (name="h1 (thickness)", k=8, h=1e-2, rel=2.1e-3),
+                            (name="c0 (control)", k=1, h=1e-3, rel=2.2e-6),
+                        ],
+                    ),
+                ]
+
+                @testset "$(case.env)" for case in gradient_cases
+                    freq, mode = 100.0, 1
+                    f = θ -> kr_of(case.envf, θ, freq, mode)
+
+                    # One reverse-mode gradient gives every parameter at once; that is the whole
+                    # point of the milestone, and it makes the sweep cheap.
+                    g_reverse = Zygote.gradient(f, case.θ)[1]
+                    g_forward = ForwardDiff.gradient(f, case.θ)
+
+                    # Reverse mode must reproduce forward mode. Measured against the gradient's own
+                    # scale, not entrywise: these gradients span four orders of magnitude (∂kᵣ/∂h1
+                    # is 1.3e-4 of the largest entry), and an entrywise bound on the smallest
+                    # components asks for agreement below the precision *either* method reaches --
+                    # 1e-8 entrywise fails on h1 at 1.3e-7 while the two agree to 2.1e-11 on scale.
+                    # Same reasoning as `relerr_norm` in test/reverse_ad_tests.jl.
+                    # Measured 2026-08-09: pekeris 9.6e-12, one_layer 2.1e-11.
+                    @test maximum(abs.(g_reverse .- g_forward)) / maximum(abs, g_forward) < 1e-9
+
+                    @testset "$(row.name)" for row in case.rows
+                        d_fortran = fortran_derivative(case.envf, case.θ, row.k, freq, mode, row.h)
+
+                        # The independent assertion: this is the only check in the milestone that
+                        # would survive Zygote and ForwardDiff being wrong in the same way, since
+                        # `d_fortran` comes out of a separate binary. Loose by necessity -- see the
+                        # per-row steps above for what the .prt's ten digits cost.
+                        @test g_reverse[row.k] ≈ d_fortran rtol = 1e-2
+
+                        # The derivative must be nonzero, or "agrees with Fortran" is vacuous.
+                        @test abs(g_reverse[row.k]) > 0
+                        # And it must have the sign Fortran gives it -- the failure mode 4.3 hit.
+                        @test sign(g_reverse[row.k]) == sign(d_fortran)
+                    end
                 end
             end
         end

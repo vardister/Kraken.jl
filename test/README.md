@@ -177,6 +177,57 @@ Two caveats the suite encodes rather than hides:
   re-runs with `krakenc.exe` to get a reference. Group speeds are off by default because obtaining
   the Julia side means a ForwardDiff pass through the whole solver (~4 s).
 
+### AD validated against Fortran (plan task 4.7)
+
+`test/reverse_ad_tests.jl` checks the Milestone 4 rules against ForwardDiff and FiniteDiff, but all of
+those differentiate the same `det_sturm` — an error in the determinant moves every one of them
+together. Two checks in `fortran_reference_tests.jl` use `kraken.exe` as the oracle instead.
+
+**Group speeds** — KRAKEN computes them numerically and prints them; Kraken.jl differentiates for
+them. Max relative difference at 100 Hz, on a pinned `nmesh = 4000` (measured 2026-08-09):
+
+| environment | max rel. difference |
+|---|---|
+| `pekeris` | 1.8e-6 |
+| `one_layer` | 2.6e-6 |
+| `one_layer_slope` | 3.0e-6 |
+| `two_layer_slope` | 1.2e-4 |
+| `munk` | 8.8e-5 |
+
+**Pinning the Fortran mesh matters here and nowhere else so far.** On KRAKEN's automatic mesh
+(`NMESH = 0`) `two_layer_slope` disagrees by 3.4e-3 — above the 0.1% bound — because the auto mesh is
+too coarse across its 20 m layers to give an accurate numerical `dω/dkᵣ`. Tightening Kraken.jl's own
+tolerances changes that number in the sixth digit; refining Fortran's mesh drops it 29×. The error was
+Fortran's discretization, not Kraken.jl's.
+
+**Gradients against a finite-differenced `kraken.exe`** — the sharper check, since it works for *any*
+parameter rather than only frequency. Perturb one parameter, write two `.env` files, run the binary on
+each, central-difference `Re(kᵣ)`. Zygote vs that oracle, mode 1 at 100 Hz:
+
+| environment | parameter | step | rel. difference |
+|---|---|---|---|
+| `pekeris` | `c0` (sound speed) | 1e-3 | 6.1e-7 |
+| `pekeris` | `ρ0` (density) | 1e-2 | 6.1e-5 |
+| `pekeris` | `depth` (thickness) | 1e-3 | 1.8e-5 |
+| `pekeris` | `cb` (control) | 1e-3 | 1.2e-4 |
+| `one_layer` | `c1` (sound speed) | 1e-3 | 4.0e-4 |
+| `one_layer` | `ρ1` (density) | 1e-3 | 1.8e-4 |
+| `one_layer` | `h1` (thickness) | 1e-2 | 2.1e-3 |
+| `one_layer` | `c0` (control) | 1e-3 | 2.2e-6 |
+
+The step is per-parameter because the right one is set by the size of the derivative, not the
+parameter. The `.prt` prints ten digits of `kᵣ ≈ 0.42`, so a difference below ~1e-10 is quantization:
+`∂kᵣ/∂h1` is 3.7e-8, and at `h = 1e-3` the two runs differ by ~14 units in the last printed place —
+a 4.6% error that falls to 0.21% at `h = 1e-2`. Stepping larger is not free either: `cb` at `h = 1e-1`
+puts the half-space below the water column and the writer rejects the environment.
+
+Reverse mode is separately required to reproduce forward mode, measured **against the gradient's own
+scale** rather than entrywise (pekeris 9.6e-12, one_layer 2.1e-11). These gradients span four orders
+of magnitude — `∂kᵣ/∂h1` is 1.3e-4 of the largest entry — so an entrywise bound on the smallest
+components demands agreement finer than either method achieves. An entrywise `rtol = 1e-8` fails on
+`h1` at 1.3e-7 while the two agree to 2.1e-11 on scale. Same reasoning as `relerr_norm` in
+`reverse_ad_tests.jl`.
+
 The old `fortran_interface_tests.jl` and its `KRAKEN_RUN_FORTRAN_TESTS` switch were removed in plan
 task 1.4: they called an `EnvKRAKEN` API that exists in no module, so they could never have run.
 
