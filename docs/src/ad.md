@@ -264,3 +264,9 @@ declares each one a Mooncake primitive.
 in the repository is a runnable script covering all of the above in more depth, including the
 tolerance-independence demonstration, mode-shape functionals, and a case where the layer-thickness
 derivatives were validated against central differences of unmodified Fortran `kraken.exe`.
+
+For the derivations themselves — where each rule comes from, why the Sturm rescaling cancels, why the
+eigenvector solve has to be projected, and what the dropped interpolant term actually costs — see
+[`docs/notebooks/implicit-differentiation.nb`](https://github.com/vardister/Kraken.jl/blob/master/docs/notebooks/implicit-differentiation.nb),
+a Wolfram notebook that derives each rule symbolically and checks it numerically against this
+implementation.
