@@ -179,7 +179,7 @@ These are facts established by running the code, not assumptions. Tasks below re
   and so is the local OALIB build of both binaries — so it is a regression in that one binary, not
   a property of the format or the environment. Consequence: **any group-speed comparison must run
   `complex=true` or point `KRAKEN_FORTRAN_BIN` at a local build.** `KrakenReference.has_group_speeds`
-  is the guard; without it this surfaces as a spurious "group speeds differ by 100%" in 3.5 and 4.6.
+  is the guard; without it this surfaces as a spurious "group speeds differ by 100%" in 3.5 and 4.7.
   (`AcousticsToolbox.jl` carries the same workaround, so it is not specific to this repo.)
 
 - **Neither output file dominates the other on precision** (established during 3.3). The `.mod`
@@ -348,7 +348,7 @@ These are facts established by running the code, not assumptions. Tasks below re
   handing a mixed-precision system to `LinearSolve`.
 
 - **ForwardDiff is not the more accurate reference for a wavenumber gradient** (established during
-  4.2, and it changes how 4.5 and 4.6 should be judged). At 250 Hz the two methods disagree by
+  4.2, and it changes how 4.6 and 4.7 should be judged). At 250 Hz the two methods disagree by
   **1.3%** on `∂kr₁/∂cb`, and central differences on the primal say the rule is right: 5.6e-6 from
   the rule versus 1.3e-2 from ForwardDiff. The cause is that ForwardDiff differentiates the
   arithmetic of the *last ITP iterate*, so its gradient inherits the root solver's truncation error,
@@ -360,7 +360,7 @@ These are facts established by running the code, not assumptions. Tasks below re
   ForwardDiff's convergence, met at 50 and 100 Hz for every mode, not a bound on the rule.
 
 - **Zygote's overhead is in constructing the SSP interpolant, not in the rules or the solver**
-  (measured during 4.2 while writing `examples/reverse_ad.jl` — this is the number 4.7 has to move,
+  (measured during 4.2 while writing `examples/reverse_ad.jl` — this is the number 4.8 has to move,
   and it is a much smaller target than it first looked). Reverse mode is currently **correct but not
   yet fast**: against a 50-point sound-speed profile at 100 Hz it costs 7.5 ms versus forward mode's
   1.7 ms, and it does not flatten with parameter count the way the milestone's success criterion
@@ -380,6 +380,75 @@ These are facts established by running the code, not assumptions. Tasks below re
   `finite_difference_coefficients` as previously supposed. Forward mode's cost grows linearly with
   parameter count exactly as predicted (2.5× → 25.5× the primal from M = 5 to 50), so the crossover
   is real and only this overhead is hiding it.
+
+- **The eigenvector rule attaches one level below `inverse_iteration`, and the normalization stays
+  traced** (decided during 4.3, revising that task's own deliverable row). `inverse_iteration` was
+  split into `mode_eigenvector` — inverse-iterate, sign-fix, return a unit-2-norm vector, behind the
+  seam — and `normalize_mode`, which divides by the square root of the water-column plus half-space
+  energy and is *on* the seam. The rule goes on the first. The reason is where the parameters enter:
+  the energy integral depends on the density profile and the mesh coordinates directly, not through
+  the finite-difference coefficients, so pulling it inside the rule would mean carrying an adjoint
+  for the `DataInterpolations` interpolant that the backend already applies in
+  `finite_difference_coefficients`. Splitting costs nothing numerically (the primal computes the same
+  two steps in the same order) and keeps the rule to the one thing that genuinely cannot be traced.
+
+- **The singular adjoint solve is spelled *project, solve, project*, not as a bordered matrix**
+  (established during 4.3). `v`'s adjoint needs `y = M⁺(I - vvᵀ)Δv`, defined by a bordered system
+  whose matrix is nonsingular but no longer tridiagonal — solving it as written gives up the O(N)
+  structure the whole rule exists to keep. Instead the `v` component is removed from the right-hand
+  side, the tridiagonal system is solved as-is (numerically nonsingular: the primal's shift leaves
+  `μ ≈ 1e-13‖M‖`), and the `v` component that the near-singularity amplifies back into the answer —
+  about 1e-3 relative — is removed again. One step of iterative refinement inside the complement
+  cleans up the rest. Every partial family checks out against central differences at ≤ 2e-6, which is
+  the *reference's* accuracy, not the rule's.
+
+- **ForwardDiff is the inaccurate side for `∂ψ/∂kr` too, and by much more than it was for `∂kr/∂θ`**
+  (established during 4.3, extending the 4.2 decision above). Differentiating the inverse iteration
+  in isolation with respect to its own shift, ForwardDiff is **23% off** at the default `reltol=0.01`
+  and still 0.4% off at `reltol=1e-14`; central differences converge onto the rule's value from both
+  sides as the step shrinks. The cause is the same one as for the root solver — ForwardDiff
+  differentiates the arithmetic of the last iterate, and here the iterate count is itself a step
+  function of the perturbation, which is why the central differences converge only *first* order.
+  None of this shows end to end, where the mode-shape gradients agree with ForwardDiff to **1e-11**
+  for both the Pekeris and one-layer-sediment environments and for every one of the first three
+  modes: along the composition, `kr` and `θ` move together and the truncation errors largely cancel.
+  The practical rule stands — for anything involving an iteration, central differences arbitrate.
+
+- **Zygote silently drops the derivative with respect to an SSP interpolant's knot depths, and it is
+  a wrong number rather than an error** (found during 4.3; the reason for the new task 4.5).
+  `DataInterpolations`' ChainRules rule treats an interpolant's knot vector as non-differentiable, so
+  for any environment whose sound speed or density *varies inside* a layer, every gradient with
+  respect to that layer's thickness is missing a term. On `two_layer_slope_env` the wavenumber
+  gradient comes out **15% wrong on `h0` and sign-flipped on `h1` and `h2`**, while ForwardDiff and
+  central differences agree with each other exactly. **Unmodified Fortran KRAKEN was used as the
+  arbiter** — finite-differencing `kraken.exe`'s own `Re(kᵣ)` across perturbed `.env` files is a
+  gradient oracle that shares no code with any of this, and it is worth remembering as a technique
+  for the rest of the milestone:
+
+  | `∂kr₁/∂θ`, `two_layer_slope_env` @ 100 Hz | Fortran FD | `kraken_jl` FD | ForwardDiff | Zygote |
+  |---|---|---|---|---|
+  | `h0` | 1.6344e-5 | 1.6344e-5 | 1.6342e-5 | **1.3836e-5** |
+  | `h1` | 5.396e-7 | 5.394e-7 | 5.113e-7 | **-1.72e-8** |
+  | `h2` | 3.20e-9 | 2.84e-9 | 2.68e-9 | **-4.80e-10** |
+  | `c0` (control) | -2.78007e-4 | -2.78007e-4 | -2.780071e-4 | -2.780071e-4 |
+
+  The control row is what makes the other three readable: where the gap does not apply, Fortran and
+  both backends agree to seven digits. (The residual few percent between the Fortran column and
+  ForwardDiff on `h1`/`h2` is the Richardson-extrapolated wavenumber against the single-mesh one the
+  rules currently differentiate — 4.4's territory, not this gap's.) It is upstream of both rules and
+  predates them —
+  it was invisible through 4.2 only because `pekeris_env` and `one_layer_env` hold the sound speed
+  constant within each layer, which makes the missing term identically zero. Isolated, it is one
+  line: `soundspeed` at a fixed depth, differentiated with respect to a moving layer boundary, gives
+  -1.5 under ForwardDiff and 0.0 under Zygote. `test/reverse_ad_tests.jl` carries this as three
+  `@test_broken`s so the suite flips green on it when 4.5 lands rather than the gap being rediscovered.
+
+- **`integral_trapz` was reimplemented and `Integrals` dropped as a dependency** (during 4.3). The
+  mode normalization is on the seam, so its integral has to be traceable; `Integrals`'
+  `SampledIntegralProblem` was pulling a solver stack into a two-line trapezoid rule that reverse mode
+  then had to follow. The open-coded version agrees with it to 1e-16 relative — the difference is
+  summation order — and only rescales mode shapes, so unlike the `range` case above it is nowhere
+  near the Richardson extrapolation's sensitivity.
 
 - **The declared `julia = "1.10"` compat bound is real and enforced** (established during 2.6). It was
   not: `@views x[1:(end-1)] .-= y` is a syntax error on 1.10, so the package could not even load
@@ -818,7 +887,8 @@ with `ForwardDiff` to 1e-8 relative and runs in under ~3× the cost of a single 
 forward-mode's ~50×.
 
 **Key decisions:** Rules are written with `ChainRulesCore` and attached at two seams — `solve_for_kr` and
-`inverse_iteration` — rather than making the whole solver traceable. This is the decisive choice: it means the
+`mode_eigenvector` (the eigenvector half of `inverse_iteration`; 4.3 split the energy normalization back out
+onto the traced side) — rather than making the whole solver traceable. This is the decisive choice: it means the
 in-place cache mutation, the `argmax`, the sign-fixing branch, and the iterative refinement never need to
 change, and one set of rules serves Zygote, Mooncake, and Enzyme-via-ChainRules at once. `bisection`'s mode
 counting is integer-valued and piecewise constant in the parameters, so it correctly contributes zero
@@ -830,7 +900,7 @@ Correctness is judged against `ForwardDiff` and `FiniteDiff`, not against Fortra
 | Item | Description |
 |---|---|
 | `rrule(::typeof(solve_for_kr), span, env, props, cache)` | Implicit function theorem on `det_sturm(kr; θ) = 0` |
-| `rrule(::typeof(inverse_iteration), kr, env, props, cache)` | Eigenvector adjoint via bordered tridiagonal solve |
+| `rrule(::typeof(mode_eigenvector), kr, env, props, cache)` | Eigenvector adjoint via bordered tridiagonal solve. Attached to the *eigenvector* half of `inverse_iteration`; the energy normalization stays traced — see the Architecture Decisions |
 | `@non_differentiable bisection(...)` | Mode counting is integer / piecewise constant |
 | `frule`-compatibility retained | Existing ForwardDiff path must not regress |
 | `test/reverse_ad_tests.jl` | Zygote + Mooncake vs ForwardDiff + FiniteDiff, on `kr`, on modes, on a scalar loss |
@@ -853,9 +923,9 @@ Correctness is judged against `ForwardDiff` and `FiniteDiff`, not against Fortra
 - **Files:** `src/kraken_ad.jl` (new), `src/Kraken.jl`, `Project.toml` — plus, as it turned out,
   `src/kraken_core.jl` and `src/kraken_standard_environments.jl` (the seam was not yet traceable:
   four functions still mutated preallocated arrays or splatted, see the Architecture Decisions), and
-  `test/reverse_ad_tests.jl` + `test/Project.toml` + `test/runtests.jl` — the test file 4.5 was going
+  `test/reverse_ad_tests.jl` + `test/Project.toml` + `test/runtests.jl` — the test file 4.6 was going
   to create, brought forward so this task's acceptance is checked by something committed rather than
-  by a REPL session. 4.5 extends it with the other backends rather than creating it.
+  by a REPL session. 4.6 extends it with the other backends rather than creating it.
 - **What:** Add `ChainRulesCore` as a dependency and write an `rrule` for `solve_for_kr`. The root `kr*`
   satisfies `D(kr*, θ) = 0` where `D` is `det_sturm`'s determinant output, so `∂kr*/∂θ = -D_θ / D_kr`, both
   evaluated at the converged root. Obtain `D_kr` and `D_θ` with ForwardDiff on `det_sturm` — nesting
@@ -867,8 +937,10 @@ Correctness is judged against `ForwardDiff` and `FiniteDiff`, not against Fortra
   `ForwardDiff.gradient` to 1e-9 relative for the Pekeris environment; the rule is exercised at 3 frequencies.
 - **Dependencies:** 4.1
 
-### 4.3 [ ] Implement the eigenvector adjoint for `inverse_iteration`
-- **Files:** `src/kraken_ad.jl`
+### 4.3 [x] Implement the eigenvector adjoint for `inverse_iteration` *(completed 2026-08-08)*
+- **Files:** `src/kraken_ad.jl`, `src/kraken_core.jl` (the split described below, plus two more
+  non-mutating rewrites — `find_kr` and the `Vector` method of `inverse_iteration` both filled
+  preallocated arrays), `Project.toml` (`Integrals` dropped), `test/reverse_ad_tests.jl`
 - **What:** Mode shapes come from inverse-iterating a tridiagonal system; differentiating through the
   iteration is both expensive and unstable, so write the rule directly. For the normalized eigenvector `ψ` of
   `(A(kr,θ) - λ(θ)B)ψ = 0`, the adjoint requires solving a bordered system that projects out the `ψ` direction
@@ -894,7 +966,29 @@ Correctness is judged against `ForwardDiff` and `FiniteDiff`, not against Fortra
   to 1e-8 relative for a 5-parameter `θ`.
 - **Dependencies:** 4.3
 
-### 4.5 [ ] Multi-backend AD test suite
+### 4.5 [ ] Give the SSP and density interpolants their own reverse-mode rule
+- **Files:** `src/kraken_ad.jl`, `test/reverse_ad_tests.jl`
+- **What:** Added during 4.3, which found the gap and validated it against Fortran (see the
+  Architecture Decisions). `DataInterpolations`' ChainRules rule treats an interpolant's knot vector
+  as non-differentiable, so Zygote silently returns a gradient that is missing `∂c/∂t` — wrong by 15%
+  on one layer thickness and *sign-flipped* on two others for `two_layer_slope_env`, with no error
+  raised. Write an `rrule` for `soundspeed(::SampledSSP1D, z)` and `density(::SampledDensity1D, z)`
+  covering all three of the values, the knots, and the query depths. Linear interpolation is local —
+  each query touches exactly two knots — so the adjoint is O(N) and can be written out: with
+  `w = (z - t_i)/(t_{i+1} - t_i)`, `∂c/∂u_i = 1-w`, `∂c/∂u_{i+1} = w`, `∂c/∂t_i = -Δu(1-w)/Δt`,
+  `∂c/∂t_{i+1} = -Δu·w/Δt`, `∂c/∂z = Δu/Δt`. Match the primal's interval selection and extrapolation
+  exactly rather than reimplementing them — the environments here deliberately place duplicated knots
+  (`z0`, `z0+eps(z0)`) to represent discontinuities, and the adjoint has to land on the same side.
+  This is also the fix the 4.2 performance decision identified: **93% of Zygote's time** is spent
+  tracing the two interpolant constructors, so a rule that stores its arguments removes the
+  milestone's main overhead at the same time.
+- **Acceptance:** The three `@test_broken`s in the "known gap" testset flip to passing and are
+  changed to `@test`; the `two_layer_slope_env` wavenumber and mode-shape gradients agree with
+  ForwardDiff to 1e-8 on *all* parameters; the Fortran finite-difference table in the Architecture
+  Decisions is reproduced with Zygote in the ForwardDiff column.
+- **Dependencies:** 4.4
+
+### 4.6 [ ] Multi-backend AD test suite
 - **Files:** extend `test/reverse_ad_tests.jl` (created in 4.2, along with the `Zygote` entry in
   `test/Project.toml` and the `include` in `test/runtests.jl`)
 - **What:** Add `Mooncake`, `DifferentiationInterface`, and `ChainRulesTestUtils` to the test
@@ -904,20 +998,26 @@ Correctness is judged against `ForwardDiff` and `FiniteDiff`, not against Fortra
   code. Include `ChainRulesTestUtils.test_rrule` checks on the two rules directly, which catch errors the
   end-to-end comparison can mask.
 - **Acceptance:** All backend × environment × target combinations pass; adding a backend is a one-line change.
-- **Dependencies:** 4.4
+- **Dependencies:** 4.5
 
-### 4.6 [ ] Validate AD group speeds against Fortran
+### 4.7 [ ] Validate AD gradients against Fortran
 - **Files:** `test/fortran_reference_tests.jl`
-- **What:** KRAKEN computes group speeds numerically and writes them into the `.prt` Group Speed table, which
-  Milestone 3 already parses. Kraken.jl gets them as `2π / (dkr/dω)` by differentiation. Compare the two
-  across the standard environments. This is a genuinely independent check on the AD implementation — a
-  mistake in the IFT rule shows up here as a group-speed mismatch even when the ForwardDiff comparison passes,
-  because ForwardDiff and the rrule could in principle share a wrong `det_sturm`.
+- **What:** Two independent checks, neither of which shares any code with the AD implementation.
+  First, group speeds: KRAKEN computes them numerically and writes them into the `.prt` Group Speed
+  table, which Milestone 3 already parses, while Kraken.jl gets them as `2π / (dkr/dω)` by
+  differentiation. Second — and this is the sharper test, added after it caught the interpolant gap
+  during 4.3 — **finite-difference `kraken.exe` itself**: perturb one environment parameter, write two
+  `.env` files, run the Fortran binary on each, and central-difference its `Re(kᵣ)`. That gives a
+  gradient oracle for *any* parameter rather than just frequency, and it is what showed Zygote's
+  layer-thickness derivatives to be 15% off and sign-flipped while ForwardDiff was right. Cover at
+  least one thickness, one sound speed and one density per standard environment, and include a
+  parameter both backends already agree on as a control row.
 - **Acceptance:** Group speeds agree with the Fortran table to within 0.1% for all standard environments where
-  Fortran reports them.
-- **Dependencies:** 4.5, 3.6
+  Fortran reports them; the finite-difference gradients agree with reverse mode to within the step's own
+  truncation error (~1% at the steps the `.prt`'s 10 printed digits allow).
+- **Dependencies:** 4.6, 3.6
 
-### 4.7 [ ] Benchmark and document the scaling win
+### 4.8 [ ] Benchmark and document the scaling win
 - **Files:** `test/performance_tests.jl`, `docs/src/ad.md`, `README.md`
 - **What:** Benchmark gradient cost against parameter count (1, 5, 10, 50 SSP points) for reverse vs forward
   mode, confirming reverse is roughly constant while forward scales linearly. Write a docs page with a worked
@@ -925,7 +1025,7 @@ Correctness is judged against `ForwardDiff` and `FiniteDiff`, not against Fortra
   the use case that motivates the whole milestone. Replace the README's "currently only using ForwardDiff.jl"
   caveat.
 - **Acceptance:** Benchmark table committed; the inversion example in the docs runs and converges.
-- **Dependencies:** 4.6
+- **Dependencies:** 4.7
 
 ---
 
@@ -1186,7 +1286,7 @@ and not the other. Validation is against `field.exe` (also shipped by `Acoustics
 - **What:** The field computation sits on top of the M4 rules, so it should be differentiable without new
   rules — verify that, and fix whatever obstructs it (mode-shape interpolation is the likely culprit, since
   `DataInterpolations` constructors may not be reverse-mode friendly). Then extend the inversion example from
-  4.7 into the realistic case: recover a seabed sound speed from synthetic TL data.
+  4.8 into the realistic case: recover a seabed sound speed from synthetic TL data.
 - **Acceptance:** `Zygote.gradient` of a TL misfit w.r.t. `cb` and a 10-point SSP matches ForwardDiff to 1e-6
   relative; the TL inversion example converges.
 - **Dependencies:** 7.4
@@ -1231,7 +1331,7 @@ a doctest.
 ### 8.2 [ ] Write the documentation site
 - **Files:** `docs/src/index.md`, `docs/src/guide.md`, `docs/src/environments.md`, `docs/src/ad.md`, `docs/src/validation.md`, `docs/src/api.md`, `docs/make.jl`
 - **What:** Build out the site: a getting-started guide, an environments page covering the ssp/layers/sspHS
-  matrix layout and all the boundary and interpolation options from Milestone 6, the AD page from 4.7/7.5, a
+  matrix layout and all the boundary and interpolation options from Milestone 6, the AD page from 4.8/7.5, a
   validation page presenting the Fortran comparison results as a table (this is the package's main credibility
   claim and deserves to be visible), and an autodocs API reference.
 - **Acceptance:** All pages build; the validation page numbers are generated from the recorded results rather

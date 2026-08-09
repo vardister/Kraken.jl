@@ -7,8 +7,8 @@
 # Instead of making the solver traceable, this file attaches `ChainRulesCore` rules at the two seams
 # identified at the top of `kraken_core.jl`, which makes everything behind them opaque:
 #
-#   * `solve_for_kr`      — implicit function theorem on the Sturm determinant  (this file)
-#   * `inverse_iteration` — eigenvector adjoint                                 (task 4.3)
+#   * `solve_for_kr`      — implicit function theorem on the Sturm determinant
+#   * `mode_eigenvector`  — eigenvector adjoint via a bordered tridiagonal solve
 #
 # One set of rules serves Zygote, Mooncake, and Enzyme-via-ChainRules at once.
 
@@ -144,14 +144,31 @@ function sturm_sensitivities(kr, env, props, cache)
     end
 
     # --- The `g` path --------------------------------------------------------------------------
-    # g = sqrt(kr^2 - q^2) / ρb with q = 2π·freq/cb. Written out rather than differentiated because
-    # it is three scalar expressions; `test/reverse_ad_tests.jl` checks them against ForwardDiff.
-    dkr += dg * kr / (env.ρb * β)
-    dcb = dg * q^2 / (env.cb * env.ρb * β)
-    dρb = -dg * g / env.ρb
-    dfreq = -dg * q^2 / (props.freq * env.ρb * β)
+    h = half_space_sensitivities(dg, kr, env, props)
 
-    return (D=D, dkr=dkr, da=da, de=de, dλ=dλ, dcb=dcb, dρb=dρb, dfreq=dfreq)
+    return (D=D, dkr=dkr + h.dkr, da=da, de=de, dλ=dλ, dcb=h.dcb, dρb=h.dρb, dfreq=h.dfreq)
+end
+
+"""
+    half_space_sensitivities(dg, kr, env, props)
+
+Chain a cotangent `dg` on the bottom half-space term [`get_g`](@ref) back onto the four parameters it
+is built from, returning a `NamedTuple` `(dkr, dcb, dρb, dfreq)`.
+
+`g = √(kr² - q²) / ρb` with `q = 2π·freq/cb` is three scalar expressions, so both rules in this file
+state its derivatives rather than differentiating it — `test/reverse_ad_tests.jl` checks them against
+ForwardDiff.
+"""
+function half_space_sensitivities(dg, kr, env, props)
+    q = 2pi * props.freq / env.cb
+    β = sqrt(kr^2 - q^2)
+    g = β / env.ρb
+    return (
+        dkr=dg * kr / (env.ρb * β),
+        dcb=dg * q^2 / (env.cb * env.ρb * β),
+        dρb=(-dg * g / env.ρb),
+        dfreq=(-dg * q^2 / (props.freq * env.ρb * β)),
+    )
 end
 
 """
@@ -192,4 +209,112 @@ function ChainRulesCore.rrule(::typeof(solve_for_kr), span, env, props, cache; m
     end
 
     return kr, solve_for_kr_pullback
+end
+
+"""
+    shifted_matrix(kr, env, props, cache)
+
+The finite-difference matrix at wavenumber `kr` — the same `M(kr, θ)` that
+[`create_finite_diff_matrix!`](@ref) writes into `cache.A`, assembled here into fresh storage.
+
+The rule below needs this matrix *after* the primal has run, and the primal restores the cache to its
+unshifted state on the way out. Rebuilding costs one O(N) allocation and keeps the pullback from
+mutating state it shares with the rest of the solve — a pullback runs long after the forward pass,
+with no guarantee about what has touched the cache in between.
+"""
+function shifted_matrix(kr, env, props, cache)
+    a, e, λ = cache.a_vec, cache.e_vec, cache.λ_scaling
+    N = length(a)
+    g = get_g(kr, env, props)
+    # The last row carries the bottom half-space boundary condition, exactly as in the primal.
+    d = [k == N ? 0.5 * a[N] - kr^2 * λ[N] - g : a[k] - kr^2 * λ[k] for k in 1:N]
+    return Tridiagonal(e[2:N], d, e[2:N])
+end
+
+"""
+    rrule(::typeof(mode_eigenvector), kr, env, props, cache; reltol)
+
+Reverse-mode rule for a mode shape, by eigenvector perturbation theory.
+
+The primal returns the unit-2-norm eigenvector `v` of the finite-difference matrix `M(kr, θ)`
+belonging to its smallest-magnitude eigenvalue `μ` — which is zero to machine precision when `kr` is
+a converged wavenumber, but is treated as an ordinary simple eigenvalue here, because `kr` and `θ`
+are independent arguments and nothing constrains `M` to stay singular when they are perturbed
+separately. Differentiating `M v = μ v` together with `vᵀv = 1` gives
+
+    dv = -M⁺ (I - v vᵀ) dM v
+
+with `M⁺` the pseudo-inverse on the complement of `v`, so the pullback of a cotangent `Δv` is a
+single solve against that same complement,
+
+    ⟨Δv, dv⟩ = -⟨y, dM v⟩,    y = M⁺ (I - v vᵀ) Δv,
+
+i.e. a cotangent `ΔM = -y vᵀ`, read off on `M`'s tridiagonal sparsity pattern and chained back onto
+`cache.a_vec`, `.e_vec`, `.λ_scaling`, `kr`, and — through [`get_g`](@ref) — `env.cb`, `env.ρb` and
+`props.freq`. Cost is two tridiagonal solves, O(N), against the iteration's own dozens.
+
+# The bordered solve, and why it is spelled as a projection
+
+`y` is defined by the bordered system
+
+    [ M   v ] [ y ]   [ Δv ]
+    [ vᵀ  0 ] [ γ ] = [ 0  ]
+
+whose matrix is nonsingular precisely because `v` spans `M`'s null space. Solving it as written would
+give up the tridiagonal structure, so it is solved instead as *project, solve, project*: remove the
+`v` component from the right-hand side, solve the (numerically nonsingular, since `μ ≈ 1e-13‖M‖`,
+but very ill-conditioned in that one direction) tridiagonal system, and remove the `v` component the
+solve's roundoff amplified back into the answer. One step of iterative refinement — again inside the
+complement — cleans up what the amplification costs in the remaining directions.
+
+# What the normalization is not
+
+`v` here is normalized in the 2-norm only. The physical energy normalization lives in
+[`normalize_mode`](@ref), which is on the differentiable seam and traced by the backend; it depends on
+the density profile and the mesh coordinates, and pulling it inside this rule would mean carrying an
+adjoint for the density interpolant that the backend already has. The sign fix (`v[1] ≥ 0`) is
+piecewise constant in the parameters and contributes nothing — the relations above hold for `-v` just
+as they do for `v`.
+"""
+function ChainRulesCore.rrule(::typeof(mode_eigenvector), kr, env, props, cache; reltol=0.01)
+    kr_new, v = mode_eigenvector(kr, env, props, cache; reltol=reltol)
+
+    function mode_eigenvector_pullback(Δ)
+        # The primal returns a 2-tuple; either component can come back as a structural zero.
+        Δkr_new = unthunk(Δ[1])
+        Δv = unthunk(Δ[2])
+        # `kr_new` is the iteration's own refinement of `kr` — it differs from it by the shift and by
+        # the residual eigenvalue estimate, both at the level of roundoff, so it carries `kr`'s
+        # derivative unchanged.
+        dkr = Δkr_new isa AbstractZero ? zero(kr) : Δkr_new
+
+        if Δv isa AbstractZero
+            return (NoTangent(), dkr, ZeroTangent(), ZeroTangent(), ZeroTangent())
+        end
+
+        N = length(v)
+        M = shifted_matrix(kr, env, props, cache)
+        F = lu(M; check=false)
+        P(u) = u .- dot(v, u) .* v          # projection onto the complement of `v`
+        y = P(F \ P(Δv))
+        y = P(y .+ (F \ P(Δv .- M * y)))    # one step of iterative refinement, in the complement
+
+        # ΔM = -y vᵀ, restricted to the tridiagonal pattern. `e_vec[k+1]` sits at both (k, k+1) and
+        # (k+1, k), so it collects both; `e_vec[1]` appears in the matrix nowhere.
+        Δd = -y .* v
+        Δa = [k == N ? 0.5 * Δd[N] : Δd[k] for k in 1:N]
+        Δλ = (-kr^2) .* Δd
+        Δe = vcat(zero(eltype(Δd)), -(y[2:N] .* v[1:(N - 1)] .+ y[1:(N - 1)] .* v[2:N]))
+
+        # `d[N] = 0.5 a[N] - kr² λ[N] - g`, so `g` picks up the diagonal's cotangent with a sign flip.
+        h = half_space_sensitivities(-Δd[N], kr, env, props)
+        dkr += h.dkr - 2 * kr * dot(Δd, cache.λ_scaling)
+
+        env_tangent = Tangent{typeof(env)}(; cb=h.dcb, ρb=h.dρb)
+        props_tangent = Tangent{typeof(props)}(; freq=h.dfreq)
+        cache_tangent = Tangent{typeof(cache)}(; a_vec=Δa, e_vec=Δe, λ_scaling=Δλ)
+        return (NoTangent(), dkr, env_tangent, props_tangent, cache_tangent)
+    end
+
+    return (kr_new, v), mode_eigenvector_pullback
 end

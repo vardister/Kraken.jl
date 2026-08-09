@@ -17,18 +17,27 @@
 #   The file is written in `#%%` cells, so it also runs block by block in VS Code or as a notebook.
 #
 # WHAT WORKS TODAY, AND WHAT DOES NOT YET
-#   Reverse mode currently reaches `solve_for_kr` — a single converged wavenumber — and everything
-#   feeding into it. It does NOT yet go through `kraken_jl`, the top-level entry point, nor through
-#   `inverse_iteration`, which produces the mode shapes. Those are the next two tasks in the plan
-#   (4.3 for mode shapes, 4.4 for `kraken_jl`). So every example below goes through the lower-level
-#   path, which is only four lines:
+#   Reverse mode reaches `solve_for_kr` — a single converged wavenumber — and `inverse_iteration`,
+#   which produces the mode shapes (section 8 below), plus everything feeding into either. It does
+#   NOT yet go through `kraken_jl`, the top-level entry point; that is task 4.4 in the plan. So every
+#   example below goes through the lower-level path, which is five lines:
 #
 #       props = AcousticProblemProperties(env, freq)   # pick the depth mesh
 #       cache = AcousticProblemCache(env, props)       # build the finite-difference coefficients
 #       spans = bisection(env, props, cache)           # bracket each mode
 #       kr    = solve_for_kr(spans[m, :], env, props, cache)   # converge mode m
+#       _, ψ  = inverse_iteration(kr, env, props, cache)       # its mode shape
 #
 #   Forward mode (ForwardDiff) is unaffected by all of this and still works through `kraken_jl`.
+#
+# ONE CAVEAT WITH TEETH
+#   If the sound speed or density varies *inside* a layer whose thickness is one of your parameters,
+#   the gradient with respect to that thickness is currently incomplete: `DataInterpolations` carries
+#   no derivative for an interpolant's knot positions, so the term is silently dropped rather than
+#   raising an error. Measured against Fortran KRAKEN, that makes ∂kr/∂h₀ come out 15% low on
+#   `two_layer_slope_env`, with two other thicknesses sign-flipped. The environments used below —
+#   `pekeris_env` and `one_layer_env` — are unaffected, because their profiles are constant within
+#   each layer, which makes the missing term identically zero. Plan task 4.5 removes the caveat.
 
 using Kraken
 using Zygote        # reverse mode: gradient w.r.t. all inputs in one pass
@@ -290,5 +299,35 @@ end
 println("""
    The reverse column is constant to ~13 digits; the forward column drifts and then collapses at
    the tightest setting. Finite differences agree with the reverse column.""")
+
+#%% ---------------------------------------------------------------------------------------------
+# 8. MODE SHAPES: the gradient of a functional of ψ, not just of a wavenumber
+# -----------------------------------------------------------------------------------------------
+# Wavenumbers are one number per mode; a mode shape is a whole depth profile, and it is what the
+# pressure field is actually built from. `inverse_iteration` recovers it, and reverse mode goes
+# through it via an eigenvector adjoint — a single tridiagonal solve rather than a tape of the
+# iteration, so a mode-shape gradient costs about the same as a wavenumber one.
+#
+# The functional here is ∫ψ dz over the water column and sediment. Any scalar summary of ψ works:
+# its value at a receiver depth, its energy over a depth window, a misfit against measured data.
+
+function mode_shape_integral(θ; freq=100.0, mode=1)
+    env = UnderwaterEnv(one_layer_env(; c0=θ[1], c1=θ[2], cb=θ[3], ρ0=θ[4], ρ1=θ[5], ρb=θ[6], h0=θ[7], h1=θ[8])...)
+    props = AcousticProblemProperties(env, freq)
+    cache = AcousticProblemCache(env, props)
+    kr = solve_for_kr(bisection(env, props, cache)[mode, :], env, props, cache)
+    _, ψ = inverse_iteration(kr, env, props, cache)
+    return Kraken.integral_trapz(ψ, reduce(vcat, props.zn_vec))
+end
+
+println("\n8. MODE SHAPE FUNCTIONAL — ∂(∫ψ₁ dz)/∂θ, one sediment layer at 100 Hz")
+let g_rev_ψ = Zygote.gradient(mode_shape_integral, θ_1L)[1], g_fwd_ψ = ForwardDiff.gradient(mode_shape_integral, θ_1L)
+    @printf("   ∫ψ₁ dz = %.10f\n", mode_shape_integral(θ_1L))
+    @printf("\n   %-24s %14s %14s\n", "parameter", "reverse", "forward")
+    for i in eachindex(θ_1L)
+        @printf("   %-24s %14.6e %14.6e\n", names_1L[i], g_rev_ψ[i], g_fwd_ψ[i])
+    end
+    @printf("\n   reverse vs forward: %.2e relative\n", relerr(g_rev_ψ, g_fwd_ψ))
+end
 
 println("\nDone.")

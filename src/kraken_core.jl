@@ -4,7 +4,6 @@ using Statistics
 using Roots
 using LinearSolve
 using UnPack
-using Integrals
 using DataInterpolations
 import NaNMath as nm
 
@@ -16,7 +15,7 @@ export SampledSSP, SampledDensity
 export soundspeed, maxsoundspeed, density
 export UnderwaterEnv, AcousticProblemProperties, UnderwaterEnvFORTRAN
 export AcousticProblemCache, bisection, solve_for_kr, inverse_iteration, det_sturm, kraken_jl, find_kr, get_g
-export finite_difference_coefficients
+export finite_difference_coefficients, mode_eigenvector, normalize_mode
 
 ### The differentiable seam
 #
@@ -34,13 +33,17 @@ export finite_difference_coefficients
 #   * `get_g`                                              — bottom half-space term, also used inside the rules
 #   * `get_Nz_vec`, `get_z_vec`, `AcousticProblemProperties` — the mesh; see the caveat below
 #   * `richard_extrap`, and the arithmetic in `kraken_jl` between the two seam calls
+#   * `normalize_mode`, `integral_trapz`                   — the mode's energy normalization
+#   * `find_kr`, `inverse_iteration`                       — the loops over the two rule-bearing
+#                                                            functions below; both had to stop
+#                                                            filling preallocated arrays
 #
 # BEHIND THE SEAM — never traced; free to mutate the cache, branch on values, and iterate:
 #   * `det_sturm`, `scale_const`                           — differentiated analytically by the rule
 #   * `bisection`                                          — integer mode counting, `@non_differentiable`
 #   * `solve_for_kr`                                       — rrule: implicit function theorem on `det_sturm`
 #   * `create_finite_diff_matrix!`, `return_finite_diff_matrix!` — in-place cache updates
-#   * `inverse_iteration`                                  — rrule: eigenvector adjoint
+#   * `mode_eigenvector`                                   — rrule: eigenvector adjoint
 #
 # The mesh is only *half* discrete, and getting that wrong loses a gradient silently. `Nz_vec` is an
 # integer point count and is genuinely piecewise constant in the parameters. But `Δz_vec = h ./ Nz_vec`
@@ -616,13 +619,10 @@ function find_kr(
     if isnothing(kr_spans)
         return Vector{eltype(props.freq)}()
     end
-    krs = zeros(eltype(kr_spans), size(kr_spans, 1))
-    i = 1
-    for span in eachrow(kr_spans)
-        krs[i] = solve_for_kr(span, env, props, cache; method=method, kwargs...)[1]
-        i += 1
-    end
-    return krs
+    # `map` rather than filling a preallocated vector: this function is on the seam, and the
+    # `setindex!` the loop used to do is exactly what reverse mode cannot follow. `bisection` is
+    # `@non_differentiable`, so indexing its result carries no derivative either way.
+    return map(i -> solve_for_kr(kr_spans[i, :], env, props, cache; method=method, kwargs...), axes(kr_spans, 1))
 end
 
 """
@@ -639,10 +639,18 @@ end
 
 ### Inverse Iteration
 
+"""
+    integral_trapz(y, x)
+
+Trapezoidal integral of samples `y` taken at (not necessarily uniform) abscissae `x`.
+
+Written out rather than delegated to `Integrals.SampledIntegralProblem` because it sits *on the
+differentiable seam* — [`normalize_mode`](@ref) calls it, and reverse mode has to trace through it
+to reach the density profile and the mesh coordinates. The formula is the same one the package's
+`TrapezoidalRule` applies, and the two agree to the last bit on the mode normalizations here.
+"""
 function integral_trapz(y, x)
-    problem = SampledIntegralProblem(y, x)
-    method = TrapezoidalRule()
-    return solve(problem, method).u
+    return sum((x[2:end] .- x[1:(end - 1)]) .* (y[1:(end - 1)] .+ y[2:end]) ./ 2)
 end
 
 function create_finite_diff_matrix!(kr, env, props, cache)
@@ -670,16 +678,23 @@ function return_finite_diff_matrix!(kr, env, props, cache)
 end
 
 """
-    inverse_iteration(kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; kwargs...)
+    mode_eigenvector(kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; reltol=0.01)
 
-Performs inverse iteration to find the corresponding modal depth function ψₘ for a given wavenumber kᵣ
+Inverse-iterate the finite-difference system at wavenumber `kr` for the mode shape it supports.
+
+Returns `(kr_new, v)`: the refined wavenumber estimate produced by the iteration, and the
+eigenvector, scaled to `‖v‖₂ = 1` and sign-fixed so that `v[1] ≥ 0`. Physical normalization is
+[`normalize_mode`](@ref)'s job.
+
+This is the second of the two functions *behind the differentiable seam* (see the note at the top of
+this file): it mutates the cache, branches on `argmax`, and iterates, and reverse mode never traces
+any of it — `src/kraken_ad.jl` states the eigenvector adjoint directly instead. The cache is left
+exactly as it was found.
 """
-function inverse_iteration(
+function mode_eigenvector(
     kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; reltol=0.01
 )
-    local kr_new, w0, w1, amp1, amp2
-    zn = vcat(props.zn_vec...)
-    ρn = density(env.ρ, zn)
+    local kr_new, w0, w1
     N = sum(props.Nz_vec)
     # Initialization
     w0 = normalize(ones(eltype(kr), N))
@@ -701,25 +716,59 @@ function inverse_iteration(
     end
     # Inverse iteration complete
     w0 = ifelse(w0[1] < 0, w0 .* -1, w0) # Ensure the first element is positive for consistency between modes
-    amp1 = integral_trapz(abs2.(w0) ./ ρn, zn) # Amplitude calculation for the waveguide
-    amp2 = w0[end]^2 / (2 * env.ρb * sqrt(kr_new^2 - (2pi * props.freq / env.cb)^2)) # Same but for bottom half-space
-    w0 ./= sqrt(amp1 + amp2) # Normalize the mode function
     return_finite_diff_matrix!(kr_try, env, props, cache) # Reset the cache
     return kr_new, w0
+end
+
+"""
+    normalize_mode(v, kr, env::UnderwaterEnv, props::AcousticProblemProperties)
+
+Scale a mode shape so that its total energy — water column plus bottom half-space — is one:
+
+    ∫ v(z)² / ρ(z) dz  +  v(D)² / (2 ρb √(kr² - (ω/cb)²))  =  1
+
+`v` is [`mode_eigenvector`](@ref)'s unit-2-norm eigenvector; the scaling is what turns it into the
+mode function the field sum expects.
+
+Kept *on the differentiable seam* deliberately. The normalization is the only part of a mode shape
+that depends on the density profile and the mesh coordinates other than through the finite-difference
+coefficients, and leaving it traced means the backend reaches `env.ρ` through the same
+[`density`](@ref) call it already differentiates in [`finite_difference_coefficients`](@ref), rather
+than the eigenvector rule having to carry an interpolant adjoint of its own.
+"""
+function normalize_mode(v, kr, env::UnderwaterEnv, props::AcousticProblemProperties)
+    zn = reduce(vcat, props.zn_vec)
+    ρn = density(env.ρ, zn)
+    amp1 = integral_trapz(abs2.(v) ./ ρn, zn) # Amplitude of the waveguide
+    amp2 = v[end]^2 / (2 * env.ρb * sqrt(kr^2 - (2pi * props.freq / env.cb)^2)) # Same for the bottom half-space
+    return v ./ sqrt(amp1 + amp2)
+end
+
+"""
+    inverse_iteration(kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; kwargs...)
+
+Performs inverse iteration to find the corresponding modal depth function ψₘ for a given wavenumber kᵣ
+
+Returns `(kr_new, ψ)`. Composed of [`mode_eigenvector`](@ref), which is opaque to reverse-mode AD and
+carries its own rule, and [`normalize_mode`](@ref), which is traced.
+"""
+function inverse_iteration(
+    kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; reltol=0.01
+)
+    kr_new, v = mode_eigenvector(kr, env, props, cache; reltol=reltol)
+    return kr_new, normalize_mode(v, kr_new, env, props)
 end
 
 function inverse_iteration(
     kr_vec::Vector, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; kws...
 )
-    # Initialize containers
-    modes = zeros(eltype(kr_vec), length(cache.a_vec), length(kr_vec))
-    kr_vec_new = similar(kr_vec)
-    # Loop over the wavenumbers
-    for (ii, kr) in enumerate(kr_vec)
-        kr_vec_new[ii], modes[:, ii] = inverse_iteration(kr, env, props, cache; kws...)
+    if isempty(kr_vec)
+        return kr_vec, Matrix{eltype(kr_vec)}(undef, length(cache.a_vec), 0)
     end
-    # Return the new kr_vec and modes
-    return kr_vec_new, modes
+    # `map` plus `reduce(hcat, ...)` rather than filling a preallocated matrix: this method is on the
+    # seam, and writing columns into a buffer is exactly the mutation reverse mode cannot follow.
+    solved = map(kr -> inverse_iteration(kr, env, props, cache; kws...), kr_vec)
+    return first.(solved), reduce(hcat, last.(solved))
 end
 
 ### Full KRAKEN solve with Richardson's Extrapolation
