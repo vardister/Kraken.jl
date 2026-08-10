@@ -255,6 +255,32 @@ function ChainRulesCore.rrule(::Type{SampledDensity1D}, depth, ρ, f)
     return SampledDensity1D(depth, ρ, f), SampledDensity1D_pullback
 end
 
+# The attenuation profile (Milestone 5) is the third instance of exactly the same interpolant, and it
+# needs the same two rules for the same reason: `DataInterpolations`' own rule holds the knots fixed,
+# which is a *wrong number* rather than an error wherever a layer boundary is a parameter.
+#
+# These are here rather than in task 5.4 deliberately. 5.2 made `imag(kr)` depend on `env.α`, so
+# without them the very first gradient anyone takes with respect to an attenuation is silently
+# missing its knot term — the same trap documented at the top of this section, which survived two
+# whole tasks of Milestone 4 before `kraken.exe` caught it. Adding the rule when the dependency is
+# created costs ten lines and removes the trap.
+
+function ChainRulesCore.rrule(::typeof(attenuation), prof::SampledAttenuation1D, z)
+    val, parts = profile_partials(prof, z)
+    function attenuation_pullback(Δ)
+        Δ = unthunk(Δ)
+        Δ isa AbstractZero && return (NoTangent(), ZeroTangent(), ZeroTangent())
+        Δu, Δt, Δz = profile_pullback(prof.f, z, parts, Δ)
+        return (NoTangent(), Tangent{typeof(prof)}(; z=(-Δt), α=Δu, f=NoTangent()), Δz)
+    end
+    return val, attenuation_pullback
+end
+
+function ChainRulesCore.rrule(::Type{SampledAttenuation1D}, depth, α, f)
+    SampledAttenuation1D_pullback(Δ) = profile_ctor_pullback(Δ, :α)
+    return SampledAttenuation1D(depth, α, f), SampledAttenuation1D_pullback
+end
+
 """
     sturm_sensitivities(kr, env, props, cache)
 

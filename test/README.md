@@ -26,16 +26,39 @@ Julia 1.12.6, macOS arm64 (M1), 1 thread inside `Pkg.test()`. Every run below is
 The M3 numbers are with an Acoustics Toolbox checkout present. Without one — which is the CI case —
 the toolbox cases skip and `Pkg.test()` reports **898**, still green.
 
-Per file, so a silent drop in coverage is visible in a diff:
+There is no single M4/M5 figure in that table on purpose: since Milestone 4 the whole suite in one
+call exceeds every limit the MCP imposes (see the bottom of this file), so it is measured per file
+instead. CI still runs it as one `Pkg.test()` — that path has no such limit.
 
-| File | End of M1 | End of M2 | End of M3 |
-|---|---|---|---|
-| `environment_tests.jl` | 39 | 161 | 161 |
-| `integration_tests.jl` | 98 | 98 | 98 |
-| `numerical_methods_tests.jl` | 73 | 73 | 73 |
-| `automatic_differentiation_tests.jl` | 48 | 48 | 48 |
-| `fortran_reference_tests.jl` | — | — | 545 |
-| `performance_tests.jl` (opt-in) | 24 | 24 | 24 |
+Per file, so a silent drop in coverage is visible in a diff. The M5 column is after task 5.3, with an
+Acoustics Toolbox checkout present, and was measured **per file** — the whole suite in one call is not
+obtainable through the MCP (see "Running the suite through the kaimon MCP" below):
+
+| File | End of M1 | End of M2 | End of M3 | End of M5.3 |
+|---|---|---|---|---|
+| `environment_tests.jl` | 39 | 161 | 161 | 215 |
+| `integration_tests.jl` | 98 | 98 | 98 | 134 |
+| `numerical_methods_tests.jl` | 73 | 73 | 73 | 96 |
+| `automatic_differentiation_tests.jl` | 48 | 48 | 48 | 48 |
+| `reverse_ad_tests.jl` | — | — | — | 309 |
+| `fortran_reference_tests.jl` | — | — | 545 | 756 |
+| `performance_tests.jl` (opt-in) | 24 | 24 | 24 | 24 |
+
+**1558 in total at the end of task 5.3**, all green, measured file by file on 2026-08-09 with an
+Acoustics Toolbox checkout present.
+
+**Counting the TestItems files from a worktree needs a path filter.** `@run_package_tests` walks the
+whole package directory, and `.claude/worktrees/` is inside it — so a filter that only matches on
+`endswith(t.filename, "integration_tests.jl")` silently runs *every* sibling worktree's copy too and
+reports their sum. Add the worktree name:
+
+```julia
+@run_package_tests filter = t -> occursin("plan-5-attenuation", t.filename) &&
+                                 endswith(t.filename, "integration_tests.jl")
+```
+
+Without it this table read 232 rather than 134 for `integration_tests.jl`, which looks like coverage
+that is not there.
 
 The M2 jump is the B1–B5 regression tests added in task 2.5; the B4 bisection sweep (8 environments
 × 4 frequencies) is 82 of the 122 new assertions on its own. The M3 jump is the Fortran
@@ -143,28 +166,34 @@ KRAKEN_OALIB_TESTS=~/programs/AcousticsToolboxOALIB/tests julia --project=. -e '
 Without that tree the toolbox cases skip; the reader itself stays covered by round-tripping this
 repo's own `test/standard_envs/` files through `write_env_file` → `read_env_file`.
 
-Coverage as of 2026-08-08 — **65 of 402 `.env` files are supported today, and all 65 cross-validate**
-(max relative Δkᵣ 3.6e-6, min correlation 0.999992, mode counts matching within one):
+Coverage as of 2026-08-09, after Milestone 5.1 — **167 of 402 `.env` files parse, 101 of them lossy**.
+Attenuation was the single largest blocker and is gone from the list:
 
 | Blocker | Files | Unblocked by |
 |---|---|---|
-| attenuation | 114 | Milestone 5 |
 | top boundary (not vacuum) | 65 | Milestone 6 |
 | bottom boundary (not an acoustic half-space) | 50 | Milestone 6 |
+| bottom half-space is not the fastest medium | 31 | leaky modes (M5 stretch) |
 | SSP interpolation over a varying profile | 28 | Milestone 6 |
-| added volume attenuation (THORP / Francois-Garrison / biological) | 27 | Milestone 5 |
-| bottom half-space is not the fastest medium | 19 | leaky modes (M5 stretch) |
+| added volume attenuation (THORP / Francois-Garrison / biological) | 27 | Milestone 5.x — `TopOpt(4:4)`, a separate feature |
 | elastic layer | 7 | out of scope |
-| interfacial roughness | 5 | out of scope |
+| interfacial roughness | 4 | out of scope |
+| power-law attenuation (`TopOpt(3:3) == 'm'`) | 1 | needs per-medium β and f_T records |
 | analytic SSP; profile not starting at the surface | 2 | — |
 | not a KRAKEN deck (BELLHOP3D `'H'`/`'Q'` SSP options, malformed) | 20 | n/a |
 
+(The previous count was 65 supported with 114 blocked on `attenuation`. Two of the shifts are not
+attenuation: `bottom half-space is not the fastest medium` rose from 19 to 31 and `interfacial
+roughness` fell from 5 to 4, because files that used to be rejected for attenuation first now get far
+enough to be judged on those instead — and because the bottom-option record bug below was fixed.)
+
 Regenerate this with `KrakenReference.categorize_env_tree` and `print_env_tree_report`. A file that
 uses an unsupported feature is *named*, never approximated — the whole point is that a case Kraken.jl
-cannot model fails with "unsupported feature: attenuation" rather than silently mis-parsing into a
-plausible environment that then disagrees with Fortran for reasons nobody can find.
+cannot model fails with "unsupported feature: top boundary (acousto-elastic halfspace)" rather than
+silently mis-parsing into a plausible environment that then disagrees with Fortran for reasons nobody
+can find.
 
-Two caveats the suite encodes rather than hides:
+Three caveats the suite encodes rather than hides:
 
 - **Mode counts may differ by one at cutoff.** `bisection` searches phase speeds up to `0.9999·cb`
   while the generated `.env` asks KRAKEN for up to `cb` exactly, so Kraken.jl's window is marginally
@@ -176,6 +205,60 @@ Two caveats the suite encodes rather than hides:
   same jll's `krakenc.exe` is unaffected. `compare_with_fortran(...; group_speeds=true)` therefore
   re-runs with `krakenc.exe` to get a reference. Group speeds are off by default because obtaining
   the Julia side means a ForwardDiff pass through the whole solver (~4 s).
+- **A record ends where Fortran stops reading it, not at end of line.** `READ( ENVFile, * ) BotOpt,
+  Sigma` is a list-directed read of exactly two items and **discards the rest of the record**. The
+  reader used to take the *last* number on the line as SIGMA, so `SedAtten/calibS_0.6dB.env`'s
+  `'A'  0.0 2.5 2000` — whose trailing pair only a `'m'` attenuation unit would go back for — read as
+  2 km of interfacial roughness and the file was rejected. Fixed in 5.1 and pinned by
+  `"M5.1: the bottom-option record ends after SIGMA"`. The same rule applies to any record where the
+  toolbox files carry optional trailing parameters.
+
+### Attenuation validated against Fortran (plan task 5.3)
+
+Milestone 5 makes `kraken_jl` return **complex** wavenumbers when an environment declares
+attenuation. `Im(kᵣ)` is compared separately from `Re(kᵣ)` and gets its own, looser tolerance —
+`KrakenReference.max_alpha_reldiff` alongside `max_kr_reldiff`.
+
+Max relative difference over all modes, measured 2026-08-09. The first four rows are `pekeris_env` at
+100 Hz with attenuation added; the rest are read from the toolbox tree.
+
+| case | modes | max rel Δ Re(kᵣ) | max rel Δ Im(kᵣ) | tolerance asserted |
+|---|---|---|---|---|
+| `pekeris_env`, lossless (control) | 5 | 1.7e-9 | 0 exactly, both sides | 1e-6 / 1e-12 |
+| `pekeris_env` + 0.5 dB/λ in the water | 5 | 1.3e-4 | 4.0e-3 | 1e-3 / 2e-2 |
+| `pekeris_env` + 0.05 dB/λ in the half-space | 5 | 1.3e-5 | 7.9e-4 | 1e-4 / 5e-3 |
+| `pekeris_env` + 0.5 dB/λ in the half-space | 5 | 5.5e-4 | 1.0e-1 | 3e-3 / 3e-1 |
+| `SedAtten/calibS_noloss.env` (control) | 11 | 6.0e-10 | 0 exactly, both sides | 1e-6 / 1e-12 |
+| `TLslices/atten.env`, 10 Hz, 0.001 dB/(km·Hz) | 44 | 7.2e-7 | 1.8e-3 | 1e-5 / 1e-2 |
+| `SedAtten/calibK.env`, 250 Hz, 0.5 dB/λ | 11 | 1.8e-4 | 1.1e-2 | 1e-3 / 5e-2 |
+| `SedAtten/calibS_0.6dB.env`, 250 Hz, 0.6 dB/λ | 11 | 2.3e-4 | 1.5e-2 | 1e-3 / 8e-2 |
+
+Three things about that spread are worth understanding before changing any of these numbers.
+
+- **`Im(kᵣ)` is a harder quantity than `Re(kᵣ)` on both sides.** It is the small part of the complex
+  number; the only usable Fortran source for it is the single-precision `.mod` (the `.prt` prints it
+  with `G10.2`, i.e. two digits); and *neither* solver Richardson-extrapolates it — both evaluate the
+  perturbation on their own coarsest mesh, which is what `kraken.f90` does by calling `Vector` only
+  when `iSet == 1`.
+- **The two solvers agree to first order in α exactly.** Shrinking the half-space attenuation drives
+  the disagreement down as α², not α: 7.1e-3 at 0.5 dB/λ → 6.9e-5 at 0.05 → 1.9e-6 at 0.005, where it
+  hits the `.mod`'s single-precision floor. A formula error would leave a floor proportional to α.
+  `"M5.3: the two solvers agree to first order in α"` asserts exactly this, and it is the strongest
+  correctness statement in this section — much stronger than any single tolerance.
+- **What is left is second order, and it is a limit of the method, not of the implementation.** The
+  half-space term goes as `Im √(γ² + 2iω α_b/c_b)`, whose expansion parameter is
+  `v = 2ω α_b/(c_b γ²)` with `γ² = kᵣ² − (ω/c_b)²`. `γ → 0` at the bottom cutoff, so `v` is large
+  exactly where the mode is least trapped: it is 1.5e-1 for `calibK` mode 1 and **3.2** for
+  `pekeris` mode 5. Both codes are first-order methods keeping different second-order terms, so at
+  `v ≈ 3` neither is more right — the full complex solve (`krakenc.exe`, plan task 5.6) is the tool
+  for that regime. The volume term has no `γ` in it, which is why moving the same 0.5 dB/λ from the
+  half-space into the water improves agreement by a factor of 12 on the same waveguide.
+
+`VolAtt`, named in the plan, is deliberately **not** in the table: every file in it puts an
+acousto-elastic half-space *above* the surface and gives the bottom the water's own sound speed, so
+there is no trapped spectrum to compare — they are free-space TL cases, not modal ones, and two of
+them additionally use `TopOpt(4:4)` volume-attenuation laws. `TLslices/atten.env` takes their place
+and is a better test anyway: 44 modes, loss in *both* media, and the only case exercising dB/(km·Hz).
 
 ### AD validated against Fortran (plan task 4.7)
 
@@ -305,6 +388,22 @@ include(joinpath(@__DIR__, "reverse_ad_tests.jl"))                 # ~5 min
 using TestItemRunner
 @run_package_tests filter = t -> endswith(t.filename, "environment_tests.jl")
 ```
+
+A **subprocess launched from inside `ex`**, with its output read back as a value, is how to get a
+`Test Summary` out of a run at all — `ex` strips stdout, so a `Test Summary` printed by an `include`
+goes into the void, and a TestItems file run with `@run_package_tests` otherwise reports nothing:
+
+```julia
+cmd = `$(Base.julia_cmd()) --project=test -e "using TestItemRunner; @run_package_tests filter=t->endswith(t.filename, \"integration_tests.jl\")"`
+out = read(pipeline(ignorestatus(cmd), stderr=devnull), String)
+filter(l -> occursin("Test Summary", l) || occursin("Fail", l), split(out, '\n'))
+```
+
+**It does not lift the 10-minute limit** — tried on the whole suite on 2026-08-09 and killed at
+exactly 10m00s, same as a direct `Pkg.test()`. Capturing the subprocess's stdout with `read` is
+precisely what keeps the gate from seeing any activity. So the per-file rule above stands: use the
+subprocess to *see* results, and still run one file at a time. `ex` promotes anything past 30 s to a
+background job; poll `check_eval` sparingly.
 
 Two things to watch. A TestItems filter that matches nothing still reports green, so confirm it
 selected something before believing the result — `filter = t -> (push!(items, t.filename); false)`

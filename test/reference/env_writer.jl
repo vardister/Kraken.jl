@@ -27,7 +27,7 @@
 
 using Printf
 
-using Kraken: UnderwaterEnv, UnderwaterEnvFORTRAN
+using Kraken: UnderwaterEnv, UnderwaterEnvFORTRAN, ATTENUATION_UNIT_CHARS, DEFAULT_ATTENUATION_UNITS
 
 """
 Densities in a KRAKEN `.env` file are in g/cm³, while Kraken.jl's standard environments carry them
@@ -47,10 +47,44 @@ Top-option string written by default.
   every standard environment except `munk_env`. Milestone 6 adds the other interpolators.
 - `V` — vacuum (pressure-release) above the top interface, which is the only surface condition the
   finite-difference scheme currently implements.
-- `W` — attenuation in dB/wavelength. Irrelevant while every αp/αs is zero, but it has to be a
-  *valid* letter or `ReadTopOpt` calls `ERROUT`.
+- `W` — attenuation in dB/wavelength. This is only the *fallback*: since Milestone 5 the writer
+  replaces column 3 with whatever `env.atten_units` says, so an environment read from a `.env` that
+  declared nepers/m is written back out as nepers/m rather than being silently reinterpreted. `W` is
+  what an environment that never named its units gets, and it matches `DEFAULT_ATTENUATION_UNITS`.
 """
 const DEFAULT_TOPOPT = "CVW"
+
+"""
+    _atten_char(units::Symbol) -> Char
+
+The top-option character for `units` — the inverse of `Kraken.ATTENUATION_UNIT_CHARS`.
+
+Written as a search rather than a second hard-coded table so the two cannot drift apart: there is one
+list of what KRAKEN's attenuation units are, and it lives in `src/`.
+"""
+function _atten_char(units::Symbol)
+    for (char, sym) in ATTENUATION_UNIT_CHARS
+        sym === units && return char
+    end
+    return error("No KRAKEN top-option character for attenuation units $(repr(units))")
+end
+
+"""
+    _with_atten_units(topopt, units) -> String
+
+`topopt` with its attenuation-units character (column 3) set from `units`.
+
+Leaves an explicitly supplied non-default column 3 alone, so a caller can still force a units letter
+by passing a full `topopt`; only the default string is rewritten. Everything else about the option
+string — the interpolator, the surface condition, the broadband flag — is untouched.
+"""
+function _with_atten_units(topopt::AbstractString, units::Symbol)
+    s = rpad(String(topopt), 3)
+    # Only rewrite when the caller left column 3 at the default; an explicit letter is a deliberate
+    # choice (the writer's own tests set one to check that KRAKEN accepts it).
+    s[3] == DEFAULT_TOPOPT[3] || return String(topopt)
+    return String(s[1:2] * _atten_char(units) * s[4:end])
+end
 
 # ---------------------------------------------------------------------------------------------
 # Number formatting
@@ -202,23 +236,26 @@ Normalize either environment type to the `[z cp cs ρ αp αs]` table, the vecto
 depths, and the bottom half-space row.
 
 `UnderwaterEnvFORTRAN` keeps the original matrices, so it round-trips shear speeds and attenuations
-untouched. `UnderwaterEnv` has already thrown those away — it stores only the sound-speed and
-density interpolants — so they are reconstructed as zeros, which is exactly the feature set the
-solver currently supports.
+untouched. `UnderwaterEnv` keeps the compressional attenuation as a profile of its own (Milestone 5)
+and so round-trips that too; only the *shear* columns are reconstructed as zeros, which is exactly
+the feature set the solver supports — the scheme is a scalar pressure equation and has nowhere to
+put a shear wave.
 """
 _env_tables(env::UnderwaterEnvFORTRAN) = (env.ssp, env.layers[:, 3], env.sspHS[2, :])
 
 function _env_tables(env::UnderwaterEnv)
-    # SampledSSP1D/SampledDensity1D store *negated* depths (see their inner constructors).
+    # SampledSSP1D/SampledDensity1D/SampledAttenuation1D store *negated* depths (see their inner
+    # constructors).
     z = -env.c.z
     cp = env.c.c
     ρ = env.ρ.ρ
-    length(z) == length(cp) == length(ρ) || error(
-        "Sound-speed and density profiles must be sampled at the same depths " *
-        "(got $(length(z)), $(length(cp)), $(length(ρ)) points)",
+    αp = env.α.α
+    length(z) == length(cp) == length(ρ) == length(αp) || error(
+        "Sound-speed, density and attenuation profiles must be sampled at the same depths " *
+        "(got $(length(z)), $(length(cp)), $(length(ρ)), $(length(αp)) points)",
     )
-    ssp = hcat(z, cp, zero(cp), ρ, zero(cp), zero(cp))
-    halfspace = [env.depth, env.cb, zero(env.cb), env.ρb, zero(env.cb), zero(env.cb)]
+    ssp = hcat(z, cp, zero(cp), ρ, αp, zero(cp))
+    halfspace = [env.depth, env.cb, zero(env.cb), env.ρb, env.αb, zero(env.cb)]
     return ssp, env.layer_depth, halfspace
 end
 
@@ -268,6 +305,7 @@ function env_file_string(
     sigma::Real=0.0,
     freq0=nothing,
     density_scale::Real=DEFAULT_DENSITY_SCALE,
+    atten_units::Symbol=DEFAULT_ATTENUATION_UNITS,
 )
     freqs = freq isa Real ? [Float64(freq)] : Float64.(collect(freq))
     isempty(freqs) && error("At least one frequency is required")
@@ -306,7 +344,9 @@ function env_file_string(
     end
 
     broadband = length(freqs) > 1
-    topopt_str = String(topopt)
+    # The attenuation values written below are in the environment's own units, so the option string
+    # has to declare those units or `kraken.exe` reads the same numbers as something else entirely.
+    topopt_str = _with_atten_units(topopt, env isa UnderwaterEnv ? env.atten_units : atten_units)
     if broadband
         # `ReadfreqVec` keys the broadband block off column 6 of the top-option record.
         length(topopt_str) >= 6 &&
@@ -394,6 +434,10 @@ vector of them for a broadband run.
   broadband run where you want the mesh anchored somewhere other than the first frequency.
 - `density_scale` — factor converting the environment's densities to the g/cm³ the format wants;
   defaults to `1e-3` for the kg/m³ the standard environments use.
+- `atten_units` — the units the SSP's `αp` column is written in, used **only** for an
+  `UnderwaterEnvFORTRAN`, whose raw matrices do not say. An `UnderwaterEnv` carries its own
+  `atten_units` and that always wins. Either way the letter reaches column 3 of the top-option
+  string, so the file declares the units of the numbers it contains.
 """
 function write_env_file(path::AbstractString, env, freq; kwargs...)
     file = endswith(path, ".env") ? String(path) : String(path) * ".env"

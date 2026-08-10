@@ -16,8 +16,12 @@ usually decide whether a run is acceptable: the largest relative wavenumber diff
 smallest mode-shape correlation.
 
 Fields: `freq`, `n_julia`, `n_fortran`, `n_compared`, `kr_julia`, `kr_fortran`, `kr_absdiff`,
-`kr_reldiff`, `mode_corr`, `group_speed_julia`, `group_speed_fortran`, `group_speed_reldiff`,
-`depths`, `warnings`, `binary`.
+`kr_reldiff`, `alpha_julia`, `alpha_fortran`, `alpha_absdiff`, `alpha_reldiff`, `mode_corr`,
+`group_speed_julia`, `group_speed_fortran`, `group_speed_reldiff`, `depths`, `warnings`, `binary`.
+
+`alpha_*` are the **imaginary** parts of the wavenumbers — the modal attenuation. They are zero on
+both sides for a lossless environment; see [`max_alpha_reldiff`](@ref) for why they get a tolerance
+of their own rather than sharing the wavenumber one.
 """
 struct FortranComparison
     freq::Float64
@@ -28,6 +32,10 @@ struct FortranComparison
     kr_fortran::Vector{Float64}
     kr_absdiff::Vector{Float64}
     kr_reldiff::Vector{Float64}
+    alpha_julia::Vector{Float64}
+    alpha_fortran::Vector{Float64}
+    alpha_absdiff::Vector{Float64}
+    alpha_reldiff::Vector{Float64}
     mode_corr::Vector{Float64}
     group_speed_julia::Union{Nothing,Vector{Float64}}
     group_speed_fortran::Union{Nothing,Vector{Float64}}
@@ -39,6 +47,31 @@ end
 
 max_kr_reldiff(c::FortranComparison) = isempty(c.kr_reldiff) ? NaN : maximum(c.kr_reldiff)
 min_mode_corr(c::FortranComparison) = isempty(c.mode_corr) ? NaN : minimum(c.mode_corr)
+
+"""
+    max_alpha_reldiff(c) -> Float64
+    max_alpha_absdiff(c) -> Float64
+
+Worst disagreement on the modal attenuation `Im(kᵣ)` across the compared modes. `NaN` when nothing
+was compared; `0.0` when both solvers report a lossless waveguide.
+
+**These warrant a looser tolerance than the wavenumbers, for three compounding reasons**, which is
+why they are reported separately rather than folded into `max_kr_reldiff`:
+
+  * `Im(kᵣ)` is three to five orders of magnitude smaller than `Re(kᵣ)`, so it is the *last* digits
+    of the complex number and inherits the whole absolute error of the solve.
+  * The only usable Fortran source for it is the `.mod` file, which is single precision — about 7
+    significant digits (see [`MOD_WAVENUMBER_DIGITS`](@ref)). The `.prt` prints it with `G10.2`, i.e.
+    **two**, which is useless here.
+  * Both solvers compute it by first-order perturbation on a mode shape taken from their own
+    coarsest mesh, and those meshes differ. The wavenumbers get Richardson extrapolation; the
+    attenuation does not.
+
+`alpha_reldiff` is relative where the Fortran value is nonzero and falls back to the absolute
+difference where it is zero, so a lossless case reports `0.0` rather than `NaN`.
+"""
+max_alpha_reldiff(c::FortranComparison) = isempty(c.alpha_reldiff) ? NaN : maximum(c.alpha_reldiff)
+max_alpha_absdiff(c::FortranComparison) = isempty(c.alpha_absdiff) ? NaN : maximum(c.alpha_absdiff)
 function max_group_speed_reldiff(c::FortranComparison)
     return c.group_speed_reldiff === nothing || isempty(c.group_speed_reldiff) ? NaN : maximum(c.group_speed_reldiff)
 end
@@ -67,6 +100,21 @@ function Base.show(io::IO, ::MIME"text/plain", c::FortranComparison)
     end
     @printf(io, "  max relative wavenumber difference : %.3e\n", max_kr_reldiff(c))
     @printf(io, "  min mode-shape correlation         : %.8f\n", min_mode_corr(c))
+    if any(!iszero, c.alpha_fortran) || any(!iszero, c.alpha_julia)
+        println(io, "  mode     Im kr (Julia)    Im kr (Fortran)      |Δα|      rel Δα")
+        for i in 1:(c.n_compared)
+            @printf(
+                io,
+                "  %4d  %16.9e  %16.9e  %10.3e  %10.3e\n",
+                i,
+                c.alpha_julia[i],
+                c.alpha_fortran[i],
+                c.alpha_absdiff[i],
+                c.alpha_reldiff[i]
+            )
+        end
+        @printf(io, "  max relative attenuation difference: %.3e\n", max_alpha_reldiff(c))
+    end
     if c.group_speed_reldiff !== nothing
         @printf(io, "  max relative group-speed difference: %.3e\n", max_group_speed_reldiff(c))
     end
@@ -188,6 +236,15 @@ function compare_with_fortran(
     kr_absdiff = abs.(kr_julia .- kr_fortran)
     kr_reldiff = kr_absdiff ./ abs.(kr_fortran)
 
+    # The modal attenuation. Unlike `Re(kᵣ)` this comes from the `.mod` and only the `.mod` -- the
+    # `.prt`'s two printed digits cannot resolve it. See `max_alpha_reldiff`.
+    alpha_julia = Float64.(imag.(sol.kr))[1:n]
+    alpha_fortran = Float64.(imag.(ref.kᵣ))[1:n]
+    alpha_absdiff = abs.(alpha_julia .- alpha_fortran)
+    alpha_reldiff = [
+        iszero(alpha_fortran[i]) ? alpha_absdiff[i] : alpha_absdiff[i] / abs(alpha_fortran[i]) for i in 1:n
+    ]
+
     zj, φj = _julia_mode_grid(sol)
     mode_corr = [mode_correlation(zj, view(φj, :, m), ref.depths, real.(view(ref.ϕ, :, m))) for m in 1:n]
 
@@ -223,6 +280,10 @@ function compare_with_fortran(
         kr_fortran,
         kr_absdiff,
         kr_reldiff,
+        alpha_julia,
+        alpha_fortran,
+        alpha_absdiff,
+        alpha_reldiff,
         mode_corr,
         vg_julia,
         vg_fortran,

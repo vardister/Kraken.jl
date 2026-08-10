@@ -1273,6 +1273,28 @@ and results match `kraken.exe` on OALIB's own attenuation test cases.
 complex wavenumbers matching `kraken.exe` to within 1e-5 relative on the real part and 1e-3 on the imaginary
 part, and the M4 gradients still validate.
 
+**Measured outcome (5.3, 2026-08-09) — the criterion needed amending, and here is why.** Agreement is
+met for weakly attenuating environments (`TLslices/atten.env`: 44 modes, Re 7.2e-7, Im 1.8e-3) and is
+*not reachable by any implementation of this method* for a strongly attenuating half-space
+(`SedAtten/calibK.env`: Re 1.8e-4, Im 1.1e-2). The reason is quantified rather than assumed:
+
+- Kraken.jl and `kraken.exe` agree on `Im(kᵣ)` **to first order in α exactly** — shrink α and the
+  disagreement falls as α², bottoming out at 2.6e-6, the single-precision floor of the `.mod` file.
+  A formula error would leave a floor proportional to α; there isn't one.
+- What remains is second order. The half-space term is `Im √(γ² + 2iω α_b/c_b)` with
+  `γ² = kᵣ² − (ω/c_b)²`, so its expansion parameter `v = 2ω α_b/(c_b γ²)` blows up at the bottom
+  cutoff: 0.15 for `calibK` mode 1, **3.2** for `pekeris` mode 5. At `v ≈ 3` the first-order method
+  is itself only good to tens of percent, and the two codes retain different second-order terms.
+  Task 5.6 (the full complex solve, `krakenc.exe` parity) is the answer for that regime — this is
+  the concrete argument for promoting it from a stretch.
+
+`VolAtt` turned out to be unusable for this comparison and was replaced by `TLslices/atten.env`:
+every `VolAtt` file puts an acousto-elastic half-space *above* the surface and gives the bottom the
+water's own sound speed, so there is no trapped spectrum at all — they are free-space transmission-
+loss cases, not modal ones, and two of them additionally use `TopOpt(4:4)` volume-attenuation laws
+(Thorp, Francois-Garrison), which are a separate unimplemented feature. `TLslices/atten.env` is a
+better test regardless: 44 modes, loss in *both* media, and the only case exercising dB/(km·Hz).
+
 **Key decisions:** Follow `kraken.exe`, not `krakenc.exe`: solve the real eigenproblem and add the imaginary
 part of `kr` by first-order perturbation. This is what the reference implementation does, it is a much smaller
 change than a complex root-find, and it keeps the M4 rrules real-valued. The full complex solve for leaky
@@ -1285,9 +1307,22 @@ must all be supported at parse time, because OALIB test cases use several of the
 | Config key | Type | Default | Description |
 |---|---|---|---|
 | ssp column 5 (`αp`) | `Float64` per depth | `0.0` | Compressional attenuation, currently ignored |
-| `attenuation_units` | `Symbol` | `:dB_per_wavelength` (`W`) | One of `:nepers_per_m`, `:dB_per_kmHz`, `:dB_per_km`, `:dB_per_wavelength`, `:Q`, `:loss_parameter` |
+| `atten_units` | `Symbol` | `:dB_per_wavelength` (`W`) | One of `:nepers_per_m`, `:dB_per_m`, `:dB_per_kmHz`, `:dB_per_wavelength`, `:Q`, `:loss_parameter` |
 | `sspHS` row 2 column 5 | `Float64` | `0.0` | Halfspace attenuation |
 | `NormalModeSolution.kr` | `Vector{ComplexF64}` when lossy | — | Real part unchanged; imaginary part is modal attenuation |
+
+**Corrections applied during 5.1**, both read off `CRCI` in `misc/AttenMod.f90`, which is the
+definition of these units:
+
+- `'M'` is dB per **metre** (`alphaT = alpha / 8.6858896`), not dB/km. The key is `:dB_per_m`; the
+  spec's `:dB_per_km` does not exist.
+- `'F'` is dB/(m·kHz), which is the same quantity as the `:dB_per_kmHz` named above — a naming
+  question only, and the key kept the plan's spelling.
+- The field is `atten_units`, not `attenuation_units`, and it is a keyword on the `UnderwaterEnv`
+  constructors rather than a global setting, because a `.env` declares it per file.
+- A seventh convention exists, `'m'` (dB/m with a frequency power law). It needs per-medium `β` and
+  `f_T` records this package does not model, so the reader names it as unsupported rather than
+  silently reading it as `'M'`.
 
 ### 5.1 [x] Parse and normalize attenuation to nepers/m *(completed 2026-08-09)*
 - **Files:** `src/kraken_core.jl`, `src/kraken_standard_environments.jl`, `test/reference/env_reader.jl`
@@ -1309,7 +1344,7 @@ must all be supported at parse time, because OALIB test cases use several of the
   Pekeris variant produces negative imaginary parts that grow with `αb`.
 - **Dependencies:** 5.1
 
-### 5.3 [ ] Cross-validate attenuation against `kraken.exe`
+### 5.3 [x] Cross-validate attenuation against `kraken.exe` *(completed 2026-08-09)*
 - **Files:** `test/fortran_reference_tests.jl`, `test/reference/env_writer.jl`
 - **What:** Extend the `.env` writer to emit attenuation values and the units character, then add OALIB's
   `SedAtten` and `VolAtt` cases to the regression list with tolerances on both real and imaginary parts.
@@ -1328,6 +1363,16 @@ must all be supported at parse time, because OALIB test cases use several of the
 - **Acceptance:** Zygote and ForwardDiff agree on `d(imag(kr))/dαb` and on a real-valued loss over complex
   `kr`, for a lossy Pekeris environment.
 - **Dependencies:** 5.3
+- **Already done in 5.2, do not redo:** the two `rrule`s for the new `attenuation` interpolant
+  (`attenuation(::SampledAttenuation1D, z)` and the `SampledAttenuation1D` constructor) are in
+  `src/kraken_ad.jl` already. They were not deferred to here because 5.2 is what created the
+  dependency of `imag(kr)` on `env.α`, and without them `DataInterpolations`' own rule holds the
+  knots fixed — a silently *wrong number*, which is the trap that survived tasks 4.2 and 4.3 before
+  `kraken.exe` caught it. They are currently unexercised by any test; covering them is 5.4's job.
+- **Known gotcha found in 5.2:** `is_lossy` branches on the stored `α` values, so an `α` that is a
+  perturbed zero still reads as lossless and `d(imag(kr))/dα` at `α = 0` is one-sided. Differentiate
+  at a nonzero attenuation. This is the same class of discrete-decision-under-AD as the mesh
+  schedule in `kraken_jl`, and should be documented the same way.
 
 ### 5.5 [ ] Update standard environments and docs for attenuation
 - **Files:** `src/kraken_standard_environments.jl`, `docs/src/`, `README.md`
