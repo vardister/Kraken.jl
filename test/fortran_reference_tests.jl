@@ -602,11 +602,10 @@ const KR = KrakenReference
         # environments and is *not* achievable for strongly attenuating half-spaces by any
         # implementation of this method. The per-case bounds below are the usual 3-10x over the
         # measured worst case, and the measurements are recorded in test/README.md.
+        # Built through `pekeris_env`'s own `α0`/`αb` keywords (task 5.5) rather than by poking the
+        # matrices, so this is also a check that those keywords land in the columns they claim.
         function lossy_pekeris(; αb=0.0, αp=0.0, units=:dB_per_wavelength)
-            ssp, layers, sspHS = pekeris_env()
-            ssp[:, 5] .= αp
-            sspHS[2, 5] = αb
-            return UnderwaterEnv(ssp, layers, sspHS; atten_units=units)
+            return UnderwaterEnv(pekeris_env(; α0=αp, αb=αb)...; atten_units=units)
         end
 
         @testset "M5.3: modal attenuation against kraken.exe" begin
@@ -656,6 +655,85 @@ const KR = KrakenReference
                     @test all(iszero, c.alpha_julia)
                     @test eltype(kraken_jl(env, 100.0).kr) === Float64
                 end
+            end
+        end
+
+        @testset "M5.5: the lossy standard environments cross-validate" begin
+            # Task 5.5 put `α0`/`αb` keywords on `pekeris_env` and `α0`/`α1`/`αb` on `one_layer_env`.
+            # Anything the package ships as a canned environment has to agree with kraken.exe, or it
+            # is a trap for the first person who uses it — so the lossy variants join the regression
+            # list rather than living only in the docs.
+            #
+            # `one_layer_env(; α1=…)` is the important row, and it exposed a *second* accuracy limit
+            # that is nothing to do with the half-space cutoff. Measured 2026-08-09:
+            #
+            #   pekeris_env(α0=0.2)                    Re 2.1e-5  Im 7.9e-4
+            #   pekeris_env(αb=0.2)                    Re 1.6e-4  Im 5.8e-2
+            #   one_layer_env(α1=0.4)                  Re 3.0e-5  Im 8.1e-2
+            #   one_layer_env(α0=.1, α1=.4, αb=.1)     Re 4.3e-5  Im 8.7e-3
+            #
+            # The `α1` row disagrees by 8% and the pattern is *inverted* from the half-space cases:
+            # worst for the best-trapped mode (8.1%) and best for the near-cutoff one (0.4%). It is
+            # pure discretization, and it converges — refining Kraken.jl's mesh drives Julia's value
+            # onto Fortran's at first order, 8.1% → 4.0% → 1.9% → 0.88% → 0.36% for 20/40/80/160/320
+            # points per wavelength.
+            #
+            # First order, not second, because the integrand is *discontinuous*: α jumps at the
+            # sediment interface, and `modal_attenuation` runs one flat trapezoid over the whole
+            # flattened mesh, straddling that jump. `kraken.f90`'s `Normalize` integrates medium by
+            # medium with half-weights at each interface, which is the accurate treatment for a
+            # piecewise-continuous integrand. Mode 1 is worst because it barely penetrates the 20 m
+            # sediment, so its entire loss comes from an exponentially small tail sampled right where
+            # the quadrature is weakest.
+            #
+            # Fixing that means integrating per layer in `modal_attenuation` *and* in
+            # `normalize_mode` — they have to stay weighted alike — which changes the primal mode
+            # normalization and so is a solver change, not a docs one. Left as a follow-up on the
+            # plan rather than smuggled in here; the tolerances below are the honest current numbers.
+            std_lossy = [
+                (
+                    name="pekeris_env(α0=0.2)",
+                    env=() -> UnderwaterEnv(pekeris_env(; α0=0.2)...),
+                    kr_rtol=1e-4,
+                    α_rtol=5e-3,
+                ),
+                (
+                    name="pekeris_env(αb=0.2)",
+                    env=() -> UnderwaterEnv(pekeris_env(; αb=0.2)...),
+                    kr_rtol=1e-3,
+                    α_rtol=2e-1,
+                ),
+                (
+                    name="one_layer_env(α1=0.4)",
+                    env=() -> UnderwaterEnv(one_layer_env(; α1=0.4)...),
+                    kr_rtol=1e-4,
+                    α_rtol=2e-1,
+                ),
+                (
+                    name="one_layer_env(α0=0.1, α1=0.4, αb=0.1)",
+                    env=() -> UnderwaterEnv(one_layer_env(; α0=0.1, α1=0.4, αb=0.1)...),
+                    kr_rtol=1e-4,
+                    α_rtol=5e-2,
+                ),
+            ]
+
+            @testset "$(case.name)" for case in std_lossy
+                env = case.env()
+                @test is_lossy(env)
+                c = KR.compare_with_fortran(env, 100.0)
+                @test c.n_julia == c.n_fortran
+                @test c.n_julia > 0
+                @test KR.max_kr_reldiff(c) < case.kr_rtol
+                @test KR.min_mode_corr(c) > 0.999
+                @test KR.max_alpha_reldiff(c) < case.α_rtol
+                @test all(c.alpha_julia .< 0)
+                @test all(c.alpha_fortran .< 0)
+            end
+
+            # The keywords default to zero, so the canned environments are lossless unless asked --
+            # this is what keeps every pre-Milestone-5 result in this file unchanged.
+            for build in (pekeris_env, one_layer_env, one_layer_slope_env, two_layer_slope_env, munk_env)
+                @test !is_lossy(UnderwaterEnv(build()...))
             end
         end
 

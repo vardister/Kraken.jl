@@ -137,6 +137,20 @@ These are facts established by running the code, not assumptions. Tasks below re
   solve and it is what "parity with `kraken.exe`" actually means. The full complex/leaky-mode solve
   (`krakenc.exe` parity) is a deliberate stretch task at the end of that milestone.
 
+  **Validated in M5 (2026-08-09/10), with two limits worth carrying into M6+.** The two solvers agree
+  on `Im(kᵣ)` *to first order in α exactly* — the disagreement falls as α² to the `.mod`'s
+  single-precision floor. Above that, accuracy is bounded by two separate effects that hit opposite
+  ends of the mode spectrum: the half-space term's expansion parameter `2ω α_b/(c_b γ²)` blows up at
+  the bottom cutoff (worst for the *least*-trapped mode; only a complex solve fixes it), and the
+  single flat trapezoid across a discontinuous α is only first order (worst for the *best*-trapped
+  mode; task 5.7 fixes it). Neither affects `Re(kᵣ)`, which stays within 1e-4 throughout.
+
+- **A lossy solve is Zygote-only, and `α = 0` is a kink.** Discovered in 5.4. Mooncake cannot trace
+  the complex arithmetic attenuation introduces. And at exactly zero attenuation ForwardDiff and
+  Zygote return *opposite* one-sided derivatives without either raising — a discrete-branch effect in
+  `is_lossy`, in the same family as the mesh-schedule decision in `kraken_jl`. Both are documented at
+  the end of `src/kraken_ad.jl`; anything in M7 that differentiates a lossy field needs to know them.
+
 - **Elastic layers and interfacial roughness are out of scope.** Deselected during planning. They would turn
   the finite-difference scheme into a 4-field system and are the single largest addition; revisit after M8.
 
@@ -240,6 +254,16 @@ These are facts established by running the code, not assumptions. Tasks below re
   | not a KRAKEN deck at all (BELLHOP3D `'H'`/`'Q'` SSP options, malformed) | 20 | n/a |
 
   Attenuation alone unlocks more files than everything else combined — it is correctly ordered first.
+
+  **Outcome (M5.1, 2026-08-09):** it did. Coverage went from 65 to **167 of 402 files, 101 of them
+  lossy**, and `attenuation` no longer appears as a blocker at all. Two rows moved for reasons that
+  are not attenuation: `bottom half-space is not the fastest medium` rose 19 → 31 and
+  `interfacial roughness` fell 5 → 4, because files previously rejected on attenuation now get far
+  enough to be judged on something else — and because a bottom-option parsing bug was fixed
+  (`READ(ENVFile,*) BotOpt, Sigma` discards the rest of the record; the reader was taking the last
+  number on the line). What remains under an attenuation-shaped name is the *added volume*
+  attenuation laws (`TopOpt(4:4)`: Thorp, Francois-Garrison, biological, 27 files) and the
+  power-law unit `'m'` (1 file), which are separate features.
 
 - **A declared SSP interpolator is not automatically a blocker** (established during 3.7). A cubic
   spline through a *two-point* medium is the straight line, and any interpolator through an
@@ -1288,6 +1312,12 @@ met for weakly attenuating environments (`TLslices/atten.env`: 44 modes, Re 7.2e
   Task 5.6 (the full complex solve, `krakenc.exe` parity) is the answer for that regime — this is
   the concrete argument for promoting it from a stretch.
 
+The other half of the criterion — "and the M4 gradients still validate" — is met: `reverse_ad_tests.jl`
+is green throughout, and 5.4 added 50 assertions covering the new path. Two limits found there are
+worth carrying forward: at `α = 0` ForwardDiff and Zygote return *opposite* one-sided derivatives
+(both silently), and Mooncake cannot trace the complex path at all, so reverse mode over a lossy
+environment means Zygote. Both are written up under task 5.4.
+
 `VolAtt` turned out to be unusable for this comparison and was replaced by `TLslices/atten.env`:
 every `VolAtt` file puts an acousto-elastic half-space *above* the surface and gives the bottom the
 water's own sound speed, so there is no trapped spectrum at all — they are free-space transmission-
@@ -1354,7 +1384,7 @@ definition of these units:
   `test/README.md` is updated.
 - **Dependencies:** 5.2
 
-### 5.4 [ ] Keep AD working through the attenuation path
+### 5.4 [x] Keep AD working through the attenuation path *(completed 2026-08-10)*
 - **Files:** `src/kraken_ad.jl`, `test/reverse_ad_tests.jl`
 - **What:** The perturbation integral is a new differentiable path from the mode shapes and the attenuation
   profile to `imag(kr)`. It is traceable arithmetic, so it should need no new rule — but it makes `kr` complex,
@@ -1369,12 +1399,22 @@ definition of these units:
   dependency of `imag(kr)` on `env.α`, and without them `DataInterpolations`' own rule holds the
   knots fixed — a silently *wrong number*, which is the trap that survived tasks 4.2 and 4.3 before
   `kraken.exe` caught it. They are currently unexercised by any test; covering them is 5.4's job.
-- **Known gotcha found in 5.2:** `is_lossy` branches on the stored `α` values, so an `α` that is a
-  perturbed zero still reads as lossless and `d(imag(kr))/dα` at `α = 0` is one-sided. Differentiate
-  at a nonzero attenuation. This is the same class of discrete-decision-under-AD as the mesh
-  schedule in `kraken_jl`, and should be documented the same way.
+- **Known gotcha, corrected by measurement in 5.4:** `α = 0` is a genuine kink — `imag(kr)` is
+  identically zero below it and linear above — and the two AD modes take **opposite sides of it**,
+  silently. ForwardDiff's `iszero` on a `Dual` sees the seed, so `is_lossy` returns true and the
+  lossy branch is traced: it reports the *right-hand* derivative (-0.0372 on the Pekeris case).
+  Zygote evaluates `is_lossy` on the primal, gets false, and the attenuation path never reaches the
+  tape: it reports the *left-hand* one, zero. One hair above zero they agree to 1e-15. Differentiate
+  at a nonzero attenuation. (An earlier note here guessed the mechanism backwards — that forward
+  mode would report the zero. It does not.)
+- **Mooncake cannot differentiate a lossy solve.** The complex arithmetic in `add_attenuation`
+  (`sqrt` of a `Complex`) trips `ArgumentError: It is not permissible to bitcast to a differentiable
+  type during AD`. The failing call is inside Mooncake's own `Complex` handling, so no rule in
+  `src/kraken_ad.jl` fixes it; reverse mode over a lossy environment means Zygote today. The
+  lossless path is unaffected and both backends still cover it. Pinned as an explicit expected
+  failure so that Mooncake gaining complex support surfaces as a test flipping to green.
 
-### 5.5 [ ] Update standard environments and docs for attenuation
+### 5.5 [x] Update standard environments and docs for attenuation *(completed 2026-08-10)*
 - **Files:** `src/kraken_standard_environments.jl`, `docs/src/`, `README.md`
 - **What:** Add lossy variants of the standard environments (an `αb` keyword on `pekeris_env` and
   `one_layer_env`), and document the units convention and the perturbational approximation — including its
@@ -1382,6 +1422,30 @@ definition of these units:
   right tool. Remove "Compressional wave attenuation in environment" from the README's missing-features list.
 - **Acceptance:** Docs build; the lossy standard environments are covered by the cross-validation suite.
 - **Dependencies:** 5.4
+
+### 5.7 [ ] Integrate the perturbation and the normalization medium by medium
+- **Files:** `src/kraken_core.jl`, `test/fortran_reference_tests.jl`
+- **What:** `modal_attenuation` and `normalize_mode` both run a **single** `integral_trapz` over the
+  whole flattened depth mesh. Where the integrand is discontinuous — α jumps at the top of a lossy
+  sediment layer, and so does ρ — that quadrature is only *first order* in the mesh spacing.
+  `kraken.f90`'s `Normalize` instead integrates medium by medium with half-weights at each interface,
+  which is exact there. `props.zn_vec` is already per layer, so the change is to integrate each
+  layer's slice separately and sum. Both functions must change together: the perturbation is a ratio
+  against the normalization and they have to stay weighted alike.
+- **Why it matters (measured 2026-08-09, task 5.5):** on `one_layer_env(; α1=0.4)` the modal
+  attenuation disagrees with `kraken.exe` by **8%** on the best-trapped mode — and it is the
+  best-trapped mode precisely because its whole loss comes from an exponentially small tail inside
+  the sediment, sampled where the quadrature is weakest. The error is clean first order: 8.1% → 4.0%
+  → 1.9% → 0.88% → 0.36% at 20/40/80/160/320 points per wavelength, converging onto Fortran's value.
+  This is the *second* accuracy limit on `Im(kᵣ)`, entirely separate from the half-space cutoff term,
+  and unlike that one it is fixable without a complex solve.
+- **Acceptance:** `one_layer_env(; α1=0.4)` agrees with `kraken.exe` on `Im(kᵣ)` to better than 1e-2
+  at the default mesh, and the lossless cross-validation tolerances in
+  `"cross-validation against kraken.exe"` are unchanged or tighter.
+- **Watch out:** this changes the primal mode normalization, so `NormalModeSolution.modes` moves.
+  Mode *correlation* is normalization-invariant so those assertions should hold, but the Milestone 4
+  mode-shape gradient tests compare against ForwardDiff on the same primal and will simply follow.
+- **Dependencies:** 5.5
 
 ### 5.6 [ ] (Stretch) Full complex solve for leaky modes
 - **Files:** `src/kraken_core.jl`, `test/fortran_reference_tests.jl`

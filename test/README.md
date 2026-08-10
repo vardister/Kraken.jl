@@ -34,18 +34,19 @@ Per file, so a silent drop in coverage is visible in a diff. The M5 column is af
 Acoustics Toolbox checkout present, and was measured **per file** — the whole suite in one call is not
 obtainable through the MCP (see "Running the suite through the kaimon MCP" below):
 
-| File | End of M1 | End of M2 | End of M3 | End of M5.3 |
+| File | End of M1 | End of M2 | End of M3 | End of M5.5 |
 |---|---|---|---|---|
 | `environment_tests.jl` | 39 | 161 | 161 | 215 |
 | `integration_tests.jl` | 98 | 98 | 98 | 134 |
 | `numerical_methods_tests.jl` | 73 | 73 | 73 | 96 |
 | `automatic_differentiation_tests.jl` | 48 | 48 | 48 | 48 |
-| `reverse_ad_tests.jl` | — | — | — | 309 |
-| `fortran_reference_tests.jl` | — | — | 545 | 756 |
+| `reverse_ad_tests.jl` | — | — | — | 359 |
+| `fortran_reference_tests.jl` | — | — | 545 | 793 |
 | `performance_tests.jl` (opt-in) | 24 | 24 | 24 | 24 |
 
-**1558 in total at the end of task 5.3**, all green, measured file by file on 2026-08-09 with an
-Acoustics Toolbox checkout present.
+**1645 in total at the end of Milestone 5.5**, all green, measured file by file with an Acoustics
+Toolbox checkout present. (At the end of 5.3 it was 1558; 5.4 added 50 attenuation-AD assertions and
+5.5 added 37 for the lossy standard environments.)
 
 **Counting the TestItems files from a worktree needs a path filter.** `@run_package_tests` walks the
 whole package directory, and `.claude/worktrees/` is inside it — so a filter that only matches on
@@ -254,11 +255,69 @@ Three things about that spread are worth understanding before changing any of th
   for that regime. The volume term has no `γ` in it, which is why moving the same 0.5 dB/λ from the
   half-space into the water improves agreement by a factor of 12 on the same waveguide.
 
+#### A second, unrelated limit: quadrature at a discontinuity (task 5.5)
+
+The lossy *standard environments* added in 5.5 are in the suite too, and one of them exposed an
+accuracy limit that has nothing to do with the half-space cutoff above. Measured 2026-08-09 at 100 Hz:
+
+| environment | max rel Δ Re(kᵣ) | max rel Δ Im(kᵣ) | tolerance asserted |
+|---|---|---|---|
+| `pekeris_env(; α0=0.2)` | 2.1e-5 | 7.9e-4 | 1e-4 / 5e-3 |
+| `pekeris_env(; αb=0.2)` | 1.6e-4 | 5.8e-2 | 1e-3 / 2e-1 |
+| `one_layer_env(; α1=0.4)` | 3.0e-5 | **8.1e-2** | 1e-4 / 2e-1 |
+| `one_layer_env(; α0=0.1, α1=0.4, αb=0.1)` | 4.3e-5 | 8.7e-3 | 1e-4 / 5e-2 |
+
+The `α1` row is 8% out, and the pattern is **inverted** from the half-space cases — worst on the
+*best*-trapped mode (8.1%), best on the near-cutoff one (0.4%). It is not a formula difference: it is
+clean first-order discretization, and refining the mesh drives Julia's value onto Fortran's —
+
+| points per wavelength | 20 | 40 | 80 | 160 | 320 |
+|---|---|---|---|---|---|
+| rel Δ Im(kᵣ), mode 1 | 8.1e-2 | 4.0e-2 | 1.9e-2 | 8.8e-3 | 3.6e-3 |
+
+First order rather than second because the integrand is **discontinuous**: α jumps at the top of the
+sediment, and `modal_attenuation` runs one flat `integral_trapz` over the whole flattened mesh,
+straddling that jump. `kraken.f90`'s `Normalize` integrates medium by medium with half-weights at
+each interface, which is exact there. Mode 1 suffers most because it barely penetrates the 20 m
+sediment, so its entire loss comes from an exponentially small tail sampled right where the
+quadrature is weakest.
+
+Fixing it means integrating per layer in `modal_attenuation` **and** in `normalize_mode` — they are a
+ratio and have to stay weighted alike — which moves the primal mode normalization and so is a solver
+change. It is plan task 5.7, written up there with the numbers. Unlike the cutoff limit above, this
+one is fixable without a complex solve.
+
 `VolAtt`, named in the plan, is deliberately **not** in the table: every file in it puts an
 acousto-elastic half-space *above* the surface and gives the bottom the water's own sound speed, so
 there is no trapped spectrum to compare — they are free-space TL cases, not modal ones, and two of
 them additionally use `TopOpt(4:4)` volume-attenuation laws. `TLslices/atten.env` takes their place
 and is a better test anyway: 44 modes, loss in *both* media, and the only case exercising dB/(km·Hz).
+
+### AD through a lossy solve (plan task 5.4)
+
+`modal_attenuation` needed no rule of its own — it is traced arithmetic downstream of the two
+functions that carry rules — and Zygote agrees with ForwardDiff to ~1e-11 on the full parameter
+gradient of a lossy Pekeris solve, `∂/∂α` included. `"Reverse-mode AD through attenuation"` in
+`test/reverse_ad_tests.jl` is the 50 assertions that make that checkable. Two limits it pins:
+
+- **At `α = 0` the two AD modes return opposite one-sided derivatives, silently.** `imag(kᵣ)` is
+  identically zero below zero attenuation and linear above, so the point is a kink. ForwardDiff's
+  `iszero` on a `Dual` sees the seed, `is_lossy` takes the lossy branch, and it reports the
+  right-hand derivative (-0.0372 on the Pekeris case). Zygote evaluates `is_lossy` on the primal,
+  gets `false`, the attenuation path never reaches the tape, and it reports the left-hand one, zero.
+  One hair above zero they agree to 1e-15. **Differentiate at a nonzero attenuation.** If you are
+  chasing a "broken rule" because two backends disagree on an attenuation derivative, check this
+  first.
+- **Mooncake cannot trace the complex path.** `add_attenuation`'s `sqrt` of a `Complex` trips
+  `ArgumentError: It is not permissible to bitcast to a differentiable type during AD`. The failing
+  call is inside Mooncake's own `Complex` handling, so no rule in `src/kraken_ad.jl` fixes it —
+  reverse mode over a lossy environment means Zygote today. Pinned as a *specific* expected failure
+  matching on `"bitcast"`, so Mooncake gaining complex support shows up as that test going green.
+
+The convention, for anything downstream: **real parameters in, real loss out, complex only in
+between.** `sum(imag, kr)`, `sum(real, kr)` and `sum(abs2, kr)` all work on every backend. A
+complex-valued loss is refused by Zygote rather than resolved by picking a conjugation convention,
+and that refusal is asserted.
 
 ### AD validated against Fortran (plan task 4.7)
 

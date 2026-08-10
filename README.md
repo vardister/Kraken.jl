@@ -27,16 +27,74 @@ interface — nothing in this package links against Fortran code or ships a shar
 
 Across the five standard environments at 25–400 Hz, the largest relative wavenumber difference
 against `kraken.exe` is **2.7e-5** and the smallest mode-shape correlation is **0.99995**. Of the 402
-environment files shipped with the Acoustics Toolbox, 65 use only features Kraken.jl models today,
-and all 65 agree. See [`test/README.md`](test/README.md) for the per-environment table and for what
-blocks the other 337.
+environment files shipped with the Acoustics Toolbox, **167** use only features Kraken.jl models
+today — 101 of them lossy, which attenuation support unlocked. See [`test/README.md`](test/README.md)
+for the per-environment table, the attenuation comparison, and what blocks the rest.
 
 ## Missing features
-- [ ] Compressional wave attenuation in environment (blocks 114 of the Acoustics Toolbox test cases — the single largest gap)
 - [ ] Inclusion of shear wave properties in environment
 - [ ] Boundary conditions other than a pressure-release surface over a fluid half-space
 - [ ] SSP interpolation other than C-linear
+- [ ] Leaky modes — the full complex solve, `krakenc.exe`'s job (see the caveat under Attenuation)
+- [x] Compressional wave attenuation in environment
 - [x] Reverse-mode automatic differentiation
+
+## Attenuation
+
+An environment's `αp` column is read and used, and a lossy waveguide gives **complex** wavenumbers
+whose imaginary part is the modal attenuation:
+
+```julia
+env = UnderwaterEnv(pekeris_env(; αb=0.5)...)   # 0.5 dB per wavelength in the seabed
+sol = kraken_jl(env, 100.0)
+sol.kr            # ComplexF64; Im(kᵣ) < 0, so the mode decays with range
+imag(sol.kr[1])   # nepers per metre of range for mode 1
+```
+
+A lossless environment still returns real `Float64` wavenumbers, unchanged and bit-identical to
+before attenuation existed — the complex path is entered only when there is loss to model.
+
+Units follow KRAKEN's own six conventions, selected with `atten_units` and defaulting to
+dB/wavelength (`'W'`, KRAKEN's `TopOpt(3:3)`):
+
+| `atten_units` | `.env` char | meaning |
+|---|---|---|
+| `:nepers_per_m` | `N` | nepers/m |
+| `:dB_per_m` | `M` | dB/m |
+| `:dB_per_kmHz` | `F` | dB/(m·kHz), i.e. dB/(km·Hz) |
+| `:dB_per_wavelength` | `W` | dB/wavelength *(default)* |
+| `:Q` | `Q` | quality factor |
+| `:loss_parameter` | `L` | loss parameter |
+
+```julia
+UnderwaterEnv(pekeris_env(; α0=1e-3)...; atten_units=:nepers_per_m)
+```
+
+Four of the six depend on frequency, so an environment stores the value you gave it and converts at
+solve time — exactly as the Fortran's `CRCI` does.
+
+### The approximation, and where it runs out
+
+Attenuation is added by **first-order perturbation** of the real eigenvalue, which is what
+`kraken.exe` does; `krakenc.exe` is the separate program that solves the complex problem outright.
+The two agree to first order in α *exactly* — shrink α and the disagreement falls as α² until it hits
+the single precision of the reference file.
+
+Two things limit how accurately `Im(kᵣ)` comes out, and they bite on opposite ends of the mode
+spectrum:
+
+- **The perturbation is first order in `v = 2ω α_b/(c_b γ²)`**, not in `α_b`, and `γ → 0` at the
+  bottom cutoff — so a strongly attenuating seabed degrades the *least*-trapped mode first.
+  Agreement with `kraken.exe` runs from 1.8e-3 on a weakly attenuating waveguide to ~10% for a
+  near-cutoff mode over a 0.5 dB/λ seabed. Inherent to the method; the fix is the full complex solve.
+- **The perturbation integral is one trapezoid over the whole mesh**, so at a *discontinuity* in the
+  attenuation — the top of a lossy sediment layer — it is only first-order accurate in the mesh
+  spacing. This hits the *best*-trapped modes hardest: on `one_layer_env(; α1=0.4)` mode 1 is 8% out,
+  halving with every mesh doubling. `kraken.exe` integrates medium by medium, which is exact there;
+  Kraken.jl does not yet, so refine the mesh if a thin lossy layer is what you care about.
+
+Neither affects `Re(kᵣ)`, which stays within 1e-4 of `kraken.exe` throughout.
+[`test/README.md`](test/README.md) has the measured table.
 
 ## Installation
 
