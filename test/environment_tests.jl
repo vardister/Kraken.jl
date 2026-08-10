@@ -39,6 +39,120 @@ end
     @test density(ρ, 25.0) ≈ 1010.0  # Linear interpolation
 end
 
+@testitem "SampledAttenuation1D Construction and Evaluation" begin
+    using Kraken
+
+    depths = [0.0, 50.0, 100.0]
+    alphas = [0.0, 0.2, 0.6]
+
+    α = SampledAttenuation(depths, alphas)
+
+    @test attenuation(α, 0.0) ≈ 0.0
+    @test attenuation(α, 50.0) ≈ 0.2
+    @test attenuation(α, 100.0) ≈ 0.6
+    @test attenuation(α, 25.0) ≈ 0.1     # linear, like the other two profiles
+    @test attenuation(α, 75.0) ≈ 0.4
+
+    # Constant extrapolation past the ends, matching SampledSSP/SampledDensity.
+    @test attenuation(α, 200.0) ≈ 0.6
+    @test !occursin("type", sprint(show, α))    # `show` reaches its own fields, not a missing one
+end
+
+@testitem "M5.1: attenuation units convert to nepers/m as CRCI does" begin
+    using Kraken
+
+    # Every expected value below is the arithmetic written out in `CRCI` (Acoustics Toolbox
+    # `misc/AttenMod.f90`), transcribed independently here rather than calling the implementation --
+    # a test that reuses the function's own constants only checks that it is self-consistent.
+    c = 1500.0
+    freq = 250.0
+    ω = 2π * freq
+    α = 0.5
+
+    @test attenuation_nepers_per_m(α, c, freq, :nepers_per_m) == α
+    @test attenuation_nepers_per_m(α, c, freq, :dB_per_m) == α / 8.6858896
+    @test attenuation_nepers_per_m(α, c, freq, :dB_per_kmHz) == α * freq / 8685.8896
+    @test attenuation_nepers_per_m(α, c, freq, :dB_per_wavelength) == α * freq / (8.6858896 * c)
+    @test attenuation_nepers_per_m(α, c, freq, :Q) == ω / (2 * c * α)
+    @test attenuation_nepers_per_m(α, c, freq, :loss_parameter) == α * ω / c
+
+    # Sanity in physical terms: 1 dB/wavelength at 1500 m/s and 250 Hz is a 6 m wavelength, so the
+    # loss is 1 dB per 6 m = 1/(6 * 8.6859) nepers/m.
+    @test attenuation_nepers_per_m(1.0, c, freq, :dB_per_wavelength) ≈ 1 / ((c / freq) * 8.6858896)
+
+    # The frequency-independent conventions really are frequency independent, and the other four
+    # really are not.
+    for u in (:nepers_per_m, :dB_per_m)
+        @test attenuation_nepers_per_m(α, c, 10.0, u) == attenuation_nepers_per_m(α, c, 1000.0, u)
+    end
+    for u in (:dB_per_kmHz, :dB_per_wavelength, :loss_parameter)
+        @test attenuation_nepers_per_m(α, c, 1000.0, u) ≈ 100 * attenuation_nepers_per_m(α, c, 10.0, u)
+    end
+    # Q is a *quality* factor: bigger Q means less loss, and loss still scales with frequency.
+    @test attenuation_nepers_per_m(1000.0, c, freq, :Q) < attenuation_nepers_per_m(10.0, c, freq, :Q)
+
+    # KRAKEN's own degenerate guards: these mean "lossless", not "divide by zero".
+    @test attenuation_nepers_per_m(0.0, c, freq, :Q) == 0.0
+    @test attenuation_nepers_per_m(α, 0.0, freq, :dB_per_wavelength) == 0.0
+    @test attenuation_nepers_per_m(α, 0.0, freq, :loss_parameter) == 0.0
+    @test all(isfinite, [attenuation_nepers_per_m(0.0, c, freq, u) for u in values(ATTENUATION_UNIT_CHARS)])
+
+    # A lossless environment is lossless under every convention.
+    for u in values(ATTENUATION_UNIT_CHARS)
+        @test attenuation_nepers_per_m(0.0, c, freq, u) == 0.0
+    end
+
+    @test_throws ArgumentError attenuation_nepers_per_m(α, c, freq, :furlongs_per_fortnight)
+
+    # The character table is the one `ReadTopOpt` accepts, and covers all six conventions.
+    @test ATTENUATION_UNIT_CHARS['N'] === :nepers_per_m
+    @test ATTENUATION_UNIT_CHARS['M'] === :dB_per_m          # dB per METRE -- not dB/km
+    @test ATTENUATION_UNIT_CHARS['F'] === :dB_per_kmHz
+    @test ATTENUATION_UNIT_CHARS['W'] === :dB_per_wavelength
+    @test ATTENUATION_UNIT_CHARS['Q'] === :Q
+    @test ATTENUATION_UNIT_CHARS['L'] === :loss_parameter
+    @test length(ATTENUATION_UNIT_CHARS) == 6
+    @test DEFAULT_ATTENUATION_UNITS === :dB_per_wavelength
+
+    # dB/(m kHz) and dB/(km Hz) are the same quantity, which is why the one symbol serves both names.
+    @test attenuation_nepers_per_m(1.0, c, 1000.0, :dB_per_kmHz) ≈ 1.0 / 8.6858896
+end
+
+@testitem "M5.1: environments carry their attenuation and know when they are lossy" begin
+    using Kraken
+
+    env = UnderwaterEnv(pekeris_env()...)
+    @test !is_lossy(env)
+    @test env.αb == 0.0
+    @test all(iszero, env.α.α)
+    @test env.atten_units === DEFAULT_ATTENUATION_UNITS
+
+    # `pekeris_env` writes αb into sspHS[2, 5] and αp into ssp[:, 5]; both must reach the env.
+    ssp, layers, sspHS = pekeris_env()
+    sspHS[2, 5] = 0.5
+    lossy = UnderwaterEnv(ssp, layers, sspHS)
+    @test is_lossy(lossy)
+    @test lossy.αb == 0.5
+    @test occursin("lossy", sprint(show, lossy))
+
+    ssp2, layers2, sspHS2 = pekeris_env()
+    ssp2[:, 5] .= 0.01
+    watery = UnderwaterEnv(ssp2, layers2, sspHS2)
+    @test is_lossy(watery)
+    @test attenuation(watery.α, 50.0) ≈ 0.01
+
+    # The units are a construction-time choice and are carried, not guessed.
+    nepers = UnderwaterEnv(ssp, layers, sspHS; atten_units=:nepers_per_m)
+    @test nepers.atten_units === :nepers_per_m
+    @test occursin("nepers_per_m", sprint(show, nepers))
+
+    # The UnderwaterEnvFORTRAN path has to agree with the matrix path -- it is the same file layout.
+    envf = UnderwaterEnv(UnderwaterEnvFORTRAN(ssp, layers, sspHS); atten_units=:nepers_per_m)
+    @test envf.αb == lossy.αb
+    @test envf.atten_units === :nepers_per_m
+    @test envf.α.α == lossy.α.α
+end
+
 @testitem "UnderwaterEnv Construction" begin
     using Kraken
 

@@ -14,8 +14,9 @@ using ChainRulesCore: ignore_derivatives
 using DocStringExtensions
 
 # Exports
-export SampledSSP, SampledDensity
-export soundspeed, maxsoundspeed, density
+export SampledSSP, SampledDensity, SampledAttenuation
+export soundspeed, maxsoundspeed, density, attenuation
+export attenuation_nepers_per_m, ATTENUATION_UNIT_CHARS, DEFAULT_ATTENUATION_UNITS, is_lossy
 export UnderwaterEnv, AcousticProblemProperties, UnderwaterEnvFORTRAN
 export AcousticProblemCache, bisection, solve_for_kr, inverse_iteration, det_sturm, kraken_jl, find_kr, get_g
 export finite_difference_coefficients, mode_eigenvector, normalize_mode
@@ -127,6 +128,161 @@ function Base.show(io::IO, ρint::SampledDensity1D{T1,T2,T3}) where {T1,T2,T3}
     return print(io, "SampledDensity1D{", T1, ",", T2, ",", ρint.f, "}(", length(ρint.z), " points)")
 end
 
+### Attenuation Profile
+abstract type AttenuationProfile end
+abstract type SampledAttenuation <: AttenuationProfile end
+
+"""
+$(TYPEDEF)
+Attenuation profile based on measurements at discrete depths `z` in meters and attenuation `α`.
+
+`α` is stored in **whatever units the environment declared** — the sixth column of a KRAKEN `.env`
+SSP record means six different things depending on the third character of the top-option string, and
+four of the six conversions need the frequency, which an environment does not know. The conversion
+happens at solve time; see [`attenuation_nepers_per_m`](@ref) and `UnderwaterEnv`'s `atten_units`.
+"""
+struct SampledAttenuation1D{T1,T2,T3} <: SampledAttenuation
+    z::Vector{T1}
+    α::Vector{T2}
+    f::T3
+    function SampledAttenuation1D(depth, α, f)
+        interp = f(α, depth; extrapolation=ExtrapolationType.Constant)
+        return new{eltype(depth),eltype(α),typeof(interp)}(-depth, α, interp)
+    end
+end
+
+"""
+    SampledAttenuation(depth, α)
+
+Constructor for `SampledAttenuation1D`.
+
+Create an attenuation profile sampled at discrete depths `z` in meters. Interpolation is linear, to
+match [`SampledSSP`](@ref) and [`SampledDensity`](@ref) — the three profiles are evaluated on the
+same mesh and a different interpolator here would put the attenuation somewhere the sound speed is
+not.
+"""
+SampledAttenuation(depth, α) = SampledAttenuation1D(depth, α, DataInterpolations.LinearInterpolation)
+SampledAttenuation(depth, α, type::Symbol) = SampledAttenuation1D(depth, α, type)
+
+function Base.show(io::IO, αint::SampledAttenuation1D{T1,T2,T3}) where {T1,T2,T3}
+    return print(io, "SampledAttenuation1D{", T1, ",", T2, ",", αint.f, "}(", length(αint.z), " points)")
+end
+
+"""
+    attenuation(α::AttenuationProfile, z)
+
+Get the attenuation at depth `z`, in the profile's own declared units. `z` is generally negative,
+since the sea surface is the datum and the z-axis points upwards — the same convention as
+[`soundspeed`](@ref) and [`density`](@ref).
+"""
+function attenuation end
+
+attenuation(α::SampledAttenuation1D, z) = α.f(z)
+
+### Attenuation units
+#
+# KRAKEN puts the attenuation *units* in the third character of the top-option string, and the sixth
+# column of every SSP record is then read in those units. The conversions below are transcribed from
+# `CRCI` in the Acoustics Toolbox's `misc/AttenMod.f90`, which is the definition — not a formula
+# re-derived from the physics that happens to agree.
+#
+# Two of them are worth flagging, because guessing gets them wrong:
+#
+#   * `'M'` is dB per **metre**, not dB/km (`alphaT = alpha / 8.6858896`). The plan's deliverable
+#     table said dB/km; the Fortran says otherwise and the Fortran is what `kraken.exe` runs.
+#   * `'F'` is dB/(m·kHz) (`alphaT = alpha * freq / 8685.8896`, freq in Hz), which is the *same*
+#     quantity as dB/(km·Hz) — the OALIB case that uses it is titled ".001dB/kmHz". The symbol name
+#     here keeps the plan's `:dB_per_kmHz`.
+#
+# `'m'` (dB/m with a frequency power law) is a seventh option in the modern toolbox. It needs two
+# extra parameters per medium that are read from records this package does not model, so it is
+# deliberately absent from the table below and the `.env` reader names it as unsupported rather than
+# silently reading it as `'M'`.
+
+"""
+Nepers per decibel: `1 / 8.6858896`. `8.6858896 = 20 / log(10)` is the constant KRAKEN's `CRCI`
+spells out, and it is used here to the same digits so the two agree exactly rather than nearly.
+"""
+const DB_PER_NEPER = 8.6858896
+
+"""
+`1000 * DB_PER_NEPER`, spelled out as its own literal rather than computed.
+
+`CRCI` writes `8685.8896` for the dB/(m·kHz) case and `8.6858896` for the dB/m one, and
+`1000 * 8.6858896` is not bit-identical to `8685.8896` in floating point. Transcribing both literals
+makes the Julia conversion agree with the Fortran to the last bit instead of to fifteen digits.
+"""
+const DB_PER_NEPER_KHZ = 8685.8896
+
+"""
+Map from the attenuation-unit character in a KRAKEN top-option string (`TopOpt(3:3)`) to the symbol
+[`attenuation_nepers_per_m`](@ref) accepts. See the note above for the two that are easy to misread.
+"""
+const ATTENUATION_UNIT_CHARS = Dict(
+    'N' => :nepers_per_m,
+    'M' => :dB_per_m,
+    'F' => :dB_per_kmHz,
+    'W' => :dB_per_wavelength,
+    'Q' => :Q,
+    'L' => :loss_parameter,
+)
+
+"""
+The default attenuation units: `'W'`, dB per wavelength.
+
+This is KRAKEN's most common choice and the one [`DEFAULT_TOPOPT`] in the test-only `.env` writer
+already emitted while every `αp` was zero, so it is the value that keeps existing environments
+reading exactly as they did.
+"""
+const DEFAULT_ATTENUATION_UNITS = :dB_per_wavelength
+
+"""
+    attenuation_nepers_per_m(α, c, freq, units::Symbol)
+
+Convert an attenuation `α` given in `units` into nepers per metre, at sound speed `c` (m/s) and
+frequency `freq` (Hz).
+
+`units` is one of `:nepers_per_m`, `:dB_per_m`, `:dB_per_kmHz`, `:dB_per_wavelength`, `:Q`,
+`:loss_parameter` — the six conventions `CRCI` implements, keyed off `TopOpt(3:3)` (see
+[`ATTENUATION_UNIT_CHARS`](@ref)).
+
+| symbol | char | meaning | conversion |
+|---|---|---|---|
+| `:nepers_per_m` | `N` | nepers/m | `α` |
+| `:dB_per_m` | `M` | dB/m | `α / 8.6858896` |
+| `:dB_per_kmHz` | `F` | dB/(m·kHz), i.e. dB/(km·Hz) | `α · freq / 8685.8896` |
+| `:dB_per_wavelength` | `W` | dB/wavelength | `α · freq / (8.6858896 · c)` |
+| `:Q` | `Q` | quality factor | `ω / (2 c α)` |
+| `:loss_parameter` | `L` | loss parameter | `α · ω / c` |
+
+Four of the six depend on frequency, which is why an environment stores the raw values and this
+conversion happens inside the solve. The degenerate guards (`c == 0`, `c·α == 0`) are KRAKEN's own
+and return zero rather than a division by zero — `Q = 0` in particular is how a lossless medium is
+spelled under that convention, so it has to mean "no loss" and not `Inf`.
+"""
+function attenuation_nepers_per_m(α, c, freq, units::Symbol)
+    T = float(promote_type(typeof(α), typeof(c), typeof(freq)))
+    ω = 2pi * freq
+    if units === :nepers_per_m
+        return convert(T, α)
+    elseif units === :dB_per_m
+        return convert(T, α / DB_PER_NEPER)
+    elseif units === :dB_per_kmHz
+        return convert(T, α * freq / DB_PER_NEPER_KHZ)
+    elseif units === :dB_per_wavelength
+        return iszero(c) ? zero(T) : convert(T, α * freq / (DB_PER_NEPER * c))
+    elseif units === :Q
+        return iszero(c * α) ? zero(T) : convert(T, ω / (2 * c * α))
+    elseif units === :loss_parameter
+        return iszero(c) ? zero(T) : convert(T, α * ω / c)
+    end
+    return throw(
+        ArgumentError(
+            "Unknown attenuation units $(repr(units)); expected one of $(sort(collect(values(ATTENUATION_UNIT_CHARS))))"
+        ),
+    )
+end
+
 ### Underwater Environment
 
 """
@@ -156,9 +312,14 @@ function Base.show(io::IO, ::UnderwaterEnvFORTRAN{T}) where {T}
 end
 
 """
-Underwater environment containing the sound speed profile and density profile.
+Underwater environment containing the sound speed profile, density profile and attenuation profile.
+
+`α` and `αb` are the water-column and half-space attenuations in the units named by `atten_units`;
+nothing converts them until a frequency is known. An environment whose attenuations are all zero is
+lossless and [`kraken_jl`](@ref) then returns real wavenumbers, exactly as it did before attenuation
+existed — see [`is_lossy`](@ref).
 """
-struct UnderwaterEnv{T1<:SoundSpeedProfile,T2<:DensityProfile,T3<:Real}
+struct UnderwaterEnv{T1<:SoundSpeedProfile,T2<:DensityProfile,T3<:Real,T4<:AttenuationProfile}
     c::T1
     ρ::T2
     cb::T3
@@ -166,6 +327,9 @@ struct UnderwaterEnv{T1<:SoundSpeedProfile,T2<:DensityProfile,T3<:Real}
     h_vec::Vector{T3}
     layer_depth::Vector{T3}
     depth::T3
+    α::T4
+    αb::T3
+    atten_units::Symbol
 end
 
 """
@@ -182,15 +346,19 @@ already the sole input to `get_thickness`, which sizes the finite-difference mes
 is only samples *within* those media. They coincide in every well-formed environment, but when they
 disagree it is `ssp` that is short or long, not `layers` that is wrong.
 """
-function UnderwaterEnv(ssp, layers, sspHS)
+function UnderwaterEnv(ssp, layers, sspHS; atten_units::Symbol=DEFAULT_ATTENUATION_UNITS)
     c = SampledSSP(ssp[:, 1], ssp[:, 2])
     ρ = SampledDensity(ssp[:, 1], ssp[:, 4])
+    α = SampledAttenuation(ssp[:, 1], ssp[:, 5])
     ρb = sspHS[2, 4]
     cb = sspHS[2, 2]
+    αb = sspHS[2, 5]
     layer_thickness = get_thickness(layers)
     layer_depth = layers[:, 3]
     depth = layers[end, 3]
-    return UnderwaterEnv{typeof(c),typeof(ρ),typeof(cb)}(c, ρ, cb, ρb, layer_thickness, layer_depth, depth)
+    return UnderwaterEnv{typeof(c),typeof(ρ),typeof(cb),typeof(α)}(
+        c, ρ, cb, ρb, layer_thickness, layer_depth, depth, α, αb, atten_units
+    )
 end
 
 """
@@ -198,20 +366,39 @@ end
 
 Constructor for `UnderwaterEnv` using the `UnderwaterEnvFORTRAN` struct.
 """
-function UnderwaterEnv(krak_ssp::UnderwaterEnvFORTRAN{T}) where {T}
+function UnderwaterEnv(krak_ssp::UnderwaterEnvFORTRAN{T}; atten_units::Symbol=DEFAULT_ATTENUATION_UNITS) where {T}
     c = SampledSSP(krak_ssp.ssp[:, 1], krak_ssp.ssp[:, 2])
     ρ = SampledDensity(krak_ssp.ssp[:, 1], krak_ssp.ssp[:, 4])
+    α = SampledAttenuation(krak_ssp.ssp[:, 1], krak_ssp.ssp[:, 5])
     ρb = krak_ssp.sspHS[2, 4]
     cb = krak_ssp.sspHS[2, 2]
+    αb = krak_ssp.sspHS[2, 5]
     layer_thickness = get_thickness(krak_ssp.layers)
     layer_depth = krak_ssp.layers[:, 3]
     depth = krak_ssp.layers[end, 3]  # see the note on the (ssp, layers, sspHS) constructor
-    return UnderwaterEnv{typeof(c),typeof(ρ),T}(c, ρ, cb, ρb, layer_thickness, layer_depth, depth)
+    return UnderwaterEnv{typeof(c),typeof(ρ),T,typeof(α)}(
+        c, ρ, cb, ρb, layer_thickness, layer_depth, depth, α, αb, atten_units
+    )
 end
 
-function Base.show(io::IO, ::UnderwaterEnv{T1,T2,T3}) where {T1,T2,T3}
-    return print(io, "UnderwaterEnv{$T1, $T2, $T3}")
+function Base.show(io::IO, env::UnderwaterEnv{T1,T2,T3,T4}) where {T1,T2,T3,T4}
+    return print(io, "UnderwaterEnv{$T1, $T2, $T3}", is_lossy(env) ? " (lossy, $(env.atten_units))" : "")
 end
+
+"""
+    is_lossy(env::UnderwaterEnv) -> Bool
+
+Whether `env` declares any attenuation at all, in the water column or in the bottom half-space.
+
+This is the switch that decides whether [`kraken_jl`](@ref) returns complex wavenumbers or real ones.
+It is deliberately a test on the *stored* values rather than on the converted ones: `Q = 0` converts
+to zero nepers/m and `α = 0` does too, so both spellings of "lossless" take the same branch.
+
+Under AD this is a discrete decision on a parameter value, in the same family as the mesh-schedule
+choice in `kraken_jl`. An environment whose `α` is a perturbed zero is still lossless here, so the
+derivative of `imag(kr)` at `α = 0` is one-sided; differentiate at a nonzero attenuation instead.
+"""
+is_lossy(env::UnderwaterEnv) = any(!iszero, env.α.α) || !iszero(env.αb)
 
 ### Sound Speed and Density Functions to extract values from profiles at a give depth from profiles
 """

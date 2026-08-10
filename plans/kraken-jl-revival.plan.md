@@ -1289,7 +1289,7 @@ must all be supported at parse time, because OALIB test cases use several of the
 | `sspHS` row 2 column 5 | `Float64` | `0.0` | Halfspace attenuation |
 | `NormalModeSolution.kr` | `Vector{ComplexF64}` when lossy | — | Real part unchanged; imaginary part is modal attenuation |
 
-### 5.1 [ ] Parse and normalize attenuation to nepers/m
+### 5.1 [x] Parse and normalize attenuation to nepers/m *(completed 2026-08-09)*
 - **Files:** `src/kraken_core.jl`, `src/kraken_standard_environments.jl`, `test/reference/env_reader.jl`
 - **What:** Add an attenuation profile to `UnderwaterEnv` alongside the sound-speed and density profiles,
   populated from ssp column 5 and the halfspace row. Implement conversion from each of KRAKEN's six unit

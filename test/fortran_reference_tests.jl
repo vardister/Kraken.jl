@@ -797,6 +797,104 @@ const KR = KrakenReference
                 @test KR.read_env_file(joinpath(@__DIR__, "standard_envs", "Pekeris_AV.env")).topopt[1] == 'S'
             end
 
+            @testset "M5.1: attenuation units are read off the top-option string" begin
+                # `read_env_file` builds a minimal deck for each unit character so the mapping is
+                # tested without needing a toolbox checkout. Column 3 of TOPOPT is the unit; the
+                # value in SSP column 5 is carried through unchanged, because converting it needs a
+                # frequency and the environment does not have one.
+                function deck(topopt, αp, αb)
+                    return """
+                    'units probe'
+                    100.0
+                    1
+                    '$topopt'
+                    0  0.0  100.0
+                         0.0  1500.0  0.0  1.0  $αp  0.0 /
+                       100.0  1500.0  0.0  1.0  $αp  0.0 /
+                    'A'  0.0
+                       100.0  1600.0  0.0  1.5  $αb  0.0 /
+                    1400.0  1600.0
+                    10.0
+                    """
+                end
+                mktempdir() do dir
+                    for (char, units) in KR.Kraken.ATTENUATION_UNIT_CHARS
+                        path = joinpath(dir, "units_$char.env")
+                        write(path, deck("CV$char", 0.02, 0.5))
+                        parsed = KR.read_env_file(path)
+                        @test parsed.atten_units === units
+                        @test parsed.env.atten_units === units
+                        @test parsed.env.αb == 0.5
+                        @test all(≈(0.02), parsed.env.α.α)
+                        @test is_lossy(parsed.env)
+                    end
+
+                    # A zero attenuation is still lossless whatever the declared units are.
+                    path = joinpath(dir, "lossless.env")
+                    write(path, deck("CVW", 0.0, 0.0))
+                    @test !is_lossy(KR.read_env_file(path).env)
+
+                    # An unusable units character is rejected rather than defaulted -- `ReadTopOpt`
+                    # calls ERROUT on exactly the same input, so a file we accepted here would be one
+                    # kraken.exe refuses to run.
+                    for bad in ("CVX", "CV")
+                        path = joinpath(dir, "bad.env")
+                        write(path, deck(bad, 0.0, 0.0))
+                        err = try
+                            KR.read_env_file(path)
+                            nothing
+                        catch e
+                            e
+                        end
+                        @test err isa KR.MalformedEnvFile
+                        @test occursin("attenuation-units", sprint(showerror, err))
+                    end
+
+                    # 'm' is the seventh convention -- dB/m with a power law -- and needs per-medium
+                    # parameters this reader does not model. It must be named, not read as 'M'.
+                    path = joinpath(dir, "powerlaw.env")
+                    write(path, deck("CVm", 0.1, 0.1))
+                    err = try
+                        KR.read_env_file(path)
+                        nothing
+                    catch e
+                        e
+                    end
+                    @test err isa KR.UnsupportedEnvFeature
+                    @test err.feature == "power-law attenuation"
+                end
+            end
+
+            @testset "M5.1: the bottom-option record ends after SIGMA" begin
+                # `READ( ENVFile, * ) BotOpt, Sigma` takes two items and discards the rest of the
+                # record. SedAtten/calibS_0.6dB.env writes `'A'  0.0 2.5 2000`; reading the *last*
+                # number as the roughness made that file look like it had 2 km of interfacial
+                # roughness and rejected it.
+                mktempdir() do dir
+                    path = joinpath(dir, "trailing.env")
+                    write(
+                        path,
+                        """
+                        'trailing values on the bottom record'
+                        250.0
+                        1
+                        'CVW'
+                        0  0.0  100.0
+                             0.0  1500.0  0.0  1.0  0.0  0.0 /
+                           100.0  1500.0  0.0  1.0  0.0  0.0 /
+                        'A'  0.0 2.5 2000
+                           100.0  1590.0  0.0  1.2  0.5  0.0 /
+                        1400.0  1590.0
+                        30.0
+                        """,
+                    )
+                    parsed = KR.read_env_file(path)
+                    @test parsed.sigmas == [0.0, 0.0]
+                    @test parsed.env.αb == 0.5
+                    @test parsed.env.cb == 1590.0
+                end
+            end
+
             @testset "a non-KRAKEN deck is rejected cleanly" begin
                 mktempdir() do dir
                     path = joinpath(dir, "bellhop.env")
@@ -846,6 +944,44 @@ const KR = KrakenReference
                     @test KR.min_mode_corr(c) > 0.999
                 end
 
+                @testset "M5.1: the toolbox's own attenuation cases parse" begin
+                    # These are the files the milestone is aimed at, read in place (GPL-3 tree, MIT
+                    # package). Each row is what the .env actually declares -- checked by eye against
+                    # the file, not against the reader.
+                    atten_cases = [
+                        (file="SedAtten/calibK.env", units=:dB_per_wavelength, αb=0.5, αp=0.0, freq=250.0),
+                        (file="SedAtten/calibS_0.6dB.env", units=:dB_per_wavelength, αb=0.6, αp=0.0, freq=250.0),
+                        (file="SedAtten/calibS_noloss.env", units=:dB_per_wavelength, αb=0.0, αp=0.0, freq=250.0),
+                        (file="TLslices/atten.env", units=:dB_per_kmHz, αb=0.001, αp=0.001, freq=10.0),
+                    ]
+                    @testset "$(case.file)" for case in atten_cases
+                        path = joinpath(oalib_tree, case.file)
+                        if !isfile(path)
+                            @info "Not present in this Acoustics Toolbox checkout — skipped." path
+                            continue
+                        end
+                        parsed = KR.read_env_file(path)
+                        @test parsed.atten_units === case.units
+                        @test parsed.env.αb ≈ case.αb
+                        @test all(≈(case.αp), parsed.env.α.α)
+                        @test parsed.freqs[1] == case.freq
+                        @test is_lossy(parsed.env) == (case.αb > 0 || case.αp > 0)
+                    end
+
+                    # The power-law variant is named rather than mis-read as plain dB/m.
+                    powlaw = joinpath(oalib_tree, "SedAtten/calibS_PowLaw.env")
+                    if isfile(powlaw)
+                        err = try
+                            KR.read_env_file(powlaw)
+                            nothing
+                        catch e
+                            e
+                        end
+                        @test err isa KR.UnsupportedEnvFeature
+                        @test err.feature == "power-law attenuation"
+                    end
+                end
+
                 @testset "categorized report over the whole tree" begin
                     report = KR.categorize_env_tree(oalib_tree)
                     @test report.total > 100
@@ -853,10 +989,13 @@ const KR = KrakenReference
                     # Every rejection carries a reason; that list is the Milestone 5/6 backlog.
                     @test !isempty(report.unsupported)
                     @test all(!isempty, values(report.unsupported))
-                    @test haskey(report.unsupported, "attenuation")
+                    # Plain compressional attenuation stopped being a blocker in Milestone 5.1 --
+                    # what remains under that name is the power law and the added volume-attenuation
+                    # laws (Thorp, Francois-Garrison, biological), which are separate features.
+                    @test !haskey(report.unsupported, "attenuation")
                     text = sprint(KR.print_env_tree_report, report)
                     @test occursin("Scanned $(report.total) .env files", text)
-                    @test occursin("attenuation", text)
+                    @test occursin("boundary", text)
                     @info "Acoustics Toolbox coverage\n" * text
                 end
             end

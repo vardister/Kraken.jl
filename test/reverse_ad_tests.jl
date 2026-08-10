@@ -31,10 +31,10 @@ using Random: AbstractRNG
 # Needed because ForwardDiff has to perturb `cb`, `ρb` and `freq` *without* rebuilding the cache —
 # that is exactly the partial derivative the rule computes for the half-space term.
 
-function env_with(env; cb=env.cb, ρb=env.ρb)
-    T = promote_type(typeof(cb), typeof(ρb))
-    return UnderwaterEnv{typeof(env.c),typeof(env.ρ),T}(
-        env.c, env.ρ, T(cb), T(ρb), T.(env.h_vec), T.(env.layer_depth), T(env.depth)
+function env_with(env; cb=env.cb, ρb=env.ρb, αb=env.αb)
+    T = promote_type(typeof(cb), typeof(ρb), typeof(αb))
+    return UnderwaterEnv{typeof(env.c),typeof(env.ρ),T,typeof(env.α)}(
+        env.c, env.ρ, T(cb), T(ρb), T.(env.h_vec), T.(env.layer_depth), T(env.depth), env.α, T(αb), env.atten_units
     )
 end
 
