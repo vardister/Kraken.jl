@@ -1,0 +1,934 @@
+Notebook[{
+
+Cell["Implicit Differentiation in Kraken.jl", "Title"],
+
+Cell["How the reverse-mode rules were derived, and why they are what they \
+are", "Subtitle"],
+
+Cell["\<\
+Kraken.jl finds a horizontal wavenumber by bracketing a root and iterating on \
+it, and a mode shape by inverse-iterating a tridiagonal system in place. \
+Neither is something a reverse-mode tape can follow, and neither is something \
+it should follow: taping a root search differentiates the search, not the \
+root.
+
+So the solver is not traced. Four explicit rules are attached at its seams, \
+and everything behind them becomes opaque. This notebook derives each of those \
+rules from scratch, checks it symbolically where that is possible and \
+numerically where it is not, and draws the object it describes.
+
+The four rules, in the order they are built here:
+
+  1.  solve_for_kr      - the implicit function theorem on the Sturm determinant
+  2.  the adjoint sweep - all N coefficient derivatives in one backward pass
+  3.  mode_eigenvector  - eigenvector perturbation theory, as a projected solve
+  4.  soundspeed/density - the linear interpolant, including its knots
+
+together with a fifth question that matters as much: what is deliberately NOT \
+differentiated, and why that is a choice rather than an omission.\
+\>", "Text"],
+
+Cell["\<\
+A note on what is checked. Every numerical value this notebook produces for \
+the Pekeris case was cross-checked against the running Julia implementation \
+while it was written: the finite-difference coefficients agree exactly, the \
+five wavenumbers agree to 9.3e-16 relative, and the sensitivity D_kr agrees to \
+5e-12. Where the notebook claims agreement, evaluate the cell and look at the \
+number - none of them are quoted from memory.\
+\>", "Text"],
+
+Cell["1. The discretized problem", "Section"],
+
+Cell["\<\
+Separating the wave equation in depth leaves an eigenvalue problem in z. \
+Discretizing it on a mesh of N points with second-order finite differences \
+turns it into a symmetric tridiagonal system
+
+    M(kr, theta) psi = 0
+
+where theta is everything the environment supplies. Three vectors carry that \
+dependence, and they are the only route by which the environment reaches the \
+solver:
+
+    a[k]    - the main diagonal, from the sound speed and density at mesh point k
+    e[k]    - the off-diagonal coupling between points k-1 and k
+    lam[k]  - the factor multiplying kr^2
+
+The bottom half-space is not meshed. It enters through a single boundary term \
+g in the last row, which is the only place kr appears other than through \
+lam.\
+\>", "Text"],
+
+Cell["\<\
+aElem[c_, rho_, f_, h_] := (-2 + h^2 (2 Pi f/c)^2)/(h rho);
+eElem[rho_, h_] := 1/(h rho);
+gOf[kr_, f_, cb_, rhob_] := Sqrt[kr^2 - (2 Pi f/cb)^2]/rhob;
+
+(* One isovelocity layer over a fluid half-space: the Pekeris waveguide. *)
+pekerisCoeffs[nz_, dep_, c0_, rho0_, f_] := Module[{h, aV, eV, s, lamV},
+   h = dep/nz;
+   aV = Table[aElem[c0, rho0, f, h], {nz}];
+   eV = Table[eElem[rho0, h], {nz}];
+   s = eV h^2;
+   lamV = Append[Table[(s[[j]] + s[[j + 1]])/2, {j, nz - 1}], Last[eV] h^2/2];
+   {aV, eV, lamV}];\
+\>", "Input"],
+
+Cell["1.1 The Sturm recurrence is the determinant", "Subsection"],
+
+Cell["\<\
+The solver never forms M. It evaluates a three-term recurrence
+
+    p[k] = (kr^2 lam[k] - alpha[k]) p[k-1] - e[k]^2 p[k-2],   p[0] = 1, p[-1] = 0
+
+with alpha[k] = a[k], except in the last row where the half-space boundary \
+condition replaces it by a[N]/2 - g. This is the Sturm sequence, and the claim \
+that justifies everything downstream is that its last term is the determinant \
+of M up to sign. Worth checking rather than believing.\
+\>", "Text"],
+
+Cell["\<\
+sturmD[n_, a_, e_, lam_, kr_, g_] := Module[{p0 = 0, p1 = 1, p2, alpha, j},
+   For[j = 1, j <= n, j++,
+    alpha = If[j == n, a[[j]]/2 - g, a[[j]]];
+    p2 = (kr^2 lam[[j]] - alpha) p1 - e[[j]]^2 p0;
+    p0 = p1; p1 = p2];
+   p1];
+
+shiftedM[n_, a_, e_, lam_, kr_, g_] := Module[{d, m, j},
+   d = Table[If[j == n, a[[n]]/2 - kr^2 lam[[n]] - g, a[[j]] - kr^2 lam[[j]]], {j, n}];
+   m = DiagonalMatrix[d];
+   Do[m[[j - 1, j]] = e[[j]]; m[[j, j - 1]] = e[[j]], {j, 2, n}];
+   m];
+
+n4 = 4;
+av = Array[aa, n4]; ev = Array[ee, n4]; lv = Array[ll, n4];
+Dsym = sturmD[n4, av, ev, lv, kr, g];
+Msym = shiftedM[n4, av, ev, lv, kr, g];
+Column[{MatrixForm[Msym], Simplify[Dsym - (-1)^n4 Det[Msym]]}]\
+\>", "Input"],
+
+Cell["\<\
+The difference is exactly zero. The recurrence is the determinant, so a \
+wavenumber is a root of det M, and the rule to be derived is a rule for how a \
+root moves.\
+\>", "Text"],
+
+Cell["1.2 A concrete waveguide", "Subsection"],
+
+Cell["\<\
+100 m of water at 1500 m/s and 1000 kg/m^3 over a half-space at 1600 m/s and \
+1500 kg/m^3, at 100 Hz. Kraken.jl meshes this with 125 points at 0.8 m \
+spacing, which is what is used here so the two can be compared directly.\
+\>", "Text"],
+
+Cell["\<\
+$nz = 125; $dep = 100.; $c0 = 1500.; $rho0 = 1000.;
+$cb = 1600.; $rhob = 1500.; $f = 100.;
+{aN, eN, lN} = pekerisCoeffs[$nz, $dep, $c0, $rho0, $f];
+
+(* Kraken.jl reports exactly these four numbers for the same case. *)
+Grid[{{\"\", \"this notebook\", \"Kraken.jl\"},
+      {\"a[1]\", aN[[1]], -0.0023596322929622846},
+      {\"e[1]\", eN[[1]], 0.00125},
+      {\"lam[1]\", lN[[1]], 0.0008000000000000001},
+      {\"lam[N]\", lN[[-1]], 0.0004000000000000001}}, Frame -> All]\
+\>", "Input"],
+
+Cell["1.3 Why the sequence has to be rescaled", "Subsection"],
+
+Cell["\<\
+The recurrence is a product of 125 transfer matrices, and its terms span a \
+range no floating-point format holds. Evaluated in machine arithmetic the \
+sequence underflows to zero long before the last row, and the determinant \
+comes back as a denormal or a hard zero - which is why the solver rescales.
+
+Below the sequence is evaluated at 60-digit precision so its true dynamic \
+range is visible.\
+\>", "Text"],
+
+Cell["\<\
+unscaledSeq[kr_, prec_: 60] := Module[{p0 = 0, p1 = 1, p2, alpha, out = {}, aH, eH, lH, gH, kH},
+   aH = SetPrecision[aN, prec]; eH = SetPrecision[eN, prec];
+   lH = SetPrecision[lN, prec]; kH = SetPrecision[kr, prec];
+   gH = SetPrecision[gOf[kr, $f, $cb, $rhob], prec];
+   Do[alpha = If[j == $nz, aH[[j]]/2 - gH, aH[[j]]];
+      p2 = (kH^2 lH[[j]] - alpha) p1 - eH[[j]]^2 p0;
+      AppendTo[out, p2]; p0 = p1; p1 = p2, {j, 1, $nz}];
+   out];
+
+seq = Abs[unscaledSeq[0.41]];
+
+(* Compare the tail against the smallest number machine arithmetic can hold.
+   The sequence changes sign as it goes - those are the mode counts - so the
+   minimum of |p| is a sign crossing, not the trend. The last term is the
+   honest measure of where this ends up. *)
+Column[{
+  Row[{\"largest |p[k]|          : \", N[Max[seq], 3]}],
+  Row[{\"final  |p[N]|           : \", N[Last[seq], 3]}],
+  Row[{\"smallest normal Real64  : \", $MinMachineNumber}],
+  ListLogPlot[seq, Joined -> True, PlotRange -> All,
+   AxesLabel -> {\"mesh point k\", \"|p[k]|\"},
+   PlotLabel -> \"Unscaled Sturm sequence, evaluated at 60 digits\",
+   ImageSize -> 520]}]\
+\>", "Input"],
+
+Cell["\<\
+Hence scale_const: whenever the running pair would leave a safe window it is \
+multiplied by 1e20 or 1e-20. The rescaled sequence has the same sign pattern \
+and the same roots, and Section 2.2 shows that the rescaling also leaves every \
+derivative of the root untouched.\
+\>", "Text"],
+
+Cell["\<\
+(* The rescaled recurrence, compiled - the notebook calls it thousands of times. *)
+cSturm = Compile[{{n, _Integer}, {a, _Real, 1}, {e, _Real, 1}, {lam, _Real, 1},
+    {kr, _Real}, {g, _Real}},
+   Module[{p0 = 0., p1 = 1., p2 = 0., alpha = 0., s = 1., w = 0.},
+    Do[alpha = If[j == n, a[[j]]/2 - g, a[[j]]];
+       p2 = (kr^2 lam[[j]] - alpha) p1 - e[[j]]^2 p0;
+       w = Max[Abs[p1], Abs[p2]];
+       s = If[w > 1.*^20, 1.*^-20, If[0 < w < 1.*^-20, 1.*^20, 1.]];
+       p1 *= s; p2 *= s; p0 = p1; p1 = p2, {j, 1, n}];
+    p1], CompilationTarget -> \"WVM\", RuntimeOptions -> \"Speed\"];
+
+(* Same thing, returning the mode count instead: the number of sign changes. *)
+cCount = Compile[{{n, _Integer}, {a, _Real, 1}, {e, _Real, 1}, {lam, _Real, 1},
+    {kr, _Real}, {g, _Real}},
+   Module[{p0 = 0., p1 = 1., p2 = 0., alpha = 0., s = 1., w = 0., cnt = 0},
+    Do[alpha = If[j == n, a[[j]]/2 - g, a[[j]]];
+       p2 = (kr^2 lam[[j]] - alpha) p1 - e[[j]]^2 p0;
+       w = Max[Abs[p1], Abs[p2]];
+       s = If[w > 1.*^20, 1.*^-20, If[0 < w < 1.*^-20, 1.*^20, 1.]];
+       p1 *= s; p2 *= s;
+       If[p1 p2 < 0, cnt++];
+       p0 = p1; p1 = p2, {j, 1, n}];
+    cnt], CompilationTarget -> \"WVM\", RuntimeOptions -> \"Speed\"];
+
+(* The NumericQ guards matter: without them Plot and FindRoot call these
+   symbolically on their first pass and the compiled functions choke. *)
+DC[avec_, kr_?NumericQ] := cSturm[$nz, avec, eN, lN, kr, gOf[kr, $f, $cb, $rhob]];
+countC[kr_?NumericQ] := cCount[$nz, aN, eN, lN, kr, gOf[kr, $f, $cb, $rhob]];\
+\>", "Input"],
+
+Cell["1.4 The modes", "Subsection"],
+
+Cell["\<\
+Trapped modes live between the bottom cutoff omega/cb and omega/c0. Below the \
+cutoff the vertical wavenumber in the half-space turns real, g becomes \
+imaginary, and this real-valued formulation has no solution - which is why the \
+bracketing search never looks there.\
+\>", "Text"],
+
+Cell["\<\
+band = {2 Pi $f/$cb, 2 Pi $f/$c0};
+grid = Subdivide[band[[1]] + 1.*^-9, band[[2]], 4000];
+vals = DC[aN, #] & /@ grid;
+sgn = Flatten@Position[Most[vals] Rest[vals], _?Negative];
+roots = Sort[Table[kr /. FindRoot[DC[aN, kr], {kr, grid[[i]], grid[[i + 1]]}], {i, sgn}], Greater];
+
+juliaKr = {0.4179077490174536, 0.41496332738762154, 0.4099707303396389,
+           0.40285949345748673, 0.39382970171673826};
+
+Column[{Row[{\"modes found: \", Length[roots]}],
+        Row[{\"max relative difference from Kraken.jl: \",
+             Max[Abs[(roots - juliaKr)/juliaKr]]}]}]\
+\>", "Input"],
+
+Cell["\<\
+(* The determinant across the band, with its roots. Sign only - the magnitude
+   is meaningless after rescaling, as Section 1.3 showed. *)
+krStar = First[roots];
+Show[
+ Plot[Sign[DC[aN, k]] Log10[1 + Abs[DC[aN, k]]/1.*^-38], {k, band[[1]] + 1.*^-6, band[[2]]},
+  PlotPoints -> 400, AxesLabel -> {\"kr\", \"signed log |D|\"},
+  PlotLabel -> \"Sturm determinant over the trapped band\", ImageSize -> 560],
+ ListPlot[{#, 0} & /@ roots, PlotStyle -> {Red, PointSize[0.012]}]]\
+\>", "Input"],
+
+Cell["2. Rule 1: the wavenumber, by the implicit function theorem", "Section"],
+
+Cell["\<\
+A converged wavenumber satisfies
+
+    D(kr*, theta) = 0
+
+identically in theta. That is the whole content of the rule. Differentiate the \
+identity with respect to a parameter, using the chain rule on the left:
+
+    dD/dtheta + (dD/dkr)(dkr*/dtheta) = 0
+
+    ==>   dkr*/dtheta = - D_theta / D_kr
+
+Both partials are evaluated at the converged root. Nothing in this expression \
+refers to how the root was found - not the bracket, not the number of \
+iterations, not the tolerance. That is the point: the rule differentiates the \
+equation the root satisfies, not the arithmetic that found it.
+
+Let Mathematica derive it rather than taking it on trust. Below, kr is \
+declared an implicit function of a[1], the identity is differentiated, and the \
+result is solved for the derivative.\
+\>", "Text"],
+
+Cell["\<\
+iftSym = -D[Dsym, aa[1]]/D[Dsym, kr];
+
+(* Mathematica's own implicit differentiation, for comparison *)
+eqn = Dsym /. kr -> krf[aa[1]];
+sol = Solve[D[eqn, aa[1]] == 0, krf'[aa[1]]];
+Simplify[(krf'[aa[1]] /. First[sol]) - iftSym]\
+\>", "Input"],
+
+Cell["\<\
+Zero: the two agree. (In this symbolic model g is an independent symbol. In \
+the solver g depends on kr as well, and that extra path is chained on \
+separately - it is what half_space_sensitivities does.)\
+\>", "Text"],
+
+Cell["2.1 The rescaling cancels", "Subsection"],
+
+Cell["\<\
+Section 1.3 forced a rescaling on the recurrence, so what the solver actually \
+evaluates is not D but S*D, where S is a product of factors chosen by a \
+comparison against thresholds. S is therefore piecewise constant in both kr \
+and theta - it changes only on a measure-zero set, and on any open set around \
+the root it is a constant.
+
+A constant factor cancels in a ratio, which is the reason the rule can be \
+written against the rescaled determinant directly:\
+\>", "Text"],
+
+Cell["\<\
+Simplify[-D[s Dsym, aa[1]]/D[s Dsym, kr] - iftSym]\
+\>", "Input"],
+
+Cell["\<\
+Zero for symbolic s. This is why Section 1.4's roots and Section 2.3's \
+derivatives can both be computed from the rescaled sequence without \
+correction.\
+\>", "Text"],
+
+Cell["2.2 All N derivatives in one backward sweep", "Subsection"],
+
+Cell["\<\
+The rule needs D_theta for every entry of a, e and lam - that is 3N numbers, \
+because the environment reaches the determinant only through those vectors. \
+Getting them by forward differentiation would cost one sweep per entry: O(N^2) \
+work on an O(N) problem, which would give away the entire advantage of reverse \
+mode before it was collected.
+
+The recurrence is a chain, so its adjoint is a chain of the same length run \
+backwards. Write the step as a 2x2 transfer matrix acting on the state \
+v[k] = (p[k-2], p[k-1]):
+
+    v[k+1] = s[k] T[k] v[k],    T[k] = {{0, 1}, {-e[k]^2, kr^2 lam[k] - alpha[k]}}
+
+and D is the second component of v[N+1]. Check that this is the same object:\
+\>", "Text"],
+
+Cell["\<\
+tm[j_, a_, e_, lam_, kr_, g_, n_] :=
+  {{0, 1}, {-e[[j]]^2, kr^2 lam[[j]] - If[j == n, a[[j]]/2 - g, a[[j]]]}};
+
+prod = Fold[tm[#2, av, ev, lv, kr, g, n4] . #1 &, {0, 1}, Range[n4]];
+Simplify[prod[[2]] - Dsym]\
+\>", "Input"],
+
+Cell["\<\
+Zero. Now the adjoint. Carrying w[k] = dD/dv[k] backwards from w[N+1] = (0,1), \
+each step reads off the contribution of that step's coefficients and then \
+pushes the cotangent one step further back. One forward sweep to record the \
+states, one backward sweep to accumulate - O(N) for all 3N derivatives at once. \
+This is sturm_sensitivities in src/kraken_ad.jl, transcribed.\
+\>", "Text"],
+
+Cell["\<\
+scaleConst[p1_, p2_] := Module[{w = Max[Abs[p1], Abs[p2]]},
+   Which[w > 1.*^20, 1.*^-20, 0 < w < 1.*^-20, 1.*^20, True, 1.]];
+
+sturmSens[n_, a_, e_, lam_, kr_, g_] := Module[
+  {p0 = 0., p1 = 1., p2, alpha, s, P0 = Table[0., {n}], P1 = Table[0., {n}],
+   S = Table[1., {n}], da = Table[0., {n}], de = Table[0., {n}], dl = Table[0., {n}],
+   dg = 0., dkr = 0., w0 = 0., w1 = 1., b, dalpha, j, dd},
+  (* forward: record the state and the scale factor at every step *)
+  For[j = 1, j <= n, j++,
+   P0[[j]] = p0; P1[[j]] = p1;
+   alpha = If[j == n, a[[j]]/2 - g, a[[j]]];
+   p2 = (kr^2 lam[[j]] - alpha) p1 - e[[j]]^2 p0;
+   s = scaleConst[p1, p2]; S[[j]] = s; p1 *= s; p2 *= s;
+   p0 = p1; p1 = p2; dd = p2];
+  (* backward: accumulate every coefficient derivative *)
+  For[j = n, j >= 1, j--,
+   b = w1 S[[j]];
+   alpha = If[j == n, a[[j]]/2 - g, a[[j]]];
+   dalpha = If[j == n, 0.5, 1.];
+   da[[j]] = -b dalpha P1[[j]];
+   If[j == n, dg += b P1[[j]]];
+   dl[[j]] = b kr^2 P1[[j]];
+   de[[j]] = -2 b e[[j]] P0[[j]];
+   dkr += 2 b kr lam[[j]] P1[[j]];
+   {w0, w1} = {-b e[[j]]^2, w0 S[[j]] + b (kr^2 lam[[j]] - alpha)}];
+  <|\"D\" -> dd, \"dkr\" -> dkr, \"da\" -> da, \"de\" -> de, \"dlam\" -> dl, \"dg\" -> dg|>];
+
+(* g depends on kr, cb, rhob and the frequency; chain its cotangent onto them *)
+halfSpaceSens[dg_, kr_, f_, cb_, rhob_] := Module[{q = 2 Pi f/cb, beta},
+   beta = Sqrt[kr^2 - q^2];
+   <|\"dkr\" -> dg kr/(rhob beta), \"dcb\" -> dg q^2/(cb rhob beta),
+     \"drhob\" -> -dg (beta/rhob)/rhob, \"dfreq\" -> -dg q^2/(f rhob beta)|>];
+
+sens = sturmSens[$nz, aN, eN, lN, krStar, gOf[krStar, $f, $cb, $rhob]];
+hs = halfSpaceSens[sens[\"dg\"], krStar, $f, $cb, $rhob];
+Dkr = sens[\"dkr\"] + hs[\"dkr\"];
+Grid[{{\"D at the root\", sens[\"D\"]}, {\"D_kr\", Dkr}}, Frame -> All]\
+\>", "Input"],
+
+Cell["\<\
+Both numbers are absurdly small, and neither is meaningful on its own - they \
+carry whatever power of 1e20 the rescaling happened to accumulate. Only their \
+ratio is a physical quantity, which is Section 2.1 restated as an observation \
+rather than a proof.\
+\>", "Text"],
+
+Cell["2.3 Checking the sweep, and then checking the rule", "Subsection"],
+
+Cell["\<\
+Two separate things can be wrong, so they get two separate checks. First, does \
+the backward sweep actually compute dD/da? Compare it against central \
+differences of D itself - nothing implicit involved yet.\
+\>", "Text"],
+
+Cell["\<\
+fdA[j_, h_] := Module[{ap = aN, am = aN},
+   ap[[j]] += h; am[[j]] -= h; (DC[ap, krStar] - DC[am, krStar])/(2 h)];
+
+Grid[Prepend[
+  Table[Module[{h = 1.*^-8 Abs[aN[[j]]], f}, f = fdA[j, h];
+    {j, sens[\"da\"][[j]], f, Abs[sens[\"da\"][[j]]/f - 1]}], {j, {1, 2, 17, 63, 124, 125}}],
+  {\"j\", \"adjoint dD/da[j]\", \"central difference\", \"rel. diff\"}], Frame -> All]\
+\>", "Input"],
+
+Cell["\<\
+Second, and this is the actual claim: does -D_theta/D_kr predict where the \
+root moves? The honest test is to perturb a coefficient, solve the root \
+problem again from scratch, and difference the two roots. No part of that \
+shares code with the rule.\
+\>", "Text"],
+
+Cell["\<\
+iftDa = -sens[\"da\"]/Dkr;
+
+rootOfA[avec_, kr0_] := kr /. FindRoot[DC[avec, kr], {kr, kr0, kr0 + 1.*^-7}];
+fdRootA[j_, h_] := Module[{ap = aN, am = aN},
+   ap[[j]] += h; am[[j]] -= h;
+   (rootOfA[ap, krStar] - rootOfA[am, krStar])/(2 h)];
+
+Grid[Prepend[
+  Table[Module[{h = 1.*^-6 Abs[aN[[j]]], t}, t = fdRootA[j, h];
+    {j, iftDa[[j]], t, Abs[iftDa[[j]]/t - 1]}], {j, {1, 2, 17, 63, 124, 125}}],
+  {\"j\", \"IFT: -D_aj/D_kr\", \"root re-solved\", \"rel. diff\"}], Frame -> All]\
+\>", "Input"],
+
+Cell["\<\
+Agreement to a few parts in 1e9, which is the accuracy of the central \
+difference rather than of the rule. The same comparison run against Kraken.jl's \
+own sturm_sensitivities gives the same numbers to 5e-12.\
+\>", "Text"],
+
+Cell["2.4 What the rule looks like", "Subsection"],
+
+Cell["\<\
+The derivative is a statement about a curve: as a coefficient moves, the root \
+traces a path, and -D_theta/D_kr is that path's slope. Drawn against the path \
+itself:\
+\>", "Text"],
+
+Cell["\<\
+(* +-1% on one coefficient moves the root by about 5e-4, which is large enough
+   to see and small enough that mode 1 stays well clear of its neighbours - so
+   each re-solve is unambiguously the same root. *)
+j0 = 63;
+base = aN[[j0]];
+locus = Table[Module[{ap = aN}, ap[[j0]] = base (1 + d);
+    {base (1 + d), rootOfA[ap, krStar]}], {d, -0.01, 0.01, 0.001}];
+
+Show[
+ ListPlot[locus, Joined -> True, PlotStyle -> Thick,
+  AxesLabel -> {\"a[63]\", \"kr*\"},
+  PlotLabel -> \"The root as a function of one coefficient, and the IFT tangent\",
+  ImageSize -> 560],
+ Plot[krStar + iftDa[[j0]] (x - base), {x, base 1.011, base 0.989},
+  PlotStyle -> {Red, Dashed}],
+ ListPlot[{{base, krStar}}, PlotStyle -> {Red, PointSize[0.015]}]]\
+\>", "Input"],
+
+Cell["2.5 The sensitivity profile is the mode shape squared", "Subsection"],
+
+Cell["\<\
+There are 125 numbers in dkr*/da, one per mesh point, and they are not \
+arbitrary. Because a[k] enters M only on the diagonal at k, first-order \
+perturbation theory says the numerator of the IFT ratio is the Rayleigh \
+quotient of the perturbation, which for a diagonal bump is just psi[k]^2:
+
+    dkr*/da[k]  =  - psi[k]^2 / (psi . dM/dkr . psi)
+
+So the sensitivity profile and the mode shape are the same picture. That is a \
+useful thing to know when reading a gradient: a wavenumber is sensitive to the \
+medium exactly where its mode has energy, and blind where the mode has a node.\
+\>", "Text"],
+
+Cell["\<\
+MN = N[shiftedM[$nz, aN, eN, lN, krStar, gOf[krStar, $f, $cb, $rhob]]];
+{evals, evecs} = Eigensystem[MN];
+i0 = First[Ordering[Abs[evals], 1]];
+psi = evecs[[i0]];
+psi = If[psi[[1]] < 0, -psi, psi];
+
+(* the perturbation-theory prediction, built only from psi *)
+num = Table[If[k == $nz, 0.5, 1.] psi[[k]]^2, {k, $nz}];
+den = -(2 krStar (psi^2) . lN +
+    psi[[$nz]]^2 krStar/($rhob Sqrt[krStar^2 - (2 Pi $f/$cb)^2]));
+pred = -num/den;
+
+Row[{\"max relative difference from the adjoint sweep: \",
+  Max[Abs[iftDa - pred]]/Max[Abs[pred]]}]\
+\>", "Input"],
+
+Cell["\<\
+zmesh = Table[j $dep/$nz, {j, $nz}];
+GraphicsRow[{
+  ListLinePlot[Transpose[{zmesh, psi}], AxesLabel -> {\"depth (m)\", \"psi\"},
+   PlotLabel -> \"Mode 1\", ImageSize -> 340],
+  ListLinePlot[Transpose[{zmesh, iftDa}], AxesLabel -> {\"depth (m)\", \"dkr/da[k]\"},
+   PlotLabel -> \"Its sensitivity to the diagonal\", PlotStyle -> Red, ImageSize -> 340]},
+ ImageSize -> 700]\
+\>", "Input"],
+
+Cell["\<\
+(* All five modes, and all five sensitivity profiles. Higher modes reach
+   deeper and are correspondingly more sensitive near the bottom. *)
+sensOf[k_] := Module[{s, h},
+   s = sturmSens[$nz, aN, eN, lN, k, gOf[k, $f, $cb, $rhob]];
+   h = halfSpaceSens[s[\"dg\"], k, $f, $cb, $rhob];
+   -s[\"da\"]/(s[\"dkr\"] + h[\"dkr\"])];
+
+ListLinePlot[Table[Transpose[{zmesh, sensOf[r]}], {r, roots}],
+ AxesLabel -> {\"depth (m)\", \"dkr*/da[k]\"},
+ PlotLabel -> \"Sensitivity profile of each of the five modes\",
+ PlotLegends -> Table[\"mode \" <> ToString[i], {i, Length[roots]}],
+ ImageSize -> 620]\
+\>", "Input"],
+
+Cell["3. Rule 2: the mode shape, by eigenvector perturbation", "Section"],
+
+Cell["\<\
+The second seam is the mode shape. The primal recovers it by inverse \
+iteration - repeated tridiagonal solves against a shifted matrix, with an \
+argmax, a mutation, and a convergence test in the loop. Differentiating that \
+would tape dozens of solves to compute something a single solve gives exactly.
+
+Take v to be the unit eigenvector of M belonging to eigenvalue mu:
+
+    M v = mu v,     v.v = 1
+
+Perturb both. The first relation gives dM v + M dv = dmu v + mu dv; the second \
+gives v.dv = 0, so dv lives in the complement of v. Projecting the first onto \
+v isolates the eigenvalue perturbation,
+
+    dmu = v . dM . v
+
+and substituting it back leaves, on the complement,
+
+    (M - mu I) dv = -(I - v v^T) dM v
+
+The operator on the left is singular in exactly one direction - the v \
+direction - and that direction is precisely the one projected out on the right. \
+So the equation is solvable there, and
+
+    dv = -(M - mu I)^+ (I - v v^T) dM v
+
+with ^+ the pseudo-inverse on the complement. At a converged wavenumber mu is \
+zero to machine precision and M itself is the operator.\
+\>", "Text"],
+
+Cell["\<\
+mu = psi . MN . psi;
+sorted = Sort[Abs[evals]];
+Grid[{{\"|mu| / ||M||\", Abs[mu]/Norm[MN]},
+      {\"smallest |eigenvalue|\", sorted[[1]]},
+      {\"next  smallest\", sorted[[2]]}}, Frame -> All]\
+\>", "Input"],
+
+Cell["\<\
+Singular to 3e-18, as it must be at a root: that is the same statement as \
+det M = 0 from Section 1.1, seen from the eigenvalue side.
+
+Note the gap between the two smallest eigenvalues - thirteen orders of \
+magnitude. The null direction is completely unambiguous, which is what makes \
+the projection below well posed rather than a judgement call about tolerances.
+
+Now verify the formula. Bump one diagonal entry, recompute the eigenvector \
+from scratch with a dense eigensolver, and difference it.\
+\>", "Text"],
+
+Cell["\<\
+(* Tolerance set explicitly: anything below 1e-10 ||M|| is treated as the null
+   space. The previous cell showed that is safely between the two smallest. *)
+Mplus = PseudoInverse[MN, Tolerance -> 1.*^-10];
+proj[u_] := u - (psi . u) psi;
+
+dvFormula[j_] := Module[{dMv = Table[0., {$nz}]},
+   dMv[[j]] = If[j == $nz, 0.5, 1.] psi[[j]];
+   -Mplus . proj[dMv]];
+
+evecOf[avec_] := Module[{m, val, vec, i},
+   m = N[shiftedM[$nz, avec, eN, lN, krStar, gOf[krStar, $f, $cb, $rhob]]];
+   {val, vec} = Eigensystem[m];
+   i = First[Ordering[Abs[val], 1]];
+   If[vec[[i, 1]] < 0, -vec[[i]], vec[[i]]]];
+
+Grid[Prepend[
+  Table[Module[{h = 1.*^-6 Abs[aN[[j]]], ap = aN, am = aN, fd},
+    ap[[j]] += h; am[[j]] -= h;
+    fd = (evecOf[ap] - evecOf[am])/(2 h);
+    {j, Norm[dvFormula[j] - fd]/Norm[fd], Norm[fd]}], {j, {1, 17, 63, 125}}],
+  {\"j\", \"rel. error of the adjoint formula\", \"||dv/da[j]||\"}], Frame -> All]\
+\>", "Input"],
+
+Cell["\<\
+Agreement to between 3e-10 and 7e-8 - again the finite difference's accuracy, \
+not the formula's. The same check against Kraken.jl's own rrule gives the same \
+figures.\
+\>", "Text"],
+
+Cell["3.1 Why the code does not use a pseudo-inverse", "Subsection"],
+
+Cell["\<\
+PseudoInverse is the right object mathematically and the wrong one \
+computationally: it is dense and O(N^3), which throws away the tridiagonal \
+structure the whole solver is built on. What is wanted is a vector, not an \
+operator. For a cotangent Dv on the mode shape,
+
+    <Dv, dv> = -<y, dM v>,     y = M^+ (I - v v^T) Dv
+
+so a single solve produces y, and the cotangent on M is the rank-one object \
+-y v^T read off on M's tridiagonal pattern. The equivalent bordered system
+
+    [ M   v ] [ y ]   [ Dv ]
+    [ v^T 0 ] [ c ] = [ 0  ]
+
+is nonsingular precisely because v spans the null space, but solving it as \
+written destroys the bandedness. So the code spells it as project, solve, \
+project: remove the v component from the right-hand side, solve the \
+tridiagonal system, and remove the v component that the solve's own roundoff \
+amplified back in. One step of iterative refinement inside the complement \
+cleans up the rest.
+
+That is two O(N) solves against the iteration's dozens - and it is why a \
+mode-shape gradient costs about what a wavenumber gradient costs.\
+\>", "Text"],
+
+Cell["\<\
+(* The bordered system, built explicitly. Unlike M itself it is nonsingular,
+   so an ordinary solver handles it without complaint - which is the point of
+   bordering. The solver does not build it: it gets the same vector from two
+   tridiagonal solves inside the complement of v, which is O(N) instead of
+   O(N^3). The two agree to ~1e-14. *)
+bordered = ArrayFlatten[{{MN, Transpose[{psi}]}, {{psi}, {{0.}}}}];
+
+dvBordered[j_] := Module[{dMv = Table[0., {$nz}], sol},
+   dMv[[j]] = If[j == $nz, 0.5, 1.] psi[[j]];
+   sol = LinearSolve[bordered, Append[dMv, 0.]];
+   -Most[sol]];
+
+Grid[Prepend[
+  Table[{j, Norm[dvBordered[j] - dvFormula[j]]/Norm[dvFormula[j]]}, {j, {1, 17, 63, 125}}],
+  {\"j\", \"bordered solve vs pseudo-inverse\"}], Frame -> All]\
+\>", "Input"],
+
+Cell["\<\
+(* What a mode-shape derivative looks like: bump the medium at 40 m and watch
+   the shape respond. The response is not local - it is spread over the whole
+   column, because the eigenvector is a global object. *)
+GraphicsRow[{
+  ListLinePlot[Transpose[{zmesh, psi}], AxesLabel -> {\"depth (m)\", \"psi\"},
+   PlotLabel -> \"Mode 1\", ImageSize -> 340],
+  ListLinePlot[Transpose[{zmesh, dvFormula[50]}],
+   AxesLabel -> {\"depth (m)\", \"dpsi/da[50]\"}, PlotStyle -> Darker[Green],
+   PlotLabel -> \"Its response to a bump at 40 m\", ImageSize -> 340]},
+ ImageSize -> 700]\
+\>", "Input"],
+
+Cell["4. Rule 3: the interpolant, and the term that was silently dropped", \
+"Section"],
+
+Cell["\<\
+The third rule exists for a different reason from the first two. \
+soundspeed and density are ordinary traceable code - an AD backend can \
+differentiate them without help. The problem is that the help it was getting \
+was wrong.
+
+A sampled profile is a linear interpolant with knots t and values u. \
+DataInterpolations ships a ChainRules rule for evaluating one, and that rule \
+differentiates with respect to the values and the query point but treats the \
+knots as constants. In this package the knots are layer boundaries, and layer \
+boundaries are parameters one very much wants to invert for. The missing term \
+is not a refinement; on a two-layer sloped environment it made one thickness \
+derivative 15% wrong and flipped the sign of two others, with nothing raised.
+
+The interpolant on one interval is elementary, so there is no excuse for not \
+writing all five partials out:\
+\>", "Text"],
+
+Cell["\<\
+val = u1 + (u2 - u1)/(t2 - t1) (z - t1);
+w = (z - t1)/(t2 - t1);
+slope = (u2 - u1)/(t2 - t1);
+
+partials = {D[val, u1], D[val, u2], D[val, t1], D[val, t2], D[val, z]};
+claimed = {1 - w, w, -slope (1 - w), -slope w, slope};
+
+Grid[Prepend[
+  Transpose[{{\"d/du1\", \"d/du2\", \"d/dt1\", \"d/dt2\", \"d/dz\"},
+    Simplify /@ partials, claimed, Simplify[partials - claimed]}],
+  {\"partial\", \"Mathematica D[]\", \"linear_interp_partials\", \"difference\"}],
+ Frame -> All]\
+\>", "Input"],
+
+Cell["\<\
+All four differences are zero: the rule in src/kraken_ad.jl is exactly what \
+Mathematica derives. The two knot partials are the ones DataInterpolations \
+returns as zero.\
+\>", "Text"],
+
+Cell["4.1 How large is the dropped term", "Subsection"],
+
+Cell["\<\
+Take a profile whose layer boundary sits at h, and ask how the sound speed at \
+a fixed depth responds when the boundary moves. Every value u is held fixed \
+and the query depth is held fixed, so the knots-fixed rule returns exactly \
+zero. The true derivative is not zero anywhere between the knots - it is the \
+entire answer.\
+\>", "Text"],
+
+Cell["\<\
+cProfile[z_, h_] := Piecewise[{
+    {1500 + 20 (z/h), 0 <= z < h},
+    {1520 + 40 ((z - h)/(100 - h)), h <= z <= 100}}];
+
+GraphicsRow[{
+  Plot[{cProfile[z, 30], cProfile[z, 40], cProfile[z, 50]}, {z, 0, 100},
+   AxesLabel -> {\"depth (m)\", \"c (m/s)\"}, PlotLabel -> \"boundary at 30, 40, 50 m\",
+   PlotLegends -> {\"h=30\", \"h=40\", \"h=50\"}, ImageSize -> 340],
+  Plot[{D[cProfile[z, h], h] /. h -> 40, 0}, {z, 0, 100},
+   AxesLabel -> {\"depth (m)\", \"dc/dh\"},
+   PlotLabel -> \"true dc/dh vs the knots-fixed rule (zero)\",
+   PlotLegends -> {\"true\", \"DataInterpolations\"}, ImageSize -> 340]},
+ ImageSize -> 700]\
+\>", "Input"],
+
+Cell["4.2 Why the tie-breaking side matters", "Subsection"],
+
+Cell["\<\
+One more detail, and it is not pedantry - it cost 8.6% on a thickness \
+derivative before it was pinned down. This package spells a discontinuity in \
+the profile by placing two knots at z0 and z0 + eps(z0). The interval between \
+them is one ulp wide, so its slope is of order 1e15.
+
+Every interface knot is queried exactly, because the mesh ends each layer on \
+its lower boundary. A query that lands exactly on a knot therefore has to \
+choose between two adjoining intervals, and the choice changes no value - both \
+give the shared knot's own u, bit for bit - but changes the derivative \
+completely. Take the interval that starts at the knot and you get the \
+1e15 seam; take the one that ends there and you get the water column's own \
+slope, which is the answer the physics wants.\
+\>", "Text"],
+
+Cell["\<\
+z0 = 40.;
+tKnots = {0., z0, z0 + 1.*^-14, 100.};
+uVals = {1500., 1520., 1560., 1600.};
+slopes = Differences[uVals]/Differences[tKnots];
+
+Grid[{{\"interval\", \"width (m)\", \"slope (1/s)\"},
+      {\"1 -> 2 (water)\", tKnots[[2]] - tKnots[[1]], slopes[[1]]},
+      {\"2 -> 3 (the seam)\", tKnots[[3]] - tKnots[[2]], slopes[[2]]},
+      {\"3 -> 4 (sediment)\", tKnots[[4]] - tKnots[[3]], slopes[[3]]}}, Frame -> All]\
+\>", "Input"],
+
+Cell["\<\
+The seam's slope is fifteen orders of magnitude larger than either \
+neighbour's. Its two huge partials do cancel eventually, through unrelated \
+paths in the reverse sweep, but only after both have been rounded - so the \
+side is selected explicitly in the code rather than left to whichever \
+comparison the backend happens to make.\
+\>", "Text"],
+
+Cell["5. What is deliberately not differentiated", "Section"],
+
+Cell["\<\
+Two quantities in the solve are integers, and declaring them non-differentiable \
+is a modelling decision worth being explicit about rather than an oversight.\
+\>", "Text"],
+
+Cell["5.1 The mode count", "Subsection"],
+
+Cell["\<\
+bisection brackets each root by counting sign changes in the Sturm sequence. \
+The count is an integer that steps down as kr sweeps up through the band. It \
+is piecewise constant, so its derivative is zero wherever it exists, and the \
+bracket it produces selects which root is found rather than where that root \
+sits. ZeroTangent is the correct answer, not an approximation.\
+\>", "Text"],
+
+Cell["\<\
+Plot[countC[k], {k, band[[1]] + 1.*^-6, band[[2]]},
+ PlotPoints -> 600, Exclusions -> None, AxesLabel -> {\"kr\", \"modes above kr\"},
+ PlotLabel -> \"Mode count: piecewise constant, hence zero derivative\",
+ ImageSize -> 560]\
+\>", "Input"],
+
+Cell["5.2 The mesh, which is the interesting one", "Subsection"],
+
+Cell["\<\
+The number of mesh points is Nz = ceil(depth / dz) with dz set by the bottom \
+sound speed and the frequency. That is an integer function of the parameters, \
+so it is held fixed and the gradient is the derivative at a fixed mesh.
+
+This is the standard treatment and it is correct. Its consequence is that the \
+discretized wavenumber has a small jump wherever the mesh gains a point, and \
+the reported gradient is the slope between jumps rather than across them.
+
+The jump itself is tiny - at 20 points per wavelength the root barely notices \
+one more mesh point. What makes it matter is not its size but the fact that a \
+difference quotient divides it by the step:
+
+    FD(h)  =  true derivative  +  jump / (2h)
+
+so the error grows without bound as h shrinks. A finite difference that \
+straddles a mesh transition gets *worse* the more carefully it is taken, which \
+is the opposite of how finite differences are supposed to behave and is why the \
+disagreement is so easy to misread as an AD bug.\
+\>", "Text"],
+
+Cell["\<\
+nzOf[dep_] := Max[10, Ceiling[dep/($cb/(20 $f))]];
+
+(* the root on a mesh of nz points for a column of the given depth *)
+krFixedNz[dep_?NumericQ, nz_Integer] := Module[{a, e, l, kk},
+   {a, e, l} = pekerisCoeffs[nz, dep, $c0, $rho0, $f];
+   kk /. FindRoot[cSturm[nz, a, e, l, kk, gOf[kk, $f, $cb, $rhob]], {kk, 0.4179, 0.41791}]];
+
+krAuto[dep_?NumericQ] := krFixedNz[dep, nzOf[dep]];
+
+(* Isolate the jump: same depth, one more mesh point. *)
+jump = krFixedNz[100., 126] - krFixedNz[100., 125];
+(* The honest derivative: mesh held fixed, as both AD modes report it. *)
+dTrue = (krFixedNz[100.0001, 125] - krFixedNz[99.9999, 125])/0.0002;
+Grid[{{\"discontinuity in kr* when Nz goes 125 -> 126\", jump},
+      {\"d kr*/d depth at fixed mesh\", dTrue}}, Frame -> All]\
+\>", "Input"],
+
+Cell["\<\
+steps = {1.*^-1, 1.*^-2, 3.*^-3, 1.*^-3, 3.*^-4, 1.*^-4};
+fdOf[h_] := (krAuto[100. + h] - krAuto[100. - h])/(2 h);
+
+Grid[Prepend[
+  Table[{h, fdOf[h], dTrue + jump/(2 h), Abs[fdOf[h]/dTrue - 1]}, {h, steps}],
+  {\"step h\", \"finite difference\", \"predicted: true + jump/(2h)\", \"rel. error\"}],
+ Frame -> All]\
+\>", "Input"],
+
+Cell["\<\
+The third column predicts the second one, which is the whole claim: the finite \
+difference is not noisy, it is wrong by an amount one can compute in advance. \
+At h = 1e-4 it is off by more than 10%, and shrinking h further makes it worse.
+
+Plotted, with the fixed-mesh derivative that both AD modes return:\
+\>", "Text"],
+
+Cell["\<\
+Show[
+ ListLogLinearPlot[Transpose[{steps, fdOf /@ steps}], Joined -> True,
+  PlotStyle -> Thick, PlotMarkers -> Automatic,
+  AxesLabel -> {\"step h\", \"dkr/d(depth)\"},
+  PlotLabel -> \"Finite differences degrade as the step shrinks\",
+  ImageSize -> 560],
+ LogLinearPlot[dTrue, {h, 5.*^-5, 2.*^-1}, PlotStyle -> {Red, Dashed}]]\
+\>", "Input"],
+
+Cell["\<\
+The dashed line is what the rules report and what a fixed-mesh reference \
+confirms; the curve is what a finite-difference check would have claimed. Read \
+in the other direction, this is also the practical advice: when validating a \
+gradient here against finite differences, check whether the mesh moved inside \
+the step before believing the disagreement.\
+\>", "Text"],
+
+Cell["6. The seam, assembled", "Section"],
+
+Cell["\<\
+Putting the four rules back in their places. Everything above a seam is traced \
+by the backend in the ordinary way; everything below it is opaque and the rule \
+speaks for it.
+
+    environment parameters (c, rho, cb, rhob, layer thicknesses, frequency)
+        |
+        |  soundspeed / density        <- RULE 3: linear interpolant,
+        |                                 values AND knots AND query depth
+        v
+    finite_difference_coefficients     <- traced (pure, allocating, no mutation)
+        |
+        |  a_vec, e_vec, lam_scaling
+        |
+        +---> solve_for_kr             <- RULE 1: -D_theta / D_kr,
+        |                                 with the adjoint sweep for D_theta
+        |         ^
+        |         |  bisection         <- non-differentiable: integer mode counts
+        |
+        +---> mode_eigenvector         <- RULE 2: -M^+ (I - v v^T) dM v
+                  |
+                  v
+              normalize_mode           <- traced (needs the density profile,
+                                          which rule 3 already differentiates)
+
+Two properties fall out of the shape rather than out of any one rule.
+
+Because rule 1 evaluates the equation at the root instead of the search that \
+found it, the wavenumber derivative does not depend on how hard the solver \
+worked. Forward mode differentiates the search and inherits its truncation \
+error - at 250 Hz the two disagree by more than 1%, and finite differences \
+side with the rule.
+
+Because rules 1 and 2 are the same perturbation theory applied to the \
+eigenvalue and the eigenvector of the same matrix, the two share almost all of \
+their structure: Section 2.5's sensitivity profile is Section 3's eigenvector, \
+squared. Getting one right and the other wrong should be suspicious.\
+\>", "Text"],
+
+Cell["\<\
+Where to look in the source:
+
+  src/kraken_ad.jl
+    sturm_sensitivities        the forward/backward sweep of Section 2.2
+    half_space_sensitivities   the g path
+    rrule(solve_for_kr)        Section 2, four lines once the sweep exists
+    shifted_matrix             M, rebuilt after the primal restored the cache
+    rrule(mode_eigenvector)    Section 3, project-solve-project
+    linear_interp_partials     Section 4, all five partials
+    profile_pullback           the scatter into two knot slots per query
+    @non_differentiable        Section 5
+
+  src/kraken_core.jl
+    det_sturm                  the primal recurrence of Section 1.1
+    scale_const                the rescaling of Section 1.3
+    finite_difference_coefficients   the pure function the seam needs
+
+  test/reverse_ad_tests.jl     all of the above against ForwardDiff, FiniteDiff,
+                               Zygote and Mooncake
+  docs/src/ad.md               the user-facing version, with an inversion\
+\>", "Text"]
+
+},
+WindowSize -> {1100, 900},
+WindowMargins -> Automatic
+]
