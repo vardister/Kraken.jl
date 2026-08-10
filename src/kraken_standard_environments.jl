@@ -90,12 +90,11 @@ default to zero. A lossy sediment *layer* is the physically common case and the 
 exists for: `α1` enters through the volume integral rather than the half-space term, so it has none
 of the bottom-cutoff blow-up that a large `αb` suffers.
 
-It has a different limitation instead, and it is worth knowing before trusting the number. `α1` makes
-the integrand *discontinuous* at the top of the sediment, where [`modal_attenuation`](@ref) runs a
-single trapezoid across the jump — so the modal attenuation converges only at first order in the mesh
-spacing, and the *best*-trapped modes are worst affected because their whole loss comes from a thin
-tail inside the layer. At the default mesh `α1 = 0.4` dB/λ puts mode 1 about 8% away from
-`kraken.exe`; the error halves with every mesh doubling. See [`modal_attenuation`](@ref).
+`α1` makes the integrand *discontinuous* at the top of the sediment, which is why
+[`modal_attenuation`](@ref) and [`normalize_mode`](@ref) integrate medium by medium rather than with
+one trapezoid over the whole mesh — a single straddled interval there is enough to cost an order of
+convergence. With that, `α1 = 0.4` dB/λ agrees with `kraken.exe` to 2.9e-3 at the default mesh and
+converges at second order; a flat trapezoid gave 8.1e-2 and first order.
 """
 function one_layer_env(;
     c0=1500.0, c1=1550.0, cb=1600.0, ρ0=1000.0, ρ1=1500.0, ρb=2000.0, h0=100.0, h1=20.0, α0=0.0, α1=0.0, αb=0.0

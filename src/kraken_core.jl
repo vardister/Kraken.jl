@@ -849,6 +849,103 @@ function integral_trapz(y, x)
     return sum((x[2:end] .- x[1:(end - 1)]) .* (y[1:(end - 1)] .+ y[2:end]) ./ 2)
 end
 
+### Integrating medium by medium
+#
+# Every depth integral over a mode — the energy normalization and the attenuation perturbation — has
+# a **discontinuous** integrand: `ρ` jumps at every interface, and so does `α` whenever the loss is
+# confined to a layer. A single trapezoid over the flattened mesh straddles those jumps, and one
+# straddled interval per interface is enough to drop the whole quadrature from second order to first.
+# Measured: `one_layer_env(; α1=0.4)` was 8% away from `kraken.exe` on `Im(kᵣ)` for its best-trapped
+# mode, halving with every mesh doubling.
+#
+# `kraken.f90`'s `Normalize` integrates medium by medium instead, with half-weights at each interface,
+# which is exact for a piecewise-continuous integrand. The three helpers below do the same. They also
+# recover the `[0, Δz]` sliver at the surface that the flat integral silently dropped — worth nothing
+# numerically, since `ψ(0) = 0` makes that integrand zero, but it means the mesh no longer has a hole
+# in it.
+#
+# All three are **on the differentiable seam**: `normalize_mode` is traced, so they must stay
+# allocating and free of mutation. Hence `vcat`/`map` rather than filling buffers.
+
+"""
+    layer_ranges(props::AcousticProblemProperties)
+
+Index ranges of each medium's slice within the flattened depth mesh, so `x[layer_ranges(props)[i]]`
+is medium `i`'s portion of a quantity sampled on `reduce(vcat, props.zn_vec)`.
+"""
+function layer_ranges(props::AcousticProblemProperties)
+    stops = cumsum(props.Nz_vec)
+    starts = vcat(1, stops[1:(end - 1)] .+ 1)
+    return [starts[i]:stops[i] for i in eachindex(props.Nz_vec)]
+end
+
+"""
+    medium_mesh(env::UnderwaterEnv, props::AcousticProblemProperties)
+
+Each medium's depth mesh, extended *upwards* to its own top interface.
+
+[`get_z_vec`](@ref) starts every layer one step below its top boundary, so the raw meshes leave a
+`Δz`-wide hole at each interface. Prepending the interface depth closes it and gives each medium a
+mesh spanning its full thickness — which is what makes a per-medium trapezoid the whole integral
+rather than most of it.
+"""
+function medium_mesh(env::UnderwaterEnv, props::AcousticProblemProperties)
+    z_tops = vcat(zero(eltype(env.layer_depth)), env.layer_depth[1:(end - 1)])
+    return [vcat(z_tops[i], props.zn_vec[i]) for i in eachindex(props.zn_vec)]
+end
+
+"""
+    medium_mode(ψ, props::AcousticProblemProperties)
+
+Each medium's slice of the mode shape, extended to its top interface.
+
+The mode function is *continuous* across an interface, so a medium's value there is simply the last
+sample of the medium above — and zero at the surface, which is the pressure-release condition. This
+is the one quantity that needs no special treatment at a boundary; the profiles are the ones that
+jump.
+"""
+function medium_mode(ψ, props::AcousticProblemProperties)
+    ranges = layer_ranges(props)
+    return [vcat(i == 1 ? zero(eltype(ψ)) : ψ[first(ranges[i]) - 1], ψ[ranges[i]]) for i in eachindex(ranges)]
+end
+
+"""
+    medium_property(sample, profile, props::AcousticProblemProperties)
+
+Each medium's samples of `profile` (via `sample`, one of [`soundspeed`](@ref), [`density`](@ref) or
+[`attenuation`](@ref)), extended to its top interface **from inside that medium**.
+
+This is the part a flat integral gets wrong. The value of `ρ` or `α` *at* an interface depends on
+which side you approach from, and the interpolant cannot be asked — querying exactly on the knot
+returns the medium above (see `linear_interp_partials` in `src/kraken_ad.jl`, where that convention
+is chosen deliberately and for good reasons of its own). So the top value is obtained by linear
+extrapolation from the medium's own first two samples, `2p₁ - p₂`.
+
+That is **exact**, not an approximation: the profiles are piecewise linear, the augmented mesh is
+uniform (a layer's first sample sits exactly `Δz` below its top, and its interior spacing is also
+`Δz`), and both samples lie strictly inside the medium. It is also traceable, which `nextfloat` —
+the obvious alternative — is not, having no method for a `Dual`.
+"""
+function medium_property(sample, profile, props::AcousticProblemProperties)
+    return map(props.zn_vec) do z
+        p = sample(profile, z)
+        return vcat(2 * p[1] - p[2], p)
+    end
+end
+
+"""
+    mode_energy(ψ, env::UnderwaterEnv, props::AcousticProblemProperties)
+
+`∫ ψ(z)² / ρ(z) dz` over the water column and every sediment layer, integrated medium by medium so
+the density discontinuities at the interfaces are resolved exactly rather than averaged across.
+"""
+function mode_energy(ψ, env::UnderwaterEnv, props::AcousticProblemProperties)
+    zz = medium_mesh(env, props)
+    vv = medium_mode(ψ, props)
+    ρρ = medium_property(density, env.ρ, props)
+    return sum(i -> integral_trapz(abs2.(vv[i]) ./ ρρ[i], zz[i]), eachindex(zz))
+end
+
 function create_finite_diff_matrix!(kr, env, props, cache)
     g = get_g(kr, env, props)
 
@@ -933,9 +1030,7 @@ coefficients, and leaving it traced means the backend reaches `env.ρ` through t
 than the eigenvector rule having to carry an interpolant adjoint of its own.
 """
 function normalize_mode(v, kr, env::UnderwaterEnv, props::AcousticProblemProperties)
-    zn = reduce(vcat, props.zn_vec)
-    ρn = density(env.ρ, zn)
-    amp1 = integral_trapz(abs2.(v) ./ ρn, zn) # Amplitude of the waveguide
+    amp1 = mode_energy(v, env, props) # Amplitude of the waveguide, integrated medium by medium
     amp2 = v[end]^2 / (2 * env.ρb * sqrt(kr^2 - (2pi * props.freq / env.cb)^2)) # Same for the bottom half-space
     return v ./ sqrt(amp1 + amp2)
 end
@@ -1015,26 +1110,32 @@ opposite ends of the mode spectrum, which is a useful way to tell which one you 
     bottom cutoff, a strongly attenuating half-space degrades the *least*-trapped mode first — 10%
     for a near-cutoff mode over a 0.5 dB/λ seabed. Inherent to perturbation theory; only a full
     complex solve (`krakenc.exe`) fixes it.
-  * **The volume integral is a single trapezoid over the whole flattened mesh**, so where `α` jumps
-    at a layer interface the quadrature is only first order in the mesh spacing. This degrades the
-    *best*-trapped modes, whose loss comes entirely from a thin tail inside the lossy layer — 8% for
-    mode 1 of `one_layer_env(; α1=0.4)`, halving with every mesh doubling. `kraken.f90` integrates
-    medium by medium, which is exact there; matching it is a pending change that has to move
-    [`normalize_mode`](@ref) too, since the two must stay weighted alike.
+  * **Everything else is ordinary discretization, at second order.** The volume integral is taken
+    medium by medium (see [`mode_energy`](@ref) and the note above it), so a jump in `ρ` or `α` at a
+    layer interface is resolved exactly rather than averaged across by a straddling trapezoid. That
+    is worth 27x on `one_layer_env(; α1=0.4)` — 8.1e-2 against `kraken.exe` with one flat trapezoid,
+    2.9e-3 medium by medium — and it is what keeps a lossy sediment layer usable at the default mesh.
+    Observed convergence order on that case: 2.00.
+
+Calibrating against Fortran below about 1e-3 on a layered case measures `kraken.exe`'s mesh rather
+than this one: its automatic mesh carries ~1.6e-3 of discretization error on `one_layer_env`.
 """
 function modal_attenuation(ψ, kr, env::UnderwaterEnv, props::AcousticProblemProperties)
     ω = 2pi * props.freq
-    zn = reduce(vcat, props.zn_vec)
-    ρn = density(env.ρ, zn)
-    cn = soundspeed(env.c, zn)
-    αn = attenuation(env.α, zn)
+    zz = medium_mesh(env, props)
+    vv = medium_mode(ψ, props)
+    ρρ = medium_property(density, env.ρ, props)
+    cc = medium_property(soundspeed, env.c, props)
+    αα = medium_property(attenuation, env.α, props)
 
-    # Water column: ∫ i·Im(ω²/c̃²)·ψ²/ρ dz, on the same mesh and with the same trapezoidal rule
-    # `normalize_mode` used — the two have to be weighted alike or their ratio is not the average the
-    # perturbation formula asks for.
-    a_np = attenuation_nepers_per_m.(αn, cn, props.freq, env.atten_units)
-    b1c = imag.(ω^2 ./ complex_soundspeed.(cn, a_np, ω) .^ 2)
-    volume = integral_trapz(b1c .* abs2.(ψ) ./ ρn, zn)
+    # Water column: ∫ i·Im(ω²/c̃²)·ψ²/ρ dz, medium by medium and with the same quadrature
+    # `normalize_mode` uses — the two have to be weighted alike or their ratio is not the average the
+    # perturbation formula asks for. That is why both moved to `mode_energy`/`medium_*` together.
+    volume = sum(eachindex(zz)) do i
+        a_np = attenuation_nepers_per_m.(αα[i], cc[i], props.freq, env.atten_units)
+        b1c = imag.(ω^2 ./ complex_soundspeed.(cc[i], a_np, ω) .^ 2)
+        return integral_trapz(b1c .* abs2.(vv[i]) ./ ρρ[i], zz[i])
+    end
 
     # Bottom half-space: the mode leaks into it as ψ(D)e^{-γ(z-D)}, and the integral is closed form.
     ab_np = attenuation_nepers_per_m(env.αb, env.cb, props.freq, env.atten_units)

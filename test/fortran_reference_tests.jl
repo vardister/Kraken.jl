@@ -664,32 +664,21 @@ const KR = KrakenReference
             # is a trap for the first person who uses it — so the lossy variants join the regression
             # list rather than living only in the docs.
             #
-            # `one_layer_env(; α1=…)` is the important row, and it exposed a *second* accuracy limit
-            # that is nothing to do with the half-space cutoff. Measured 2026-08-09:
+            # `one_layer_env(; α1=…)` is the important row: it is the only case here with a lossy
+            # *interior* medium, and it is what exposed the discontinuous-quadrature error that task
+            # 5.7 then fixed. Measured before and after that fix, so the effect is on the record:
             #
-            #   pekeris_env(α0=0.2)                    Re 2.1e-5  Im 7.9e-4
-            #   pekeris_env(αb=0.2)                    Re 1.6e-4  Im 5.8e-2
-            #   one_layer_env(α1=0.4)                  Re 3.0e-5  Im 8.1e-2
-            #   one_layer_env(α0=.1, α1=.4, αb=.1)     Re 4.3e-5  Im 8.7e-3
+            #                                          Re(kᵣ)    Im(kᵣ) before   Im(kᵣ) after
+            #   pekeris_env(α0=0.2)                    2.1e-5    7.9e-4          8.1e-4
+            #   pekeris_env(αb=0.2)                    1.6e-4    5.8e-2          5.8e-2
+            #   one_layer_env(α1=0.4)                  3.0e-5    8.1e-2          2.9e-3
+            #   one_layer_env(α0=.1, α1=.4, αb=.1)     4.3e-5    8.7e-3          7.5e-4
             #
-            # The `α1` row disagrees by 8% and the pattern is *inverted* from the half-space cases:
-            # worst for the best-trapped mode (8.1%) and best for the near-cutoff one (0.4%). It is
-            # pure discretization, and it converges — refining Kraken.jl's mesh drives Julia's value
-            # onto Fortran's at first order, 8.1% → 4.0% → 1.9% → 0.88% → 0.36% for 20/40/80/160/320
-            # points per wavelength.
-            #
-            # First order, not second, because the integrand is *discontinuous*: α jumps at the
-            # sediment interface, and `modal_attenuation` runs one flat trapezoid over the whole
-            # flattened mesh, straddling that jump. `kraken.f90`'s `Normalize` integrates medium by
-            # medium with half-weights at each interface, which is the accurate treatment for a
-            # piecewise-continuous integrand. Mode 1 is worst because it barely penetrates the 20 m
-            # sediment, so its entire loss comes from an exponentially small tail sampled right where
-            # the quadrature is weakest.
-            #
-            # Fixing that means integrating per layer in `modal_attenuation` *and* in
-            # `normalize_mode` — they have to stay weighted alike — which changes the primal mode
-            # normalization and so is a solver change, not a docs one. Left as a follow-up on the
-            # plan rather than smuggled in here; the tolerances below are the honest current numbers.
+            # Exactly the pattern the fix predicts. The two `pekeris` rows are a single water medium
+            # over a half-space, so they have no interior interface to straddle and are untouched —
+            # their residual is the bottom-cutoff limit, which is a property of first-order
+            # perturbation theory and not of the quadrature. The two `one_layer` rows have a lossy
+            # sediment between two interfaces and improve 27x and 12x.
             std_lossy = [
                 (
                     name="pekeris_env(α0=0.2)",
@@ -707,13 +696,13 @@ const KR = KrakenReference
                     name="one_layer_env(α1=0.4)",
                     env=() -> UnderwaterEnv(one_layer_env(; α1=0.4)...),
                     kr_rtol=1e-4,
-                    α_rtol=2e-1,
+                    α_rtol=1e-2,
                 ),
                 (
                     name="one_layer_env(α0=0.1, α1=0.4, αb=0.1)",
                     env=() -> UnderwaterEnv(one_layer_env(; α0=0.1, α1=0.4, αb=0.1)...),
                     kr_rtol=1e-4,
-                    α_rtol=5e-2,
+                    α_rtol=5e-3,
                 ),
             ]
 
@@ -735,6 +724,50 @@ const KR = KrakenReference
             for build in (pekeris_env, one_layer_env, one_layer_slope_env, two_layer_slope_env, munk_env)
                 @test !is_lossy(UnderwaterEnv(build()...))
             end
+        end
+
+        @testset "M5.7: the perturbation integral converges at second order" begin
+            # The tolerance above says the lossy-layer case is now accurate; this says *why*, which
+            # is the part that will still be true after someone changes the mesh defaults.
+            #
+            # Before 5.7 a single trapezoid ran across the α jump at the top of the sediment, and the
+            # error fell as O(h): 8.1e-2, 4.0e-2, 1.9e-2, 8.8e-3, 3.6e-3 at 20/40/80/160/320 points
+            # per wavelength — a measured order of 1.12. Integrating medium by medium removes the
+            # straddled interval, and the error should now fall as O(h²).
+            env = UnderwaterEnv(one_layer_env(; α1=0.4)...)
+            freq = 100.0
+
+            function alpha_at(npw)
+                props = AcousticProblemProperties(env, freq; n_per_wavelength=npw)
+                cache = AcousticProblemCache(env, props)
+                krc, ψ = inverse_iteration(find_kr(env, props, cache), env, props, cache; reltol=1e-10)
+                return map(eachindex(krc)) do m
+                    δ = Kraken.modal_attenuation(view(ψ, :, m), krc[m], env, props)
+                    return imag(sqrt(complex(krc[m]^2) + δ))
+                end
+            end
+
+            # The reference is Kraken.jl's *own* finely resolved answer, not kraken.exe's. That is
+            # deliberate and it is the only way this measures what it claims to: `kraken.exe` runs on
+            # its own automatic mesh and carries about 1.6e-3 of discretization error on this case,
+            # which is a floor, not a slope. Measured against it the observed order flattens to 0.57,
+            # 0.19, 0.05 as our error drops below Fortran's — an artifact of the reference, and
+            # exactly the trap this comment exists to stop someone falling into.
+            reference = alpha_at(320)[1]
+            errs = [abs(alpha_at(npw)[1] - reference) / abs(reference) for npw in (20, 40, 80)]
+
+            @test all(errs .> 0)
+            @test issorted(errs; rev=true)
+
+            # Order = log2 of the ratio between successive mesh doublings. Before 5.7 this was 1.12
+            # (a single trapezoid straddling the α jump at the sediment top); after, it is 2.00.
+            orders = [log2(errs[i] / errs[i + 1]) for i in 1:(length(errs) - 1)]
+            @test all(orders .> 1.8)
+
+            # ...and the agreement with kraken.exe at the *default* mesh, which is the number a user
+            # actually meets. 8.1e-2 before 5.7, 2.9e-3 after.
+            fortran = imag.(KR.run_fortran_kraken(env, freq).kᵣ)
+            @test abs(alpha_at(20)[1] - fortran[1]) / abs(fortran[1]) < 1e-2
         end
 
         @testset "M5.3: the two solvers agree to first order in α" begin

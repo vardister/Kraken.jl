@@ -257,35 +257,49 @@ Three things about that spread are worth understanding before changing any of th
 
 #### A second, unrelated limit: quadrature at a discontinuity (task 5.5)
 
-The lossy *standard environments* added in 5.5 are in the suite too, and one of them exposed an
-accuracy limit that has nothing to do with the half-space cutoff above. Measured 2026-08-09 at 100 Hz:
+The lossy *standard environments* added in 5.5 are in the suite too. One of them — the only case with
+a lossy *interior* medium — exposed an accuracy limit unrelated to the half-space cutoff above, which
+task 5.7 then fixed. Both columns are kept because the contrast is the evidence:
 
-| environment | max rel Δ Re(kᵣ) | max rel Δ Im(kᵣ) | tolerance asserted |
-|---|---|---|---|
-| `pekeris_env(; α0=0.2)` | 2.1e-5 | 7.9e-4 | 1e-4 / 5e-3 |
-| `pekeris_env(; αb=0.2)` | 1.6e-4 | 5.8e-2 | 1e-3 / 2e-1 |
-| `one_layer_env(; α1=0.4)` | 3.0e-5 | **8.1e-2** | 1e-4 / 2e-1 |
-| `one_layer_env(; α0=0.1, α1=0.4, αb=0.1)` | 4.3e-5 | 8.7e-3 | 1e-4 / 5e-2 |
+| environment | max rel Δ Re(kᵣ) | Im(kᵣ) before 5.7 | Im(kᵣ) after 5.7 | tolerance asserted |
+|---|---|---|---|---|
+| `pekeris_env(; α0=0.2)` | 2.1e-5 | 7.9e-4 | 8.1e-4 | 1e-4 / 5e-3 |
+| `pekeris_env(; αb=0.2)` | 1.6e-4 | 5.8e-2 | 5.8e-2 | 1e-3 / 2e-1 |
+| `one_layer_env(; α1=0.4)` | 3.0e-5 | **8.1e-2** | **2.9e-3** | 1e-4 / 1e-2 |
+| `one_layer_env(; α0=0.1, α1=0.4, αb=0.1)` | 4.3e-5 | 8.7e-3 | 7.5e-4 | 1e-4 / 5e-3 |
 
-The `α1` row is 8% out, and the pattern is **inverted** from the half-space cases — worst on the
-*best*-trapped mode (8.1%), best on the near-cutoff one (0.4%). It is not a formula difference: it is
-clean first-order discretization, and refining the mesh drives Julia's value onto Fortran's —
+Exactly the pattern the fix predicts: the two `pekeris` rows are a single water medium over a
+half-space, have no interior interface to straddle, and are untouched — their residual is the
+bottom-cutoff limit above. The two `one_layer` rows improve 27x and 12x.
 
-| points per wavelength | 20 | 40 | 80 | 160 | 320 |
-|---|---|---|---|---|---|
-| rel Δ Im(kᵣ), mode 1 | 8.1e-2 | 4.0e-2 | 1.9e-2 | 8.8e-3 | 3.6e-3 |
+**What was wrong.** `ρ` jumps at every interface, and `α` jumps wherever the loss is confined to a
+layer, so the integrands of *both* the energy normalization and the attenuation perturbation are
+discontinuous. Both ran a single `integral_trapz` over the whole flattened mesh, and one straddled
+interval per interface is enough to drop the entire quadrature from second order to first. The
+resulting error pattern was **inverted** from the half-space cases — worst on the *best*-trapped
+mode, whose loss comes entirely from an exponentially small tail inside the sediment, sampled exactly
+where the quadrature was weakest.
 
-First order rather than second because the integrand is **discontinuous**: α jumps at the top of the
-sediment, and `modal_attenuation` runs one flat `integral_trapz` over the whole flattened mesh,
-straddling that jump. `kraken.f90`'s `Normalize` integrates medium by medium with half-weights at
-each interface, which is exact there. Mode 1 suffers most because it barely penetrates the 20 m
-sediment, so its entire loss comes from an exponentially small tail sampled right where the
-quadrature is weakest.
+**The fix.** `normalize_mode` and `modal_attenuation` integrate medium by medium, as `kraken.f90`'s
+`Normalize` does. `medium_mesh` / `medium_mode` / `medium_property` in `src/kraken_core.jl` extend
+each medium's samples up to its own top interface: the mode is continuous there so its value carries
+over from the medium above, while the *profiles* are extrapolated from inside the medium as
+`2p₁ - p₂` — exact, because the profiles are piecewise linear and the augmented mesh is uniform. The
+two functions had to move together, since the perturbation is a ratio against the normalization and
+they must stay weighted alike.
 
-Fixing it means integrating per layer in `modal_attenuation` **and** in `normalize_mode` — they are a
-ratio and have to stay weighted alike — which moves the primal mode normalization and so is a solver
-change. It is plan task 5.7, written up there with the numbers. Unlike the cutoff limit above, this
-one is fixable without a complex solve.
+**Observed convergence order on `one_layer_env(; α1=0.4)`, mode 1:**
+
+| | 20→40 | 40→80 | 80→160 | 160→320 |
+|---|---|---|---|---|
+| before 5.7 | 1.02 | 1.07 | 1.11 | 1.29 |
+| after 5.7 | 2.00 | 2.00 | 2.02 | 2.07 |
+
+**Measure that order against Kraken.jl's own fine solution, not against `kraken.exe`.** On this case
+`kraken.exe`'s automatic mesh carries about **1.6e-3** of its own discretization error, and that is a
+floor rather than a slope: measured against Fortran the apparent order collapses to 0.57, 0.19, 0.05
+as our error drops below its. `"M5.7: the perturbation integral converges at second order"` uses a
+self-reference for exactly this reason, and says so in a comment.
 
 `VolAtt`, named in the plan, is deliberately **not** in the table: every file in it puts an
 acousto-elastic half-space *above* the surface and gives the bottom the water's own sound speed, so

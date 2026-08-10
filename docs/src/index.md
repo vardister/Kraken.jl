@@ -104,14 +104,17 @@ a strongly attenuating half-space degrades the top of the mode spectrum first. A
 `kraken.exe` runs from 1.8e-3 on a weakly attenuating waveguide to ~10% for a near-cutoff mode over a
 0.5 dB/λ seabed. This one is inherent to the method — the fix is the full complex solve.
 
-**2. The perturbation integral is a single trapezoid over the whole depth mesh**, so where the
-attenuation is *discontinuous* — the top of a lossy sediment layer, say — the quadrature is only
-first-order accurate in the mesh spacing. This one hits the *best*-trapped modes hardest, because
-their loss comes entirely from an exponentially small tail inside the layer. On
-`one_layer_env(; α1=0.4)` mode 1 disagrees with `kraken.exe` by 8%, halving with every mesh doubling
-(8.1% → 4.0% → 1.9% → 0.88% → 0.36% at 20/40/80/160/320 points per wavelength). `kraken.exe`
-integrates medium by medium, which is exact at the interface; Kraken.jl does not yet. Until it does,
-refine the mesh if a thin lossy layer's attenuation is the number you care about.
+**2. Everything else is ordinary discretization, and it is second order.** Both the energy
+normalization and the perturbation integral are taken *medium by medium*, matching what
+`kraken.f90`'s `Normalize` does, so a jump in ``\rho`` or ``\alpha`` at a layer interface is resolved
+exactly instead of averaged across by a trapezoid that straddles it. That matters more than it
+sounds: a single straddled interval per interface is enough to drop the whole quadrature to first
+order, and on `one_layer_env(; α1=0.4)` it was the difference between 8.1e-2 and 2.9e-3 agreement
+with `kraken.exe`. The observed convergence order on that case is 2.00.
+
+Worth knowing when calibrating against Fortran: at a lossy sediment layer `kraken.exe` itself carries
+about 1.6e-3 of discretization error on its automatic mesh, so agreement below that says more about
+its mesh than about ours.
 
 Neither affects ``\mathrm{Re}(k_r)``, which stays within 1e-4 of `kraken.exe` on all of these. The
 measured table is in

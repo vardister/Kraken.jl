@@ -1423,7 +1423,7 @@ definition of these units:
 - **Acceptance:** Docs build; the lossy standard environments are covered by the cross-validation suite.
 - **Dependencies:** 5.4
 
-### 5.7 [ ] Integrate the perturbation and the normalization medium by medium
+### 5.7 [x] Integrate the perturbation and the normalization medium by medium *(completed 2026-08-10)*
 - **Files:** `src/kraken_core.jl`, `test/fortran_reference_tests.jl`
 - **What:** `modal_attenuation` and `normalize_mode` both run a **single** `integral_trapz` over the
   whole flattened depth mesh. Where the integrand is discontinuous — α jumps at the top of a lossy
@@ -1446,6 +1446,29 @@ definition of these units:
   Mode *correlation* is normalization-invariant so those assertions should hold, but the Milestone 4
   mode-shape gradient tests compare against ForwardDiff on the same primal and will simply follow.
 - **Dependencies:** 5.5
+
+**Outcome.** Done as designed and it worked: `one_layer_env(; α1=0.4)` went from **8.1e-2 to 2.9e-3**
+against `kraken.exe` (27x), the mixed-loss variant from 8.7e-3 to 7.5e-4 (12x), and the measured
+convergence order on the first went from 1.12 to **2.00**. The two single-medium `pekeris` rows are
+unchanged to three digits, which is the control: no interior interface, nothing to straddle, and
+their residual is the bottom-cutoff limit that this does not touch. `Re(kᵣ)`, mode counts and mode
+correlations are unchanged throughout, so no lossless tolerance moved.
+
+Three things learned that are worth keeping:
+
+- **The interface property has to come from *inside* the medium.** Querying the interpolant exactly
+  on the knot returns the medium *above* (a convention `linear_interp_partials` chooses deliberately,
+  for its own good reasons), so `medium_property` extrapolates as `2p₁ - p₂` from the medium's own
+  first two samples. That is exact rather than approximate — the profiles are piecewise linear and a
+  layer's first sample sits exactly `Δz` below its top, with interior spacing also `Δz`. `nextfloat`
+  would have been the obvious alternative and is not traceable: it has no `Dual` method.
+- **Do not measure a convergence order against `kraken.exe`.** Its automatic mesh carries ~1.6e-3 of
+  its own error on this case, which is a floor, not a slope — measured against Fortran the apparent
+  order collapses to 0.57, 0.19, 0.05 as our error drops below its. The test uses Kraken.jl's own
+  fine solution as the reference and says why.
+- **The surface sliver came back for free.** The flat integral silently skipped `[0, Δz]`; the
+  per-medium one includes it. Numerically worth nothing, since `ψ(0) = 0` makes that integrand zero,
+  but the mesh no longer has a hole in it.
 
 ### 5.6 [ ] (Stretch) Full complex solve for leaky modes
 - **Files:** `src/kraken_core.jl`, `test/fortran_reference_tests.jl`

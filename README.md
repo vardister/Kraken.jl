@@ -87,11 +87,11 @@ spectrum:
   bottom cutoff — so a strongly attenuating seabed degrades the *least*-trapped mode first.
   Agreement with `kraken.exe` runs from 1.8e-3 on a weakly attenuating waveguide to ~10% for a
   near-cutoff mode over a 0.5 dB/λ seabed. Inherent to the method; the fix is the full complex solve.
-- **The perturbation integral is one trapezoid over the whole mesh**, so at a *discontinuity* in the
-  attenuation — the top of a lossy sediment layer — it is only first-order accurate in the mesh
-  spacing. This hits the *best*-trapped modes hardest: on `one_layer_env(; α1=0.4)` mode 1 is 8% out,
-  halving with every mesh doubling. `kraken.exe` integrates medium by medium, which is exact there;
-  Kraken.jl does not yet, so refine the mesh if a thin lossy layer is what you care about.
+- **Everything else is ordinary discretization**, and it is second order in the mesh spacing. Both the
+  energy normalization and the perturbation integral are taken medium by medium, so a jump in `ρ` or
+  `α` at a layer interface is resolved exactly rather than averaged across — on
+  `one_layer_env(; α1=0.4)` that is the difference between 8.1e-2 and 2.9e-3 agreement, and it is
+  what keeps a lossy sediment layer usable at the default mesh.
 
 Neither affects `Re(kᵣ)`, which stays within 1e-4 of `kraken.exe` throughout.
 [`test/README.md`](test/README.md) has the measured table.
