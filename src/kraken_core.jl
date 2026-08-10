@@ -396,8 +396,11 @@ It is deliberately a test on the *stored* values rather than on the converted on
 to zero nepers/m and `α = 0` does too, so both spellings of "lossless" take the same branch.
 
 Under AD this is a discrete decision on a parameter value, in the same family as the mesh-schedule
-choice in `kraken_jl`. An environment whose `α` is a perturbed zero is still lossless here, so the
-derivative of `imag(kr)` at `α = 0` is one-sided; differentiate at a nonzero attenuation instead.
+choice in `kraken_jl`, and `α = 0` is a genuine kink: `imag(kr)` is identically zero below it and
+linear above. The two AD modes therefore take **opposite sides** there and neither complains —
+ForwardDiff's `iszero` on a `Dual` sees the seed and takes the lossy branch (right-hand derivative),
+while Zygote evaluates this on the primal and takes the lossless one (zero). Differentiate at a
+nonzero attenuation. See the note at the end of `src/kraken_ad.jl`.
 """
 is_lossy(env::UnderwaterEnv) = any(!iszero, env.α.α) || !iszero(env.αb)
 
@@ -1002,6 +1005,22 @@ factor. `kr` is the real wavenumber the lossless solve converged to.
 The result is purely imaginary and negative, so `√(kᵣ² + δ)` has a negative imaginary part and the
 mode decays with range. See the derivation in the comment block above; the units of `env.α`/`env.αb`
 are `env.atten_units` and are converted here, where the frequency is finally known.
+
+# Accuracy
+
+Two independent limits, measured against `kraken.exe` and recorded in `test/README.md`. They hit
+opposite ends of the mode spectrum, which is a useful way to tell which one you are looking at.
+
+  * **The half-space term is first order in `2ω a_b/(c_b γ²)`, not in `a_b`.** Since `γ → 0` at the
+    bottom cutoff, a strongly attenuating half-space degrades the *least*-trapped mode first — 10%
+    for a near-cutoff mode over a 0.5 dB/λ seabed. Inherent to perturbation theory; only a full
+    complex solve (`krakenc.exe`) fixes it.
+  * **The volume integral is a single trapezoid over the whole flattened mesh**, so where `α` jumps
+    at a layer interface the quadrature is only first order in the mesh spacing. This degrades the
+    *best*-trapped modes, whose loss comes entirely from a thin tail inside the lossy layer — 8% for
+    mode 1 of `one_layer_env(; α1=0.4)`, halving with every mesh doubling. `kraken.f90` integrates
+    medium by medium, which is exact there; matching it is a pending change that has to move
+    [`normalize_mode`](@ref) too, since the two must stay weighted alike.
 """
 function modal_attenuation(ψ, kr, env::UnderwaterEnv, props::AcousticProblemProperties)
     ω = 2pi * props.freq

@@ -281,6 +281,75 @@ function ChainRulesCore.rrule(::Type{SampledAttenuation1D}, depth, α, f)
     return SampledAttenuation1D(depth, α, f), SampledAttenuation1D_pullback
 end
 
+### Differentiating a lossy solve ------------------------------------------------------------------
+#
+# Milestone 5 made `kraken_jl` return **complex** wavenumbers whenever the environment declares any
+# attenuation. That needed no new rule, and it is worth being precise about why, because "it just
+# worked" is not a property anyone can rely on later.
+#
+# `modal_attenuation` is ordinary traced arithmetic: an interpolant lookup per profile, a trapezoidal
+# integral, a square root. Everything opaque to the tape is *upstream* of it — the wavenumbers come
+# from `solve_for_kr` and the mode shapes from `mode_eigenvector`, both of which already carry rules.
+# So the new path from `env.α`/`env.αb` to `imag(kr)` is traced end to end and reverse mode follows it
+# by construction. Measured on a lossy Pekeris waveguide, Zygote and ForwardDiff agree to ~1e-10 on
+# the full parameter gradient, `∂/∂α` included.
+#
+# WHAT A GRADIENT MEANS ONCE `kr` IS COMPLEX
+#
+# The rule is simple and it is the standard one: **real parameters in, real loss out, complex only in
+# between.** Under that restriction the gradient is unambiguous, every backend computes the same
+# thing, and no conjugation convention has to be chosen or documented. All of these are fine:
+#
+#     sum(imag, sol.kr)          # modal attenuation — the quantity Milestone 5 added
+#     sum(real, sol.kr)          # phase — unchanged from the lossless solve to second order
+#     sum(abs2, sol.kr)
+#
+# A *complex-valued* loss is not fine, and fails loudly rather than silently: Zygote raises
+# `"Output is complex, so the gradient is not defined."` on `θ -> sol.kr[1]`. That is correct — there
+# is no single real gradient of a complex output — and it is left as it is rather than papered over
+# with a convention, because any choice here (Wirtinger, conjugate cotangent, "the real part") would
+# be a choice the caller should be making. Take `real`, `imag` or `abs2` first. ForwardDiff will
+# happily return a `Complex` derivative for the same function, so the two backends *disagree about
+# whether the question is well posed*; that asymmetry is the reason to state the convention rather
+# than let each caller discover it.
+#
+# THE ZERO-ATTENUATION DISCONTINUITY, WHERE THE TWO MODES DISAGREE
+#
+# `is_lossy` branches on the stored attenuation values, so it is a discrete decision in the
+# parameters — the same family as the mesh-schedule choice in `kraken_jl`. `imag(kr)` is identically
+# zero for α ≤ 0 and linear in α above it, so α = 0 is a genuine kink and the derivative there is
+# one-sided. What is worth knowing is that **the two AD modes pick opposite sides**, and neither
+# raises anything (measured on a lossy Pekeris waveguide at 100 Hz):
+#
+#     ∂ sum(imag, kr) / ∂α  at  α = 0     ForwardDiff  -0.0372      Zygote  0.0
+#     ...and at α = 1e-6                  ForwardDiff  -0.0372      Zygote -0.0372   (agree to 1e-15)
+#
+# The mechanism is not subtle once seen. ForwardDiff's `iszero` on a `Dual` sees the *perturbation*,
+# not just the value, so a seeded zero attenuation reports as nonzero, `is_lossy` returns `true`, and
+# the whole attenuation path is evaluated — giving the correct right-hand derivative. Zygote calls
+# `is_lossy` on the primal `Float64`s during the forward pass, gets `false`, and the attenuation path
+# never makes it onto the tape at all — giving the left-hand derivative, which is zero.
+#
+# Both answers are defensible one-sided derivatives of a function that has no two-sided one there, so
+# there is nothing to fix in either backend. It is documented rather than papered over because a
+# silent disagreement between two backends is exactly the kind of thing that gets mistaken for a bug
+# in the rules. Dropping the branch is not the answer either: giving every lossless solve a
+# structural `0.0im` would change the element type of `NormalModeSolution.kr` for every existing
+# user, to buy a derivative at one measure-zero point. **Differentiate at a nonzero attenuation** —
+# which is the only place the derivative is physically interesting anyway.
+#
+# MOONCAKE CANNOT TRACE THE COMPLEX PATH
+#
+# Zygote handles the lossy solve; Mooncake does not, and fails loudly rather than quietly:
+#
+#     ArgumentError: It is not permissible to bitcast to a differentiable type during AD ...
+#
+# It comes from the complex arithmetic `add_attenuation` introduces (`sqrt` of a `Complex`), not from
+# anything in this file, and there is no rule here that would fix it — the offending call is inside
+# Mooncake's own handling of `Complex`. So reverse mode over a *lossy* environment means Zygote
+# today. The lossless path is unaffected and both backends still cover it; `test/reverse_ad_tests.jl`
+# pins the limitation so that its lifting is noticed.
+
 """
     sturm_sensitivities(kr, env, props, cache)
 
