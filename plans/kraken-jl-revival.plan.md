@@ -1299,7 +1299,7 @@ must all be supported at parse time, because OALIB test cases use several of the
   attenuation test files parse with the correct unit detected.
 - **Dependencies:** 4.7
 
-### 5.2 [ ] Compute modal attenuation by perturbation
+### 5.2 [x] Compute modal attenuation by perturbation *(completed 2026-08-09)*
 - **Files:** `src/kraken_core.jl`
 - **What:** After the real solve converges, compute the imaginary part of each `kr` by the standard
   perturbation integral over the mode shape weighted by the attenuation and density profiles, including the

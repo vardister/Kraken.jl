@@ -20,6 +20,7 @@ export attenuation_nepers_per_m, ATTENUATION_UNIT_CHARS, DEFAULT_ATTENUATION_UNI
 export UnderwaterEnv, AcousticProblemProperties, UnderwaterEnvFORTRAN
 export AcousticProblemCache, bisection, solve_for_kr, inverse_iteration, det_sturm, kraken_jl, find_kr, get_g
 export finite_difference_coefficients, mode_eigenvector, normalize_mode
+export modal_attenuation, complex_soundspeed, add_attenuation
 
 ### The differentiable seam
 #
@@ -936,6 +937,95 @@ function normalize_mode(v, kr, env::UnderwaterEnv, props::AcousticProblemPropert
     return v ./ sqrt(amp1 + amp2)
 end
 
+### Modal attenuation by perturbation
+#
+# `kraken.exe` does not solve a complex eigenproblem. It solves the real one, then adds the loss as a
+# first-order perturbation of the eigenvalue — and `krakenc.exe` is the separate program that does
+# the full complex solve. This follows `kraken.exe`, for the reasons in the milestone's key
+# decisions: it is a much smaller change than a complex root find, and it leaves every Milestone 4
+# rule real-valued.
+#
+# The derivation, so the code below is checkable rather than incantation. The depth equation is
+#
+#     ρ (ψ'/ρ)' + (ω²/c² - kᵣ²) ψ = 0,        ∫ ψ²/ρ dz = 1
+#
+# and attenuation enters by making `c` complex. KRAKEN's `CRCI` builds `c̃ = c + i a c²/ω` from an
+# attenuation `a` in nepers/m, which to first order gives
+#
+#     ω²/c̃² ≈ ω²/c² - 2i ω a / c
+#
+# Standard first-order eigenvalue perturbation of a self-adjoint operator: the change in the
+# eigenvalue is the perturbation of the potential, averaged against the normalized eigenfunction. The
+# eigenvalue here is kᵣ², so
+#
+#     δ(kᵣ²) = ∫ δ(ω²/c²) ψ²/ρ dz = -2iω ∫ a ψ² / (c ρ) dz
+#
+# over the water column, plus the bottom half-space, where the mode decays as ψ(D) e^{-γ(z-D)} with
+# γ = √(kᵣ² - (ω/c_b)²). That integral is elementary:
+#
+#     ∫_D^∞ (-2iω a_b/c_b) ψ(D)² e^{-2γ(z-D)} / ρ_b dz = -i ω a_b ψ(D)² / (γ c_b ρ_b)
+#
+# and finally kᵣ = √(kᵣ² + δ(kᵣ²)). Every step of that is what `Normalize` in `Kraken/kraken.f90`
+# does: it accumulates `h · i · B1C · Φ²/ρ` with `B1C = AIMAG(ω²/c̃²)`, adds the half-space term as
+# `-i·AIMAG(√(x - ω²/c̃_b²))·Φ(D)²/ρ_b`, and `Solve` closes with `k = SQRT(Extrap + k)`.
+#
+# Two things are deliberately *not* simplified to the linearized forms above:
+#
+#   * `B1C` is computed as `imag(ω²/c̃²)` from the complex sound speed, not as `-2ωa/c`. That is what
+#     the Fortran evaluates, and the difference — O((ac/ω)²), around 1e-8 relative — costs nothing.
+#   * kᵣ is recovered with `sqrt(kᵣ² + δ)`, not as `kᵣ + δ/(2kᵣ)`. Same reason.
+#
+# The mode shapes come from the *coarsest* mesh while the wavenumbers are Richardson-extrapolated, so
+# the perturbation is evaluated on the coarse mesh and added to the extrapolated kᵣ². That is not an
+# oversight: `kraken.f90` calls `Vector` only when `iSet == 1` and combines the two exactly this way.
+
+"""
+    complex_soundspeed(c, α_nepers, ω)
+
+KRAKEN's complex sound speed: `c + i α c² / ω`, for an attenuation `α` already in nepers per metre.
+
+This is the last line of `CRCI` (`alphaT = alphaT * c * c / omega; CRCI = CMPLX( c, alphaT )`). The
+imaginary part is arranged so that `ω / c̃ ≈ ω/c - iα`, i.e. so a plane wave in a homogeneous medium
+loses exactly `α` nepers per metre — which is what makes `α` mean what its units say.
+"""
+complex_soundspeed(c, α_nepers, ω) = complex(c, α_nepers * c^2 / ω)
+
+"""
+    modal_attenuation(ψ, kr, env::UnderwaterEnv, props::AcousticProblemProperties)
+
+First-order perturbation `δ(kᵣ²)` of a mode's squared wavenumber due to material absorption.
+
+`ψ` is a mode shape already normalized by [`normalize_mode`](@ref) — the perturbation formula assumes
+`∫ψ²/ρ + ψ(D)²/(2ρ_b γ) = 1`, so passing an unnormalized eigenvector gives an answer wrong by that
+factor. `kr` is the real wavenumber the lossless solve converged to.
+
+The result is purely imaginary and negative, so `√(kᵣ² + δ)` has a negative imaginary part and the
+mode decays with range. See the derivation in the comment block above; the units of `env.α`/`env.αb`
+are `env.atten_units` and are converted here, where the frequency is finally known.
+"""
+function modal_attenuation(ψ, kr, env::UnderwaterEnv, props::AcousticProblemProperties)
+    ω = 2pi * props.freq
+    zn = reduce(vcat, props.zn_vec)
+    ρn = density(env.ρ, zn)
+    cn = soundspeed(env.c, zn)
+    αn = attenuation(env.α, zn)
+
+    # Water column: ∫ i·Im(ω²/c̃²)·ψ²/ρ dz, on the same mesh and with the same trapezoidal rule
+    # `normalize_mode` used — the two have to be weighted alike or their ratio is not the average the
+    # perturbation formula asks for.
+    a_np = attenuation_nepers_per_m.(αn, cn, props.freq, env.atten_units)
+    b1c = imag.(ω^2 ./ complex_soundspeed.(cn, a_np, ω) .^ 2)
+    volume = integral_trapz(b1c .* abs2.(ψ) ./ ρn, zn)
+
+    # Bottom half-space: the mode leaks into it as ψ(D)e^{-γ(z-D)}, and the integral is closed form.
+    ab_np = attenuation_nepers_per_m(env.αb, env.cb, props.freq, env.atten_units)
+    cb_complex = complex_soundspeed(env.cb, ab_np, ω)
+    γ_complex = sqrt(complex(kr^2) - ω^2 / cb_complex^2)
+    halfspace = -imag(γ_complex) * ψ[end]^2 / env.ρb
+
+    return im * (volume + halfspace)
+end
+
 """
     inverse_iteration(kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; kwargs...)
 
@@ -1054,7 +1144,7 @@ function kraken_jl(env, freq; n_meshes=5, rmax=10_000, method=ITP(), dont_break=
     krs_coarse, modes = inverse_iteration(krs, env, props, cache)
     # If we want only one mesh calculation (n_meshes = 1), return the result
     if n_meshes == 1
-        return NormalModeSolution(krs_coarse, modes, env, props)
+        return NormalModeSolution(add_attenuation(krs_coarse, modes, env, props), modes, env, props)
     end
 
     # Richardson Extrapolation from here on out if n_mesh > 1
@@ -1096,7 +1186,24 @@ function kraken_jl(env, freq; n_meshes=5, rmax=10_000, method=ITP(), dont_break=
         krs_old = krs_new
     end
 
-    return NormalModeSolution(rich_krs[1:M], modes[:, 1:M], env, props)
+    return NormalModeSolution(add_attenuation(rich_krs[1:M], modes[:, 1:M], env, props), modes[:, 1:M], env, props)
+end
+
+"""
+    add_attenuation(krs, modes, env, props)
+
+Turn converged real wavenumbers into complex ones by adding the first-order attenuation perturbation
+of [`modal_attenuation`](@ref) to each `kᵣ²`.
+
+**Returns `krs` unchanged, and still real, when `env` declares no attenuation.** That is the point of
+the `is_lossy` guard rather than adding a zero: a lossless environment goes through the same
+arithmetic it always did and every existing result stays bit-identical, instead of acquiring a
+`0.0im` that changes the element type of `NormalModeSolution.kr` and of everything downstream of it.
+"""
+function add_attenuation(krs, modes, env::UnderwaterEnv, props::AcousticProblemProperties)
+    is_lossy(env) || return krs
+    isempty(krs) && return krs
+    return map(m -> sqrt(complex(krs[m]^2) + modal_attenuation(view(modes, :, m), krs[m], env, props)), eachindex(krs))
 end
 
 struct NormalModeSolution{T1,T2}
