@@ -31,10 +31,10 @@ using Random: AbstractRNG
 # Needed because ForwardDiff has to perturb `cb`, `ρb` and `freq` *without* rebuilding the cache —
 # that is exactly the partial derivative the rule computes for the half-space term.
 
-function env_with(env; cb=env.cb, ρb=env.ρb)
-    T = promote_type(typeof(cb), typeof(ρb))
-    return UnderwaterEnv{typeof(env.c),typeof(env.ρ),T}(
-        env.c, env.ρ, T(cb), T(ρb), T.(env.h_vec), T.(env.layer_depth), T(env.depth)
+function env_with(env; cb=env.cb, ρb=env.ρb, αb=env.αb)
+    T = promote_type(typeof(cb), typeof(ρb), typeof(αb))
+    return UnderwaterEnv{typeof(env.c),typeof(env.ρ),T,typeof(env.α)}(
+        env.c, env.ρ, T(cb), T(ρb), T.(env.h_vec), T.(env.layer_depth), T(env.depth), env.α, T(αb), env.atten_units
     )
 end
 
@@ -557,6 +557,191 @@ const TARGETS = [
                 @test relerr_norm(gradients[k], gradients[1]) < 1e-11
             end
         end
+    end
+end
+
+### Milestone 5: differentiating a lossy solve -----------------------------------------------------
+#
+# `modal_attenuation` needed no rule of its own — it is traced arithmetic sitting downstream of the
+# two functions that do carry rules. These tests are what makes that claim checkable rather than
+# hopeful, and they pin the one thing attenuation genuinely changes: `kr` is now complex, so what
+# counts as a differentiable loss is narrower than it was.
+
+# `θ = [c0, cb, ρ0, ρb, depth, α0, αb]` — the Pekeris parameters plus both attenuations. Built the
+# same non-mutating way as every other environment here; `pekeris_env`'s matrix literals promote, so
+# a `Dual` or a tracked value in `α0`/`αb` reaches the solver intact.
+pekeris_lossy(θ) = UnderwaterEnv(pekeris_env(; c0=θ[1], cb=θ[2], ρ0=θ[3], ρb=θ[4], depth=θ[5], α0=θ[6], αb=θ[7])...)
+
+# 0.1 dB/λ in the water and 0.3 in the seabed: lossy enough that `Im(kᵣ)` is far above roundoff,
+# weak enough that the near-cutoff mode is not in the saturating regime documented in
+# `test/README.md` (which would make the finite-difference reference the inaccurate side).
+θ_lossy = [1500.0, 1600.0, 1000.0, 1500.0, 100.0, 0.1, 0.3]
+
+lossy_kr(θ; freq=100.0) = kraken_jl(pekeris_lossy(θ), freq; TOL...).kr
+
+@testset "Reverse-mode AD through attenuation" begin
+    @testset "the environment is actually lossy and actually complex" begin
+        # If this fails, everything below is silently testing the lossless solver.
+        env = pekeris_lossy(θ_lossy)
+        @test is_lossy(env)
+        @test eltype(lossy_kr(θ_lossy)) === ComplexF64
+        @test all(imag.(lossy_kr(θ_lossy)) .< 0)
+        # ...and the lossless corner of the same parameterization is not complex.
+        @test eltype(lossy_kr([1500.0, 1600.0, 1000.0, 1500.0, 100.0, 0.0, 0.0])) === Float64
+    end
+
+    @testset "d(imag kᵣ)/dα — $name" for (name, target) in (
+        ("summed", θ -> sum(imag, lossy_kr(θ))),
+        ("first mode", θ -> imag(lossy_kr(θ)[1])),
+        ("last mode", θ -> imag(lossy_kr(θ)[end])),
+    )
+        # The plan's acceptance criterion. Both attenuation entries must carry a real gradient —
+        # a silently-zero ∂/∂α is precisely what a missing interpolant rule would produce.
+        g_forward = ForwardDiff.gradient(target, θ_lossy)
+        g_zygote = Zygote.gradient(target, θ_lossy)[1]
+
+        @test relerr_norm(g_zygote, g_forward) < 1e-8
+        @test g_forward[6] != 0                      # ∂/∂α0, the water column
+        @test g_forward[7] != 0                      # ∂/∂αb, the half-space
+        @test all(isfinite, g_zygote)
+
+        # More loss means more attenuation, and `Im(kᵣ)` is negative — so both derivatives are
+        # negative. Sign errors here are the failure this whole milestone is exposed to.
+        @test g_forward[6] < 0
+        @test g_forward[7] < 0
+    end
+
+    @testset "against central differences, which use no AD at all" begin
+        # ForwardDiff and Zygote agreeing proves the rules are consistent, not that they are right —
+        # both read the same primal. `α0` and `αb` move no mesh (unlike `cb` and `depth`; see the
+        # note on ENVIRONMENTS), so a central difference in them is a clean independent reference.
+        target = θ -> sum(imag, lossy_kr(θ))
+        g_forward = ForwardDiff.gradient(target, θ_lossy)
+        for k in (6, 7)
+            fd = central(x -> target([θ_lossy[1:(k - 1)]; x; θ_lossy[(k + 1):end]]), θ_lossy[k])
+            @test isapprox(fd, g_forward[k]; rtol=1e-5)
+        end
+    end
+
+    @testset "real-valued losses over a complex kᵣ — $name" for (name, target) in (
+        ("real part", θ -> sum(real, lossy_kr(θ))),
+        ("abs2", θ -> sum(abs2, lossy_kr(θ))),
+        ("modulus", θ -> sum(abs, lossy_kr(θ))),
+    )
+        # The documented convention: real parameters in, real loss out, complex only in between.
+        # Under that restriction the gradient is unambiguous and every backend agrees.
+        g_forward = ForwardDiff.gradient(target, θ_lossy)
+        @test relerr_norm(Zygote.gradient(target, θ_lossy)[1], g_forward) < 1e-8
+        @test all(isfinite, g_forward)
+    end
+
+    @testset "a complex-valued loss is refused, not guessed" begin
+        # There is no single real gradient of a complex output, and Zygote says so rather than
+        # silently picking a convention. Pinned because the *absence* of a convention is the
+        # decision — see the note at the end of src/kraken_ad.jl.
+        err = try
+            Zygote.gradient(θ -> lossy_kr(θ)[1], θ_lossy)
+            nothing
+        catch e
+            e
+        end
+        @test err !== nothing
+        @test occursin("complex", lowercase(sprint(showerror, err)))
+
+        # Taking a real part first is the fix, and it works.
+        @test Zygote.gradient(θ -> real(lossy_kr(θ)[1]), θ_lossy)[1] isa Vector{Float64}
+    end
+
+    @testset "at α = 0 the two modes take opposite sides of the kink" begin
+        # `imag(kr)` is identically zero for α ≤ 0 and linear above it, so α = 0 is a genuine kink
+        # with no two-sided derivative. Both backends silently return a *different* one-sided one,
+        # and that disagreement is the thing worth pinning — it is exactly what gets mistaken for a
+        # broken rule.
+        #
+        # ForwardDiff: `iszero` on a `Dual` sees the seed, so `is_lossy` takes the lossy branch and
+        #              the whole attenuation path is evaluated -> right-hand derivative.
+        # Zygote:      `is_lossy` runs on the primal Float64s, returns false, and the attenuation
+        #              path never reaches the tape -> left-hand derivative, which is zero.
+        target = θ -> sum(imag, lossy_kr(θ))
+        θ_zero = [1500.0, 1600.0, 1000.0, 1500.0, 100.0, 0.0, 0.0]
+
+        g_forward_0 = ForwardDiff.gradient(target, θ_zero)
+        g_zygote_0 = Zygote.gradient(target, θ_zero)[1]
+
+        @test target(θ_zero) == 0.0                    # the primal really is the lossless one
+        @test g_forward_0[6] < -1e-3                   # right-hand derivative, and substantial
+        @test g_forward_0[7] < -1e-6
+        @test all(iszero, g_zygote_0)                  # left-hand derivative
+        # Everything that is not an attenuation is zero on both sides — a lossless solve has no
+        # imaginary part to be sensitive to anything.
+        @test all(iszero, g_forward_0[1:5])
+
+        # Step off the kink by a hair and the disagreement vanishes entirely: same derivative to
+        # fifteen digits. That is what makes the split above a property of the point, not of either
+        # backend's accuracy.
+        θ_eps = [1500.0, 1600.0, 1000.0, 1500.0, 100.0, 1e-6, 1e-6]
+        g_forward_eps = ForwardDiff.gradient(target, θ_eps)
+        g_zygote_eps = Zygote.gradient(target, θ_eps)[1]
+        @test relerr_norm(g_zygote_eps, g_forward_eps) < 1e-12
+        # ...and forward mode's answer *at* the kink is that same right-hand derivative.
+        @test isapprox(g_forward_0[6], g_forward_eps[6]; rtol=1e-6)
+        @test isapprox(g_forward_0[7], g_forward_eps[7]; rtol=1e-6)
+    end
+
+    @testset "Zygote traces the lossy solve" begin
+        # The lossless path is covered across every backend by the table above. Here only Zygote is
+        # asserted, because Mooncake cannot do it — see the next testset.
+        target = θ -> sum(imag, lossy_kr(θ))
+        g_forward = DifferentiationInterface.gradient(target, AutoForwardDiff(), θ_lossy)
+        g = DifferentiationInterface.gradient(target, AutoZygote(), θ_lossy)
+        @test length(g) == length(θ_lossy)
+        @test all(isfinite, g)
+        @test relerr_norm(g, g_forward) < 1e-7
+    end
+
+    @testset "Mooncake cannot trace the complex path (known limitation)" begin
+        # `add_attenuation` introduces complex arithmetic — `sqrt` of a `Complex` — and Mooncake
+        # refuses it:
+        #
+        #   ArgumentError: It is not permissible to bitcast to a differentiable type during AD ...
+        #
+        # The offending call is inside Mooncake's own handling of `Complex`, not in
+        # src/kraken_ad.jl, so no rule here would fix it. Pinned as a *specific* failure rather than
+        # left out, so that Mooncake gaining complex support shows up as this test starting to pass
+        # rather than as nobody noticing.
+        target = θ -> sum(imag, lossy_kr(θ))
+        err = try
+            DifferentiationInterface.gradient(target, AutoMooncake(), θ_lossy)
+            nothing
+        catch e
+            e
+        end
+        @test err !== nothing
+        @test occursin("bitcast", lowercase(sprint(showerror, err)))
+
+        # Mooncake is fine on the same environment as long as the loss is real-valued throughout —
+        # i.e. the lossless corner. This is what confines the limitation to the complex path.
+        θ_lossless = [1500.0, 1600.0, 1000.0, 1500.0, 100.0, 0.0, 0.0]
+        real_target = θ -> sum(real, lossy_kr(θ))
+        g_mooncake = DifferentiationInterface.gradient(real_target, AutoMooncake(), θ_lossless)
+        g_forward = DifferentiationInterface.gradient(real_target, AutoForwardDiff(), θ_lossless)
+        @test relerr_norm(g_mooncake, g_forward) < 1e-7
+    end
+
+    @testset "a lossy sediment layer, not just a lossy half-space" begin
+        # `one_layer_env`'s α1 goes through the *volume* integral rather than the half-space term, so
+        # this covers the other branch of `modal_attenuation` — and it is the physically common case.
+        onelayer_lossy(θ) = UnderwaterEnv(
+            one_layer_env(; c0=θ[1], c1=θ[2], cb=θ[3], ρ0=θ[4], ρ1=θ[5], ρb=θ[6], h0=θ[7], h1=θ[8], α1=θ[9])...
+        )
+        θ1_lossy = [1500.0, 1550.0, 1600.0, 1000.0, 1500.0, 2000.0, 100.0, 20.0, 0.4]
+        target = θ -> sum(imag, kraken_jl(onelayer_lossy(θ), 100.0; TOL...).kr)
+
+        g_forward = ForwardDiff.gradient(target, θ1_lossy)
+        @test relerr_norm(Zygote.gradient(target, θ1_lossy)[1], g_forward) < 1e-8
+        @test g_forward[9] < 0
+        # The sediment attenuation is the dominant sensitivity of the modal loss, by a wide margin.
+        @test abs(g_forward[9]) > 10 * maximum(abs, g_forward[1:8])
     end
 end
 

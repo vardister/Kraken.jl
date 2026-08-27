@@ -575,6 +575,268 @@ const KR = KrakenReference
             end
         end
 
+        # --- attenuation against kraken.exe (plan task 5.3) ----------------------------------
+        #
+        # `Im(kᵣ)` needs tolerances of its own, and they are looser than the wavenumber ones by more
+        # than the extra digits alone would explain. Three things stack up (see `max_alpha_reldiff`):
+        # it is the small part of the complex number, the only Fortran source for it is the
+        # single-precision `.mod`, and neither solver Richardson-extrapolates it — both evaluate the
+        # perturbation on their own coarsest mesh.
+        #
+        # On top of that there is a real limit of the method, measured below and worth stating
+        # plainly, because it sets what "agreement" can even mean here:
+        #
+        #   **Both solvers are first-order perturbation methods, and they agree to first order
+        #   exactly** — the `α → 0` test below drives their disagreement down to 2.6e-6, which is
+        #   the `.mod`'s single-precision floor. What they do *not* share is which second-order
+        #   terms they keep, and the half-space term is where that shows: it goes as
+        #   `Im √(γ² + 2iω α_b/c_b)`, whose expansion parameter is `2ω α_b/(c_b γ²)` — not small at
+        #   all for a strongly attenuating bottom near cutoff. Measured on `SedAtten/calibK.env`
+        #   (0.5 dB/λ half-space, 250 Hz) that parameter reaches 0.15 and the two solvers differ by
+        #   ~1% on `Im(kᵣ)`; with the loss in the *water* instead, at the same 0.5 dB/λ, they agree
+        #   to 9.3e-4. Neither is more right than the other: at that strength the first-order method
+        #   itself is only good to about a percent, which is exactly why `krakenc.exe` — the full
+        #   complex solve, plan task 5.6 — exists.
+        #
+        # So the plan's blanket 1e-3 target on the imaginary part is met for weakly attenuating
+        # environments and is *not* achievable for strongly attenuating half-spaces by any
+        # implementation of this method. The per-case bounds below are the usual 3-10x over the
+        # measured worst case, and the measurements are recorded in test/README.md.
+        # Built through `pekeris_env`'s own `α0`/`αb` keywords (task 5.5) rather than by poking the
+        # matrices, so this is also a check that those keywords land in the columns they claim.
+        function lossy_pekeris(; αb=0.0, αp=0.0, units=:dB_per_wavelength)
+            return UnderwaterEnv(pekeris_env(; α0=αp, αb=αb)...; atten_units=units)
+        end
+
+        @testset "M5.3: modal attenuation against kraken.exe" begin
+            # Measured on this waveguide at 100 Hz, 2026-08-09 (max relative difference over all
+            # modes). Note how the attenuation column tracks `v = 2ω α_b/(c_b γ²)` and not the
+            # attenuation itself: ten times the half-space loss costs a hundred times the agreement.
+            #
+            #   case                    Re(kᵣ)     Im(kᵣ)
+            #   lossless control        1.7e-9     0, exactly, on both sides
+            #   water 0.5 dB/λ          1.3e-4     4.0e-3
+            #   half-space 0.05 dB/λ    1.3e-5     7.9e-4
+            #   half-space 0.5 dB/λ     5.5e-4     1.0e-1
+            atten_cases = [
+                (name="lossless control", env=() -> lossy_pekeris(), kr_rtol=1e-6, α_rtol=1e-12, lossy=false),
+                (name="water 0.5 dB/λ", env=() -> lossy_pekeris(; αp=0.5), kr_rtol=1e-3, α_rtol=2e-2, lossy=true),
+                (
+                    name="half-space 0.05 dB/λ",
+                    env=() -> lossy_pekeris(; αb=0.05),
+                    kr_rtol=1e-4,
+                    α_rtol=5e-3,
+                    lossy=true,
+                ),
+                (name="half-space 0.5 dB/λ", env=() -> lossy_pekeris(; αb=0.5), kr_rtol=3e-3, α_rtol=3e-1, lossy=true),
+            ]
+
+            @testset "$(case.name)" for case in atten_cases
+                env = case.env()
+                c = KR.compare_with_fortran(env, 100.0)
+
+                @test c.n_julia == c.n_fortran
+                @test c.n_julia > 0
+                @test KR.max_kr_reldiff(c) < case.kr_rtol
+                @test KR.min_mode_corr(c) > 0.999
+                @test KR.max_alpha_reldiff(c) < case.α_rtol
+
+                if case.lossy
+                    # Both solvers must actually report loss, and with the same sign convention:
+                    # a decaying mode has Im(kᵣ) < 0. Getting this backwards is the failure mode
+                    # that a relative-difference test alone would not catch.
+                    @test all(c.alpha_julia .< 0)
+                    @test all(c.alpha_fortran .< 0)
+                    @test eltype(kraken_jl(env, 100.0).kr) === ComplexF64
+                else
+                    # Fortran reports an exactly zero imaginary part for a lossless run, and so must
+                    # Kraken.jl -- this is the control that says the machinery adds nothing.
+                    @test all(iszero, c.alpha_fortran)
+                    @test all(iszero, c.alpha_julia)
+                    @test eltype(kraken_jl(env, 100.0).kr) === Float64
+                end
+            end
+        end
+
+        @testset "M5.5: the lossy standard environments cross-validate" begin
+            # Task 5.5 put `α0`/`αb` keywords on `pekeris_env` and `α0`/`α1`/`αb` on `one_layer_env`.
+            # Anything the package ships as a canned environment has to agree with kraken.exe, or it
+            # is a trap for the first person who uses it — so the lossy variants join the regression
+            # list rather than living only in the docs.
+            #
+            # `one_layer_env(; α1=…)` is the important row: it is the only case here with a lossy
+            # *interior* medium, and it is what exposed the discontinuous-quadrature error that task
+            # 5.7 then fixed. Measured before and after that fix, so the effect is on the record:
+            #
+            #                                          Re(kᵣ)    Im(kᵣ) before   Im(kᵣ) after
+            #   pekeris_env(α0=0.2)                    2.1e-5    7.9e-4          8.1e-4
+            #   pekeris_env(αb=0.2)                    1.6e-4    5.8e-2          5.8e-2
+            #   one_layer_env(α1=0.4)                  3.0e-5    8.1e-2          2.9e-3
+            #   one_layer_env(α0=.1, α1=.4, αb=.1)     4.3e-5    8.7e-3          7.5e-4
+            #
+            # Exactly the pattern the fix predicts. The two `pekeris` rows are a single water medium
+            # over a half-space, so they have no interior interface to straddle and are untouched —
+            # their residual is the bottom-cutoff limit, which is a property of first-order
+            # perturbation theory and not of the quadrature. The two `one_layer` rows have a lossy
+            # sediment between two interfaces and improve 27x and 12x.
+            std_lossy = [
+                (
+                    name="pekeris_env(α0=0.2)",
+                    env=() -> UnderwaterEnv(pekeris_env(; α0=0.2)...),
+                    kr_rtol=1e-4,
+                    α_rtol=5e-3,
+                ),
+                (
+                    name="pekeris_env(αb=0.2)",
+                    env=() -> UnderwaterEnv(pekeris_env(; αb=0.2)...),
+                    kr_rtol=1e-3,
+                    α_rtol=2e-1,
+                ),
+                (
+                    name="one_layer_env(α1=0.4)",
+                    env=() -> UnderwaterEnv(one_layer_env(; α1=0.4)...),
+                    kr_rtol=1e-4,
+                    α_rtol=1e-2,
+                ),
+                (
+                    name="one_layer_env(α0=0.1, α1=0.4, αb=0.1)",
+                    env=() -> UnderwaterEnv(one_layer_env(; α0=0.1, α1=0.4, αb=0.1)...),
+                    kr_rtol=1e-4,
+                    α_rtol=5e-3,
+                ),
+            ]
+
+            @testset "$(case.name)" for case in std_lossy
+                env = case.env()
+                @test is_lossy(env)
+                c = KR.compare_with_fortran(env, 100.0)
+                @test c.n_julia == c.n_fortran
+                @test c.n_julia > 0
+                @test KR.max_kr_reldiff(c) < case.kr_rtol
+                @test KR.min_mode_corr(c) > 0.999
+                @test KR.max_alpha_reldiff(c) < case.α_rtol
+                @test all(c.alpha_julia .< 0)
+                @test all(c.alpha_fortran .< 0)
+            end
+
+            # The keywords default to zero, so the canned environments are lossless unless asked --
+            # this is what keeps every pre-Milestone-5 result in this file unchanged.
+            for build in (pekeris_env, one_layer_env, one_layer_slope_env, two_layer_slope_env, munk_env)
+                @test !is_lossy(UnderwaterEnv(build()...))
+            end
+        end
+
+        @testset "M5.7: the perturbation integral converges at second order" begin
+            # The tolerance above says the lossy-layer case is now accurate; this says *why*, which
+            # is the part that will still be true after someone changes the mesh defaults.
+            #
+            # Before 5.7 a single trapezoid ran across the α jump at the top of the sediment, and the
+            # error fell as O(h): 8.1e-2, 4.0e-2, 1.9e-2, 8.8e-3, 3.6e-3 at 20/40/80/160/320 points
+            # per wavelength — a measured order of 1.12. Integrating medium by medium removes the
+            # straddled interval, and the error should now fall as O(h²).
+            env = UnderwaterEnv(one_layer_env(; α1=0.4)...)
+            freq = 100.0
+
+            function alpha_at(npw)
+                props = AcousticProblemProperties(env, freq; n_per_wavelength=npw)
+                cache = AcousticProblemCache(env, props)
+                krc, ψ = inverse_iteration(find_kr(env, props, cache), env, props, cache; reltol=1e-10)
+                return map(eachindex(krc)) do m
+                    δ = Kraken.modal_attenuation(view(ψ, :, m), krc[m], env, props)
+                    return imag(sqrt(complex(krc[m]^2) + δ))
+                end
+            end
+
+            # The reference is Kraken.jl's *own* finely resolved answer, not kraken.exe's. That is
+            # deliberate and it is the only way this measures what it claims to: `kraken.exe` runs on
+            # its own automatic mesh and carries about 1.6e-3 of discretization error on this case,
+            # which is a floor, not a slope. Measured against it the observed order flattens to 0.57,
+            # 0.19, 0.05 as our error drops below Fortran's — an artifact of the reference, and
+            # exactly the trap this comment exists to stop someone falling into.
+            reference = alpha_at(320)[1]
+            errs = [abs(alpha_at(npw)[1] - reference) / abs(reference) for npw in (20, 40, 80)]
+
+            @test all(errs .> 0)
+            @test issorted(errs; rev=true)
+
+            # Order = log2 of the ratio between successive mesh doublings. Before 5.7 this was 1.12
+            # (a single trapezoid straddling the α jump at the sediment top); after, it is 2.00.
+            orders = [log2(errs[i] / errs[i + 1]) for i in 1:(length(errs) - 1)]
+            @test all(orders .> 1.8)
+
+            # ...and the agreement with kraken.exe at the *default* mesh, which is the number a user
+            # actually meets. 8.1e-2 before 5.7, 2.9e-3 after.
+            fortran = imag.(KR.run_fortran_kraken(env, freq).kᵣ)
+            @test abs(alpha_at(20)[1] - fortran[1]) / abs(fortran[1]) < 1e-2
+        end
+
+        @testset "M5.3: the two solvers agree to first order in α" begin
+            # The sharpest statement available about the attenuation, and the one that shows the
+            # ~1% seen above is a second-order artifact rather than a defect: shrink the
+            # attenuation and the disagreement shrinks *faster* than linearly, bottoming out at the
+            # single precision of the .mod file. A formula error would leave a floor proportional
+            # to α instead.
+            errs = map((0.5, 0.05, 0.005)) do αb
+                c = KR.compare_with_fortran(lossy_pekeris(; αb=αb), 250.0)
+                return c.alpha_reldiff[1]
+            end
+
+            @test errs[3] < errs[2] < errs[1]        # monotone in α
+            @test errs[1] / errs[2] > 10             # faster than linear: it is the α² term
+            @test errs[3] < 1e-4                     # and it lands at the .mod's precision floor
+        end
+
+        @testset "M5.3: the writer round-trips attenuation and its units" begin
+            # A `.env` records attenuation *values* in column 6 and their *units* in column 3 of the
+            # top-option string. Writing one without the other silently rescales every attenuation
+            # in the file, so the two are tested together.
+            @testset "$units" for units in
+                                  (:nepers_per_m, :dB_per_m, :dB_per_kmHz, :dB_per_wavelength, :Q, :loss_parameter)
+                env = lossy_pekeris(; αb=0.5, αp=0.02, units=units)
+                text = KR.env_file_string(env, 100.0)
+                char = only(filter(p -> p.second === units, collect(ATTENUATION_UNIT_CHARS))).first
+                @test occursin("'CV$char'", text)
+
+                mktempdir() do dir
+                    path = KR.write_env_file(joinpath(dir, "lossy"), env, 100.0)
+                    back = KR.read_env_file(path)
+                    @test back.atten_units === units
+                    @test back.env.αb ≈ env.αb
+                    @test back.env.α.α ≈ env.α.α
+                    @test back.env.cb ≈ env.cb
+                end
+            end
+
+            # An `UnderwaterEnvFORTRAN` carries no units of its own, so the keyword supplies them.
+            ssp, layers, sspHS = pekeris_env()
+            sspHS[2, 5] = 0.3
+            envf = UnderwaterEnvFORTRAN(ssp, layers, sspHS)
+            @test occursin("'CVN'", KR.env_file_string(envf, 100.0; atten_units=:nepers_per_m))
+            @test occursin("'CVW'", KR.env_file_string(envf, 100.0))
+
+            # An explicitly supplied non-default units letter is the caller's choice and is kept.
+            @test occursin("'CVQ'", KR.env_file_string(lossy_pekeris(; αb=0.5), 100.0; topopt="CVQ"))
+        end
+
+        @testset "M5.3: kraken.exe accepts the lossy files the writer emits" begin
+            # Same check as the lossless writer suite at the bottom of this file: kraken.exe exits 0
+            # even on a fatal error, so the .prt is the only honest signal. A wrong units letter or
+            # a malformed attenuation column shows up here as an ERROR line.
+            @testset "$units" for units in (:nepers_per_m, :dB_per_wavelength, :dB_per_kmHz)
+                mktempdir() do dir
+                    env = lossy_pekeris(; αb=units === :nepers_per_m ? 0.001 : 0.3, units=units)
+                    KR.write_env_file(joinpath(dir, "lossy"), env, 100.0)
+                    cmd = Cmd(`$(KR.kraken_cmd()) lossy`; dir=dir)
+                    run(pipeline(ignorestatus(cmd); stdout=devnull, stderr=devnull))
+                    report = read(joinpath(dir, "lossy.prt"), String)
+                    @test isempty(filter(l -> occursin("ERROR", uppercase(l)), split(report, '\n')))
+                    # The .prt echoes the units it decided on, which is the strongest confirmation
+                    # that the letter we wrote is the one it read.
+                    @test occursin("Attenuation units", report)
+                end
+            end
+        end
+
         # --- AD gradients against Fortran (plan task 4.7) ------------------------------------
         #
         # Milestone 4's gradients are already checked against ForwardDiff and FiniteDiff in
@@ -797,6 +1059,104 @@ const KR = KrakenReference
                 @test KR.read_env_file(joinpath(@__DIR__, "standard_envs", "Pekeris_AV.env")).topopt[1] == 'S'
             end
 
+            @testset "M5.1: attenuation units are read off the top-option string" begin
+                # `read_env_file` builds a minimal deck for each unit character so the mapping is
+                # tested without needing a toolbox checkout. Column 3 of TOPOPT is the unit; the
+                # value in SSP column 5 is carried through unchanged, because converting it needs a
+                # frequency and the environment does not have one.
+                function deck(topopt, αp, αb)
+                    return """
+                    'units probe'
+                    100.0
+                    1
+                    '$topopt'
+                    0  0.0  100.0
+                         0.0  1500.0  0.0  1.0  $αp  0.0 /
+                       100.0  1500.0  0.0  1.0  $αp  0.0 /
+                    'A'  0.0
+                       100.0  1600.0  0.0  1.5  $αb  0.0 /
+                    1400.0  1600.0
+                    10.0
+                    """
+                end
+                mktempdir() do dir
+                    for (char, units) in ATTENUATION_UNIT_CHARS
+                        path = joinpath(dir, "units_$char.env")
+                        write(path, deck("CV$char", 0.02, 0.5))
+                        parsed = KR.read_env_file(path)
+                        @test parsed.atten_units === units
+                        @test parsed.env.atten_units === units
+                        @test parsed.env.αb == 0.5
+                        @test all(≈(0.02), parsed.env.α.α)
+                        @test is_lossy(parsed.env)
+                    end
+
+                    # A zero attenuation is still lossless whatever the declared units are.
+                    path = joinpath(dir, "lossless.env")
+                    write(path, deck("CVW", 0.0, 0.0))
+                    @test !is_lossy(KR.read_env_file(path).env)
+
+                    # An unusable units character is rejected rather than defaulted -- `ReadTopOpt`
+                    # calls ERROUT on exactly the same input, so a file we accepted here would be one
+                    # kraken.exe refuses to run.
+                    for bad in ("CVX", "CV")
+                        path = joinpath(dir, "bad.env")
+                        write(path, deck(bad, 0.0, 0.0))
+                        err = try
+                            KR.read_env_file(path)
+                            nothing
+                        catch e
+                            e
+                        end
+                        @test err isa KR.MalformedEnvFile
+                        @test occursin("attenuation-units", sprint(showerror, err))
+                    end
+
+                    # 'm' is the seventh convention -- dB/m with a power law -- and needs per-medium
+                    # parameters this reader does not model. It must be named, not read as 'M'.
+                    path = joinpath(dir, "powerlaw.env")
+                    write(path, deck("CVm", 0.1, 0.1))
+                    err = try
+                        KR.read_env_file(path)
+                        nothing
+                    catch e
+                        e
+                    end
+                    @test err isa KR.UnsupportedEnvFeature
+                    @test err.feature == "power-law attenuation"
+                end
+            end
+
+            @testset "M5.1: the bottom-option record ends after SIGMA" begin
+                # `READ( ENVFile, * ) BotOpt, Sigma` takes two items and discards the rest of the
+                # record. SedAtten/calibS_0.6dB.env writes `'A'  0.0 2.5 2000`; reading the *last*
+                # number as the roughness made that file look like it had 2 km of interfacial
+                # roughness and rejected it.
+                mktempdir() do dir
+                    path = joinpath(dir, "trailing.env")
+                    write(
+                        path,
+                        """
+                        'trailing values on the bottom record'
+                        250.0
+                        1
+                        'CVW'
+                        0  0.0  100.0
+                             0.0  1500.0  0.0  1.0  0.0  0.0 /
+                           100.0  1500.0  0.0  1.0  0.0  0.0 /
+                        'A'  0.0 2.5 2000
+                           100.0  1590.0  0.0  1.2  0.5  0.0 /
+                        1400.0  1590.0
+                        30.0
+                        """,
+                    )
+                    parsed = KR.read_env_file(path)
+                    @test parsed.sigmas == [0.0, 0.0]
+                    @test parsed.env.αb == 0.5
+                    @test parsed.env.cb == 1590.0
+                end
+            end
+
             @testset "a non-KRAKEN deck is rejected cleanly" begin
                 mktempdir() do dir
                     path = joinpath(dir, "bellhop.env")
@@ -846,6 +1206,121 @@ const KR = KrakenReference
                     @test KR.min_mode_corr(c) > 0.999
                 end
 
+                @testset "M5.3: SedAtten and the attenuation TL slice against kraken.exe" begin
+                    # The milestone's named cases. `VolAtt` is deliberately absent and the reason is
+                    # worth recording: every file in it declares an acousto-elastic half-space
+                    # *above* the surface (`TopOpt(2:2) == 'A'`) and a bottom whose sound speed
+                    # equals the water's, so there is no trapped spectrum to compare -- they are
+                    # free-space transmission-loss cases, not modal ones. Two of them additionally
+                    # ask for Thorp or Francois-Garrison volume attenuation, which is `TopOpt(4:4)`
+                    # and a separate feature. `TLslices/atten.env` takes its place: it is a genuine
+                    # trapped-mode case with loss in *both* the water and the half-space, and it
+                    # exercises the dB/(km·Hz) units that no other case here does.
+                    #
+                    # Measured 2026-08-09:
+                    #   TLslices/atten.env      44 modes  Re 7.2e-7  Im 1.8e-3
+                    #   SedAtten/calibK.env     11 modes  Re 1.8e-4  Im 1.1e-2
+                    #   SedAtten/calibS_0.6dB   11 modes  Re 2.3e-4  Im 1.5e-2
+                    #   SedAtten/calibS_noloss  11 modes  Re 6.0e-10 Im 0 (exactly, both sides)
+                    oalib_atten_cases = [
+                        (file="TLslices/atten.env", freq=10.0, nmodes=44, kr_rtol=1e-5, α_rtol=1e-2, lossy=true),
+                        (file="SedAtten/calibK.env", freq=250.0, nmodes=11, kr_rtol=1e-3, α_rtol=5e-2, lossy=true),
+                        (
+                            file="SedAtten/calibS_0.6dB.env",
+                            freq=250.0,
+                            nmodes=11,
+                            kr_rtol=1e-3,
+                            α_rtol=8e-2,
+                            lossy=true,
+                        ),
+                        (
+                            file="SedAtten/calibS_noloss.env",
+                            freq=250.0,
+                            nmodes=11,
+                            kr_rtol=1e-6,
+                            α_rtol=1e-12,
+                            lossy=false,
+                        ),
+                    ]
+
+                    @testset "$(case.file)" for case in oalib_atten_cases
+                        path = joinpath(oalib_tree, case.file)
+                        if !isfile(path)
+                            @info "Not present in this Acoustics Toolbox checkout — skipped." path
+                            continue
+                        end
+                        parsed = KR.read_env_file(path)
+                        @test is_lossy(parsed.env) == case.lossy
+
+                        c = KR.compare_with_fortran(parsed.env, case.freq)
+                        @test c.n_julia == case.nmodes
+                        @test c.n_fortran == case.nmodes
+                        @test KR.max_kr_reldiff(c) < case.kr_rtol
+                        @test KR.min_mode_corr(c) > 0.999
+                        @test KR.max_alpha_reldiff(c) < case.α_rtol
+
+                        if case.lossy
+                            @test all(c.alpha_julia .< 0)
+                            @test all(c.alpha_fortran .< 0)
+                        else
+                            @test all(iszero, c.alpha_julia)
+                            @test all(iszero, c.alpha_fortran)
+                        end
+                    end
+
+                    # The lossless sibling of calibS is the control for the pair: same waveguide,
+                    # same 11 modes, attenuation the only difference. It must agree far more tightly
+                    # than the lossy one, and it does -- by six orders of magnitude.
+                    lossless = joinpath(oalib_tree, "SedAtten/calibS_noloss.env")
+                    lossy = joinpath(oalib_tree, "SedAtten/calibS_0.6dB.env")
+                    if isfile(lossless) && isfile(lossy)
+                        cl = KR.compare_with_fortran(KR.read_env_file(lossless).env, 250.0)
+                        cy = KR.compare_with_fortran(KR.read_env_file(lossy).env, 250.0)
+                        @test KR.max_kr_reldiff(cl) < KR.max_kr_reldiff(cy)
+                        # ...and the real parts still agree well, because attenuation shifts them
+                        # only at second order.
+                        @test cl.kr_julia ≈ cy.kr_julia rtol = 1e-3
+                    end
+                end
+
+                @testset "M5.1: the toolbox's own attenuation cases parse" begin
+                    # These are the files the milestone is aimed at, read in place (GPL-3 tree, MIT
+                    # package). Each row is what the .env actually declares -- checked by eye against
+                    # the file, not against the reader.
+                    atten_cases = [
+                        (file="SedAtten/calibK.env", units=:dB_per_wavelength, αb=0.5, αp=0.0, freq=250.0),
+                        (file="SedAtten/calibS_0.6dB.env", units=:dB_per_wavelength, αb=0.6, αp=0.0, freq=250.0),
+                        (file="SedAtten/calibS_noloss.env", units=:dB_per_wavelength, αb=0.0, αp=0.0, freq=250.0),
+                        (file="TLslices/atten.env", units=:dB_per_kmHz, αb=0.001, αp=0.001, freq=10.0),
+                    ]
+                    @testset "$(case.file)" for case in atten_cases
+                        path = joinpath(oalib_tree, case.file)
+                        if !isfile(path)
+                            @info "Not present in this Acoustics Toolbox checkout — skipped." path
+                            continue
+                        end
+                        parsed = KR.read_env_file(path)
+                        @test parsed.atten_units === case.units
+                        @test parsed.env.αb ≈ case.αb
+                        @test all(≈(case.αp), parsed.env.α.α)
+                        @test parsed.freqs[1] == case.freq
+                        @test is_lossy(parsed.env) == (case.αb > 0 || case.αp > 0)
+                    end
+
+                    # The power-law variant is named rather than mis-read as plain dB/m.
+                    powlaw = joinpath(oalib_tree, "SedAtten/calibS_PowLaw.env")
+                    if isfile(powlaw)
+                        err = try
+                            KR.read_env_file(powlaw)
+                            nothing
+                        catch e
+                            e
+                        end
+                        @test err isa KR.UnsupportedEnvFeature
+                        @test err.feature == "power-law attenuation"
+                    end
+                end
+
                 @testset "categorized report over the whole tree" begin
                     report = KR.categorize_env_tree(oalib_tree)
                     @test report.total > 100
@@ -853,10 +1328,13 @@ const KR = KrakenReference
                     # Every rejection carries a reason; that list is the Milestone 5/6 backlog.
                     @test !isempty(report.unsupported)
                     @test all(!isempty, values(report.unsupported))
-                    @test haskey(report.unsupported, "attenuation")
+                    # Plain compressional attenuation stopped being a blocker in Milestone 5.1 --
+                    # what remains under that name is the power law and the added volume-attenuation
+                    # laws (Thorp, Francois-Garrison, biological), which are separate features.
+                    @test !haskey(report.unsupported, "attenuation")
                     text = sprint(KR.print_env_tree_report, report)
                     @test occursin("Scanned $(report.total) .env files", text)
-                    @test occursin("attenuation", text)
+                    @test occursin("boundary", text)
                     @info "Acoustics Toolbox coverage\n" * text
                 end
             end

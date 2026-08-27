@@ -255,8 +255,24 @@ declares each one a Mooncake primitive.
   differentiate a slightly wrong root. This is the one place the implicit rule's tolerance
   independence does *not* save you, because the root it is evaluated at is itself a solver output. At
   `1e-10` the two modes agree to `1e-10`.
-* **Attenuation is not modelled yet**, so no derivative with respect to ``\alpha_p`` exists. See the
-  README's missing-features list.
+* **A lossy environment makes `kr` complex, which narrows what you may differentiate.** The rule is
+  the standard one: real parameters in, real loss out, complex only in between. `sum(imag, sol.kr)`,
+  `sum(real, sol.kr)` and `sum(abs2, sol.kr)` are all fine and every backend agrees on them. A
+  *complex-valued* loss is not — Zygote raises `"Output is complex, so the gradient is not defined."`
+  rather than silently picking a conjugation convention, which is correct: take `real`, `imag` or
+  `abs2` first. (ForwardDiff will happily hand back a `Complex` derivative for the same function, so
+  the two backends disagree about whether the question is even well posed.)
+* **Do not differentiate attenuation at ``\alpha = 0``.** ``\mathrm{Im}(k_r)`` is identically zero
+  below zero attenuation and linear above it, so that point is a kink with no two-sided derivative —
+  and the two modes silently take *opposite sides*. ForwardDiff sees the perturbation through
+  `is_lossy` and returns the right-hand derivative; Zygote evaluates `is_lossy` on the primal and
+  returns the left-hand one, which is zero. One hair above zero they agree to ``10^{-15}``.
+  Differentiate at a nonzero attenuation, which is the only place the derivative means anything.
+* **Reverse mode over a lossy environment means Zygote.** Mooncake cannot trace the complex
+  arithmetic that attenuation introduces and fails with
+  `"It is not permissible to bitcast to a differentiable type during AD"`. The failing call is inside
+  Mooncake's own `Complex` support, so there is no rule Kraken.jl could add to fix it. Lossless
+  solves are unaffected and both backends handle them.
 
 ## Going further
 

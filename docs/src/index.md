@@ -42,6 +42,84 @@ wavenumbers = sol.kr
 zn = vcat(sol.props.zn_vec...)
 ```
 
+## Attenuation
+
+The `αp` column of an environment is read and used. A lossy waveguide gives **complex** wavenumbers,
+whose imaginary part is the modal attenuation in nepers per metre of range:
+
+```julia
+env = UnderwaterEnv(pekeris_env(; αb=0.5)...)   # 0.5 dB per wavelength in the seabed
+sol = kraken_jl(env, 100.0)
+sol.kr             # ComplexF64
+imag(sol.kr[1])    # < 0: the mode loses energy with range
+```
+
+A **lossless** environment still returns real `Float64` wavenumbers, bit-identical to what it
+returned before attenuation was supported — the complex path is entered only when there is loss to
+model, so nothing downstream of a lossless solve changes type.
+
+### Units
+
+Attenuation units follow KRAKEN's own six conventions, chosen with `atten_units` and defaulting to
+dB per wavelength. The characters are those of `TopOpt(3:3)` in a `.env` file, and a file read with
+[`read_env_file`](https://github.com/vardister/Kraken.jl/blob/master/test/reference/env_reader.jl)
+carries its own declaration through.
+
+| `atten_units` | `.env` char | meaning | conversion to nepers/m |
+|---|---|---|---|
+| `:nepers_per_m` | `N` | nepers/m | ``\alpha`` |
+| `:dB_per_m` | `M` | dB/m | ``\alpha / 8.6858896`` |
+| `:dB_per_kmHz` | `F` | dB/(m·kHz) ≡ dB/(km·Hz) | ``\alpha f / 8685.8896`` |
+| `:dB_per_wavelength` | `W` | dB/wavelength *(default)* | ``\alpha f / (8.6858896\,c)`` |
+| `:Q` | `Q` | quality factor | ``\omega / (2 c \alpha)`` |
+| `:loss_parameter` | `L` | loss parameter | ``\alpha \omega / c`` |
+
+```julia
+UnderwaterEnv(pekeris_env(; α0=1e-3)...; atten_units=:nepers_per_m)
+```
+
+Four of the six depend on frequency, which is why an environment stores the value you gave it and
+converts only once a frequency is known — the same arrangement as the Fortran's `CRCI`.
+
+### How it is computed, and where the approximation runs out
+
+Kraken.jl follows `kraken.exe`: it solves the **real** eigenproblem and adds the loss as a
+first-order perturbation of the eigenvalue,
+
+```math
+\delta(k_r^2) = -2i\omega \int \frac{a(z)\,\psi(z)^2}{c(z)\,\rho(z)}\,\mathrm{d}z
+              \;-\; \frac{i\,\omega\,a_b\,\psi(D)^2}{\gamma\,c_b\,\rho_b},
+\qquad k_r = \sqrt{k_r^2 + \delta(k_r^2)}
+```
+
+with ``\gamma = \sqrt{k_r^2 - (\omega/c_b)^2}`` and ``a`` the attenuation in nepers/m. `krakenc.exe`
+is the separate program that solves the complex problem outright; that path is not implemented here.
+
+Two separate things limit how accurately ``\mathrm{Im}(k_r)`` comes out, and they bite on opposite
+modes — worth knowing which one you are in.
+
+**1. The perturbation is first order, and in ``v = 2\omega a_b/(c_b\gamma^2)``, not in ``a_b``.**
+Since ``\gamma \to 0`` at the bottom cutoff, `v` grows without bound for the *least*-trapped mode, so
+a strongly attenuating half-space degrades the top of the mode spectrum first. Agreement with
+`kraken.exe` runs from 1.8e-3 on a weakly attenuating waveguide to ~10% for a near-cutoff mode over a
+0.5 dB/λ seabed. This one is inherent to the method — the fix is the full complex solve.
+
+**2. Everything else is ordinary discretization, and it is second order.** Both the energy
+normalization and the perturbation integral are taken *medium by medium*, matching what
+`kraken.f90`'s `Normalize` does, so a jump in ``\rho`` or ``\alpha`` at a layer interface is resolved
+exactly instead of averaged across by a trapezoid that straddles it. That matters more than it
+sounds: a single straddled interval per interface is enough to drop the whole quadrature to first
+order, and on `one_layer_env(; α1=0.4)` it was the difference between 8.1e-2 and 2.9e-3 agreement
+with `kraken.exe`. The observed convergence order on that case is 2.00.
+
+Worth knowing when calibrating against Fortran: at a lossy sediment layer `kraken.exe` itself carries
+about 1.6e-3 of discretization error on its automatic mesh, so agreement below that says more about
+its mesh than about ours.
+
+Neither affects ``\mathrm{Re}(k_r)``, which stays within 1e-4 of `kraken.exe` on all of these. The
+measured table is in
+[`test/README.md`](https://github.com/vardister/Kraken.jl/blob/master/test/README.md).
+
 ## Calculating group speeds
 
 Group speed is the derivative of angular frequency ``\omega = 2\pi f`` with respect to the

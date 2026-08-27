@@ -6,7 +6,7 @@ export munk_env
 
 ### Standard Pekeris
 """
-    pekeris_env(; c0=1500.0, cb=1600.0, ρ0=1000.0, ρb=1500.0, depth=100.0)
+    pekeris_env(; c0=1500.0, cb=1600.0, ρ0=1000.0, ρb=1500.0, depth=100.0, α0=0.0, αb=0.0)
 
 Canonical Pekeris waveguide: one isovelocity water layer over a homogeneous fluid half-space.
 
@@ -15,14 +15,31 @@ Returns `(ssp, layers, sspHS)` in the KRAKEN `.env` record layout, ready for
 
 This is the environment with a closed-form solution — see [`PekerisUnderwaterEnv`](@ref) and
 `find_kr(::PekerisUnderwaterEnv, freq)` — which makes it the reference for checking the
-finite-difference solver.
+finite-difference solver. Note that the closed-form solution is *lossless*: give this environment an
+attenuation and only the finite-difference path models it.
 
 # Arguments
 - `c0`, `ρ0`: water column sound speed (m/s) and density (kg/m³).
 - `cb`, `ρb`: bottom half-space sound speed and density. `cb` must exceed `c0` for trapped modes.
 - `depth`: water depth (m), i.e. the interface with the half-space.
+- `α0`, `αb`: compressional attenuation in the water column and the half-space. **Units are the
+  environment's, not this function's** — `UnderwaterEnv` defaults to dB/wavelength and takes an
+  `atten_units` keyword. Both default to zero, which leaves the waveguide lossless and every
+  wavenumber real.
+
+# Attenuation
+```julia
+lossy = UnderwaterEnv(pekeris_env(; αb=0.5)...)          # 0.5 dB per wavelength in the seabed
+nepers = UnderwaterEnv(pekeris_env(; α0=1e-3)...; atten_units=:nepers_per_m)
+kraken_jl(lossy, 100.0).kr                                # ComplexF64; Im(kᵣ) < 0
+```
+Prefer `α0` (water-column loss) when the *accuracy* of the attenuation matters: the half-space term
+of the perturbation carries a `1/γ` that grows without bound at the bottom cutoff, so a large `αb`
+degrades the least-trapped mode first. See [`modal_attenuation`](@ref).
 """
-function pekeris_env(; c0::Real=1500.0, cb::Real=1600.0, ρ0::Real=1000.0, ρb::Real=1500.0, depth::Real=100.0)
+function pekeris_env(;
+    c0::Real=1500.0, cb::Real=1600.0, ρ0::Real=1000.0, ρb::Real=1500.0, depth::Real=100.0, α0::Real=0.0, αb::Real=0.0
+)
     # Input validation
     # for (param_name, param_value) in zip([:c0, :cb, :ρ0, :ρb, :depth], [c0, cb, ρ0, ρb, depth])
     #     if !isfinite(param_value)
@@ -33,10 +50,6 @@ function pekeris_env(; c0::Real=1500.0, cb::Real=1600.0, ρ0::Real=1000.0, ρb::
     #     end
     # end
 
-    # Water column
-    α0 = 0.0
-    # bottom half-space
-    αb = 0.0
     # other
     freq = 100.0
     z0 = depth
@@ -63,21 +76,29 @@ end
 
 ### Standard 1-layer sediment model with constant sound speeds
 """
-    one_layer_env(; c0=1500.0, c1=1550.0, cb=1600.0, ρ0=1000.0, ρ1=1500.0, ρb=2000.0, h0=100.0, h1=20.0)
+    one_layer_env(; c0=1500.0, c1=1550.0, cb=1600.0, ρ0=1000.0, ρ1=1500.0, ρb=2000.0, h0=100.0, h1=20.0, α0=0.0, α1=0.0, αb=0.0)
 
 Water column over one isovelocity sediment layer over a fluid half-space.
 
 Returns `(ssp, layers, sspHS)`. `h0` is the water depth, `h1` the sediment thickness; `c1`/`ρ1` are
 the sediment properties. The multi-medium case that exercises the interface conditions in
 [`AcousticProblemCache`](@ref).
+
+`α0`, `α1` and `αb` are the compressional attenuations of the water, the sediment and the half-space,
+in the units the `UnderwaterEnv` declares (dB/wavelength unless `atten_units` says otherwise). All
+default to zero. A lossy sediment *layer* is the physically common case and the one this environment
+exists for: `α1` enters through the volume integral rather than the half-space term, so it has none
+of the bottom-cutoff blow-up that a large `αb` suffers.
+
+`α1` makes the integrand *discontinuous* at the top of the sediment, which is why
+[`modal_attenuation`](@ref) and [`normalize_mode`](@ref) integrate medium by medium rather than with
+one trapezoid over the whole mesh — a single straddled interval there is enough to cost an order of
+convergence. With that, `α1 = 0.4` dB/λ agrees with `kraken.exe` to 2.9e-3 at the default mesh and
+converges at second order; a flat trapezoid gave 8.1e-2 and first order.
 """
-function one_layer_env(; c0=1500.0, c1=1550.0, cb=1600.0, ρ0=1000.0, ρ1=1500.0, ρb=2000.0, h0=100.0, h1=20.0)
-    # Water column
-    α0 = 0.0
-    # sediment layer
-    α1 = 0.0
-    # bottom half-space
-    αb = 0.0
+function one_layer_env(;
+    c0=1500.0, c1=1550.0, cb=1600.0, ρ0=1000.0, ρ1=1500.0, ρb=2000.0, h0=100.0, h1=20.0, α0=0.0, α1=0.0, αb=0.0
+)
     # other
     freq = 100.0
     z0 = h0

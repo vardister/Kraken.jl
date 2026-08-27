@@ -17,7 +17,7 @@
 # See `ReadEnvironment`/`ReadTopOpt`/`TopBot` in `misc/ReadEnvironmentMod.f90` and `ReadSSP` in
 # `misc/sspMod.f90`.
 
-using Kraken: UnderwaterEnv
+using Kraken: UnderwaterEnv, ATTENUATION_UNIT_CHARS
 
 """
     UnsupportedEnvFeature
@@ -211,8 +211,13 @@ What `strict` requires, and when each requirement lifts:
 | `TopOpt(4:4)` blank | no THORP / Francois-Garrison / biological volume attenuation | Milestone 5 |
 | `BotOpt(1:1) == 'A'` | the bottom is a fluid half-space | Milestone 6 |
 | `cs == 0` everywhere | the scheme is a scalar pressure equation, not a 4-field elastic one | out of scope |
-| `αp == αs == 0` | no attenuation, so the wavenumbers are real | Milestone 5 |
+| `αs == 0` | shear attenuation needs an elastic layer to live in | out of scope |
 | `sigma == 0` | no interfacial roughness | out of scope |
+
+Compressional attenuation (`αp`, SSP column 5) is **read and used** — Milestone 5 lifted that
+restriction. `TopOpt(3:3)` selects the units it is read in and is parsed even when `strict` is off,
+because getting it wrong silently rescales every attenuation in the file; an unknown character is
+rejected, exactly as `ReadTopOpt` rejects it.
 
 Densities are converted from the file's g/cm³ to the kg/m³ the standard environments use, so a
 `write_env_file` / `read_env_file` round trip is the identity.
@@ -241,6 +246,17 @@ function read_env_file(path::AbstractString; strict::Bool=true)
     topopt = rpad(topopt, 6)
 
     ssp_type = topopt[1]
+    # The attenuation units live in column 3 and govern how column 6 of every SSP record is read, so
+    # this is parsed whether or not `strict` is on — misreading dB/wavelength as nepers/m is exactly
+    # the "plausible-looking environment that then disagrees with Fortran" this reader exists to
+    # prevent. `'m'` (dB/m with a power law) needs two extra per-medium parameters that this reader
+    # does not model; it is named as unsupported rather than quietly folded into `'M'`.
+    atten_char = topopt[3]
+    atten_char == 'm' &&
+        unsupported("power-law attenuation", "top option 3 = 'm' needs the per-medium beta and fT parameters")
+    atten_units = get(ATTENUATION_UNIT_CHARS, atten_char, nothing)
+    atten_units === nothing && malformed("unknown attenuation-units option '$atten_char' in top options '$topopt'")
+
     if strict
         haskey(_SSP_TYPE_NAMES, ssp_type) || malformed("unknown SSP interpolation option '$ssp_type'")
         # 'A' has no SSP records at all — KRAKEN generates the profile from `ANALYT`. That is an
@@ -289,13 +305,22 @@ function read_env_file(path::AbstractString; strict::Bool=true)
     bot_tokens === nothing && malformed("no bottom-option record")
     botopt = ""
     bot_sigma = 0.0
+    # `READ( ENVFile, * ) BotOpt, Sigma` is a list-directed read of exactly two items: it consumes the
+    # option string and the *first* number, and **discards the rest of the record**. Several toolbox
+    # files rely on that — `SedAtten/calibS_0.6dB.env` writes `'A'  0.0 2.5 2000`, where the trailing
+    # two are power-law parameters that only a `'m'` attenuation unit would go back for. Taking the
+    # last number instead of the first read that file's roughness as 2000 m and rejected it.
+    got_sigma = false
     for token in bot_tokens
         token.text == "/" && break
         if token.quoted && isempty(botopt)
             botopt = token.text
-        else
+        elseif !got_sigma
             parsed = tryparse(Float64, token.text)
-            parsed === nothing || (bot_sigma = parsed)
+            if parsed !== nothing
+                bot_sigma = parsed
+                got_sigma = true
+            end
         end
     end
     isempty(botopt) && malformed("bottom-option record has no option string")
@@ -339,8 +364,12 @@ function read_env_file(path::AbstractString; strict::Bool=true)
     if strict
         maximum(@view ssp[:, 3]) > 0 && unsupported("elastic layer", "shear speed cs > 0 in the water column")
         halfspace[3] > 0 && unsupported("elastic layer", "shear speed cs > 0 in the bottom half-space")
-        attenuation = max(maximum(@view ssp[:, 5]), maximum(@view ssp[:, 6]), halfspace[5], halfspace[6])
-        attenuation > 0 && unsupported("attenuation", "max α = $attenuation in the file's units")
+        # Compressional attenuation (column 5) is Milestone 5 and is now read and used. Shear
+        # attenuation (column 6) is not: it only means anything in an elastic layer, and those are
+        # already rejected above by the `cs > 0` check — so a nonzero αs here is loss the solver
+        # would silently drop rather than a feature it supports.
+        shear_atten = max(maximum(@view ssp[:, 6]), halfspace[6])
+        shear_atten > 0 && unsupported("elastic layer", "shear attenuation αs = $shear_atten with no shear speed")
         roughness = maximum(abs, sigmas)
         roughness > 0 && unsupported("interfacial roughness", "max sigma = $roughness m")
 
@@ -394,8 +423,8 @@ function read_env_file(path::AbstractString; strict::Bool=true)
     ]
     ssp[end, 1] = layer_depths[end]
 
-    env = UnderwaterEnv(ssp, layers, sspHS)
-    return (; env, ssp, layers, sspHS, freqs, title, topopt, botopt, clow, chigh, rmax, sigmas)
+    env = UnderwaterEnv(ssp, layers, sspHS; atten_units=atten_units)
+    return (; env, ssp, layers, sspHS, freqs, title, topopt, botopt, clow, chigh, rmax, sigmas, atten_units)
 end
 
 """

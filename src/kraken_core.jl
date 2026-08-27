@@ -14,11 +14,13 @@ using ChainRulesCore: ignore_derivatives
 using DocStringExtensions
 
 # Exports
-export SampledSSP, SampledDensity
-export soundspeed, maxsoundspeed, density
+export SampledSSP, SampledDensity, SampledAttenuation
+export soundspeed, maxsoundspeed, density, attenuation
+export attenuation_nepers_per_m, ATTENUATION_UNIT_CHARS, DEFAULT_ATTENUATION_UNITS, is_lossy
 export UnderwaterEnv, AcousticProblemProperties, UnderwaterEnvFORTRAN
 export AcousticProblemCache, bisection, solve_for_kr, inverse_iteration, det_sturm, kraken_jl, find_kr, get_g
 export finite_difference_coefficients, mode_eigenvector, normalize_mode
+export modal_attenuation, complex_soundspeed, add_attenuation
 
 ### The differentiable seam
 #
@@ -127,6 +129,161 @@ function Base.show(io::IO, ρint::SampledDensity1D{T1,T2,T3}) where {T1,T2,T3}
     return print(io, "SampledDensity1D{", T1, ",", T2, ",", ρint.f, "}(", length(ρint.z), " points)")
 end
 
+### Attenuation Profile
+abstract type AttenuationProfile end
+abstract type SampledAttenuation <: AttenuationProfile end
+
+"""
+$(TYPEDEF)
+Attenuation profile based on measurements at discrete depths `z` in meters and attenuation `α`.
+
+`α` is stored in **whatever units the environment declared** — the sixth column of a KRAKEN `.env`
+SSP record means six different things depending on the third character of the top-option string, and
+four of the six conversions need the frequency, which an environment does not know. The conversion
+happens at solve time; see [`attenuation_nepers_per_m`](@ref) and `UnderwaterEnv`'s `atten_units`.
+"""
+struct SampledAttenuation1D{T1,T2,T3} <: SampledAttenuation
+    z::Vector{T1}
+    α::Vector{T2}
+    f::T3
+    function SampledAttenuation1D(depth, α, f)
+        interp = f(α, depth; extrapolation=ExtrapolationType.Constant)
+        return new{eltype(depth),eltype(α),typeof(interp)}(-depth, α, interp)
+    end
+end
+
+"""
+    SampledAttenuation(depth, α)
+
+Constructor for `SampledAttenuation1D`.
+
+Create an attenuation profile sampled at discrete depths `z` in meters. Interpolation is linear, to
+match [`SampledSSP`](@ref) and [`SampledDensity`](@ref) — the three profiles are evaluated on the
+same mesh and a different interpolator here would put the attenuation somewhere the sound speed is
+not.
+"""
+SampledAttenuation(depth, α) = SampledAttenuation1D(depth, α, DataInterpolations.LinearInterpolation)
+SampledAttenuation(depth, α, type::Symbol) = SampledAttenuation1D(depth, α, type)
+
+function Base.show(io::IO, αint::SampledAttenuation1D{T1,T2,T3}) where {T1,T2,T3}
+    return print(io, "SampledAttenuation1D{", T1, ",", T2, ",", αint.f, "}(", length(αint.z), " points)")
+end
+
+"""
+    attenuation(α::AttenuationProfile, z)
+
+Get the attenuation at depth `z`, in the profile's own declared units. `z` is generally negative,
+since the sea surface is the datum and the z-axis points upwards — the same convention as
+[`soundspeed`](@ref) and [`density`](@ref).
+"""
+function attenuation end
+
+attenuation(α::SampledAttenuation1D, z) = α.f(z)
+
+### Attenuation units
+#
+# KRAKEN puts the attenuation *units* in the third character of the top-option string, and the sixth
+# column of every SSP record is then read in those units. The conversions below are transcribed from
+# `CRCI` in the Acoustics Toolbox's `misc/AttenMod.f90`, which is the definition — not a formula
+# re-derived from the physics that happens to agree.
+#
+# Two of them are worth flagging, because guessing gets them wrong:
+#
+#   * `'M'` is dB per **metre**, not dB/km (`alphaT = alpha / 8.6858896`). The plan's deliverable
+#     table said dB/km; the Fortran says otherwise and the Fortran is what `kraken.exe` runs.
+#   * `'F'` is dB/(m·kHz) (`alphaT = alpha * freq / 8685.8896`, freq in Hz), which is the *same*
+#     quantity as dB/(km·Hz) — the OALIB case that uses it is titled ".001dB/kmHz". The symbol name
+#     here keeps the plan's `:dB_per_kmHz`.
+#
+# `'m'` (dB/m with a frequency power law) is a seventh option in the modern toolbox. It needs two
+# extra parameters per medium that are read from records this package does not model, so it is
+# deliberately absent from the table below and the `.env` reader names it as unsupported rather than
+# silently reading it as `'M'`.
+
+"""
+Nepers per decibel: `1 / 8.6858896`. `8.6858896 = 20 / log(10)` is the constant KRAKEN's `CRCI`
+spells out, and it is used here to the same digits so the two agree exactly rather than nearly.
+"""
+const DB_PER_NEPER = 8.6858896
+
+"""
+`1000 * DB_PER_NEPER`, spelled out as its own literal rather than computed.
+
+`CRCI` writes `8685.8896` for the dB/(m·kHz) case and `8.6858896` for the dB/m one, and
+`1000 * 8.6858896` is not bit-identical to `8685.8896` in floating point. Transcribing both literals
+makes the Julia conversion agree with the Fortran to the last bit instead of to fifteen digits.
+"""
+const DB_PER_NEPER_KHZ = 8685.8896
+
+"""
+Map from the attenuation-unit character in a KRAKEN top-option string (`TopOpt(3:3)`) to the symbol
+[`attenuation_nepers_per_m`](@ref) accepts. See the note above for the two that are easy to misread.
+"""
+const ATTENUATION_UNIT_CHARS = Dict(
+    'N' => :nepers_per_m,
+    'M' => :dB_per_m,
+    'F' => :dB_per_kmHz,
+    'W' => :dB_per_wavelength,
+    'Q' => :Q,
+    'L' => :loss_parameter,
+)
+
+"""
+The default attenuation units: `'W'`, dB per wavelength.
+
+This is KRAKEN's most common choice and the one [`DEFAULT_TOPOPT`] in the test-only `.env` writer
+already emitted while every `αp` was zero, so it is the value that keeps existing environments
+reading exactly as they did.
+"""
+const DEFAULT_ATTENUATION_UNITS = :dB_per_wavelength
+
+"""
+    attenuation_nepers_per_m(α, c, freq, units::Symbol)
+
+Convert an attenuation `α` given in `units` into nepers per metre, at sound speed `c` (m/s) and
+frequency `freq` (Hz).
+
+`units` is one of `:nepers_per_m`, `:dB_per_m`, `:dB_per_kmHz`, `:dB_per_wavelength`, `:Q`,
+`:loss_parameter` — the six conventions `CRCI` implements, keyed off `TopOpt(3:3)` (see
+[`ATTENUATION_UNIT_CHARS`](@ref)).
+
+| symbol | char | meaning | conversion |
+|---|---|---|---|
+| `:nepers_per_m` | `N` | nepers/m | `α` |
+| `:dB_per_m` | `M` | dB/m | `α / 8.6858896` |
+| `:dB_per_kmHz` | `F` | dB/(m·kHz), i.e. dB/(km·Hz) | `α · freq / 8685.8896` |
+| `:dB_per_wavelength` | `W` | dB/wavelength | `α · freq / (8.6858896 · c)` |
+| `:Q` | `Q` | quality factor | `ω / (2 c α)` |
+| `:loss_parameter` | `L` | loss parameter | `α · ω / c` |
+
+Four of the six depend on frequency, which is why an environment stores the raw values and this
+conversion happens inside the solve. The degenerate guards (`c == 0`, `c·α == 0`) are KRAKEN's own
+and return zero rather than a division by zero — `Q = 0` in particular is how a lossless medium is
+spelled under that convention, so it has to mean "no loss" and not `Inf`.
+"""
+function attenuation_nepers_per_m(α, c, freq, units::Symbol)
+    T = float(promote_type(typeof(α), typeof(c), typeof(freq)))
+    ω = 2pi * freq
+    if units === :nepers_per_m
+        return convert(T, α)
+    elseif units === :dB_per_m
+        return convert(T, α / DB_PER_NEPER)
+    elseif units === :dB_per_kmHz
+        return convert(T, α * freq / DB_PER_NEPER_KHZ)
+    elseif units === :dB_per_wavelength
+        return iszero(c) ? zero(T) : convert(T, α * freq / (DB_PER_NEPER * c))
+    elseif units === :Q
+        return iszero(c * α) ? zero(T) : convert(T, ω / (2 * c * α))
+    elseif units === :loss_parameter
+        return iszero(c) ? zero(T) : convert(T, α * ω / c)
+    end
+    return throw(
+        ArgumentError(
+            "Unknown attenuation units $(repr(units)); expected one of $(sort(collect(values(ATTENUATION_UNIT_CHARS))))"
+        ),
+    )
+end
+
 ### Underwater Environment
 
 """
@@ -156,9 +313,14 @@ function Base.show(io::IO, ::UnderwaterEnvFORTRAN{T}) where {T}
 end
 
 """
-Underwater environment containing the sound speed profile and density profile.
+Underwater environment containing the sound speed profile, density profile and attenuation profile.
+
+`α` and `αb` are the water-column and half-space attenuations in the units named by `atten_units`;
+nothing converts them until a frequency is known. An environment whose attenuations are all zero is
+lossless and [`kraken_jl`](@ref) then returns real wavenumbers, exactly as it did before attenuation
+existed — see [`is_lossy`](@ref).
 """
-struct UnderwaterEnv{T1<:SoundSpeedProfile,T2<:DensityProfile,T3<:Real}
+struct UnderwaterEnv{T1<:SoundSpeedProfile,T2<:DensityProfile,T3<:Real,T4<:AttenuationProfile}
     c::T1
     ρ::T2
     cb::T3
@@ -166,6 +328,9 @@ struct UnderwaterEnv{T1<:SoundSpeedProfile,T2<:DensityProfile,T3<:Real}
     h_vec::Vector{T3}
     layer_depth::Vector{T3}
     depth::T3
+    α::T4
+    αb::T3
+    atten_units::Symbol
 end
 
 """
@@ -182,15 +347,19 @@ already the sole input to `get_thickness`, which sizes the finite-difference mes
 is only samples *within* those media. They coincide in every well-formed environment, but when they
 disagree it is `ssp` that is short or long, not `layers` that is wrong.
 """
-function UnderwaterEnv(ssp, layers, sspHS)
+function UnderwaterEnv(ssp, layers, sspHS; atten_units::Symbol=DEFAULT_ATTENUATION_UNITS)
     c = SampledSSP(ssp[:, 1], ssp[:, 2])
     ρ = SampledDensity(ssp[:, 1], ssp[:, 4])
+    α = SampledAttenuation(ssp[:, 1], ssp[:, 5])
     ρb = sspHS[2, 4]
     cb = sspHS[2, 2]
+    αb = sspHS[2, 5]
     layer_thickness = get_thickness(layers)
     layer_depth = layers[:, 3]
     depth = layers[end, 3]
-    return UnderwaterEnv{typeof(c),typeof(ρ),typeof(cb)}(c, ρ, cb, ρb, layer_thickness, layer_depth, depth)
+    return UnderwaterEnv{typeof(c),typeof(ρ),typeof(cb),typeof(α)}(
+        c, ρ, cb, ρb, layer_thickness, layer_depth, depth, α, αb, atten_units
+    )
 end
 
 """
@@ -198,20 +367,42 @@ end
 
 Constructor for `UnderwaterEnv` using the `UnderwaterEnvFORTRAN` struct.
 """
-function UnderwaterEnv(krak_ssp::UnderwaterEnvFORTRAN{T}) where {T}
+function UnderwaterEnv(krak_ssp::UnderwaterEnvFORTRAN{T}; atten_units::Symbol=DEFAULT_ATTENUATION_UNITS) where {T}
     c = SampledSSP(krak_ssp.ssp[:, 1], krak_ssp.ssp[:, 2])
     ρ = SampledDensity(krak_ssp.ssp[:, 1], krak_ssp.ssp[:, 4])
+    α = SampledAttenuation(krak_ssp.ssp[:, 1], krak_ssp.ssp[:, 5])
     ρb = krak_ssp.sspHS[2, 4]
     cb = krak_ssp.sspHS[2, 2]
+    αb = krak_ssp.sspHS[2, 5]
     layer_thickness = get_thickness(krak_ssp.layers)
     layer_depth = krak_ssp.layers[:, 3]
     depth = krak_ssp.layers[end, 3]  # see the note on the (ssp, layers, sspHS) constructor
-    return UnderwaterEnv{typeof(c),typeof(ρ),T}(c, ρ, cb, ρb, layer_thickness, layer_depth, depth)
+    return UnderwaterEnv{typeof(c),typeof(ρ),T,typeof(α)}(
+        c, ρ, cb, ρb, layer_thickness, layer_depth, depth, α, αb, atten_units
+    )
 end
 
-function Base.show(io::IO, ::UnderwaterEnv{T1,T2,T3}) where {T1,T2,T3}
-    return print(io, "UnderwaterEnv{$T1, $T2, $T3}")
+function Base.show(io::IO, env::UnderwaterEnv{T1,T2,T3,T4}) where {T1,T2,T3,T4}
+    return print(io, "UnderwaterEnv{$T1, $T2, $T3}", is_lossy(env) ? " (lossy, $(env.atten_units))" : "")
 end
+
+"""
+    is_lossy(env::UnderwaterEnv) -> Bool
+
+Whether `env` declares any attenuation at all, in the water column or in the bottom half-space.
+
+This is the switch that decides whether [`kraken_jl`](@ref) returns complex wavenumbers or real ones.
+It is deliberately a test on the *stored* values rather than on the converted ones: `Q = 0` converts
+to zero nepers/m and `α = 0` does too, so both spellings of "lossless" take the same branch.
+
+Under AD this is a discrete decision on a parameter value, in the same family as the mesh-schedule
+choice in `kraken_jl`, and `α = 0` is a genuine kink: `imag(kr)` is identically zero below it and
+linear above. The two AD modes therefore take **opposite sides** there and neither complains —
+ForwardDiff's `iszero` on a `Dual` sees the seed and takes the lossy branch (right-hand derivative),
+while Zygote evaluates this on the primal and takes the lossless one (zero). Differentiate at a
+nonzero attenuation. See the note at the end of `src/kraken_ad.jl`.
+"""
+is_lossy(env::UnderwaterEnv) = any(!iszero, env.α.α) || !iszero(env.αb)
 
 ### Sound Speed and Density Functions to extract values from profiles at a give depth from profiles
 """
@@ -658,6 +849,103 @@ function integral_trapz(y, x)
     return sum((x[2:end] .- x[1:(end - 1)]) .* (y[1:(end - 1)] .+ y[2:end]) ./ 2)
 end
 
+### Integrating medium by medium
+#
+# Every depth integral over a mode — the energy normalization and the attenuation perturbation — has
+# a **discontinuous** integrand: `ρ` jumps at every interface, and so does `α` whenever the loss is
+# confined to a layer. A single trapezoid over the flattened mesh straddles those jumps, and one
+# straddled interval per interface is enough to drop the whole quadrature from second order to first.
+# Measured: `one_layer_env(; α1=0.4)` was 8% away from `kraken.exe` on `Im(kᵣ)` for its best-trapped
+# mode, halving with every mesh doubling.
+#
+# `kraken.f90`'s `Normalize` integrates medium by medium instead, with half-weights at each interface,
+# which is exact for a piecewise-continuous integrand. The three helpers below do the same. They also
+# recover the `[0, Δz]` sliver at the surface that the flat integral silently dropped — worth nothing
+# numerically, since `ψ(0) = 0` makes that integrand zero, but it means the mesh no longer has a hole
+# in it.
+#
+# All three are **on the differentiable seam**: `normalize_mode` is traced, so they must stay
+# allocating and free of mutation. Hence `vcat`/`map` rather than filling buffers.
+
+"""
+    layer_ranges(props::AcousticProblemProperties)
+
+Index ranges of each medium's slice within the flattened depth mesh, so `x[layer_ranges(props)[i]]`
+is medium `i`'s portion of a quantity sampled on `reduce(vcat, props.zn_vec)`.
+"""
+function layer_ranges(props::AcousticProblemProperties)
+    stops = cumsum(props.Nz_vec)
+    starts = vcat(1, stops[1:(end - 1)] .+ 1)
+    return [starts[i]:stops[i] for i in eachindex(props.Nz_vec)]
+end
+
+"""
+    medium_mesh(env::UnderwaterEnv, props::AcousticProblemProperties)
+
+Each medium's depth mesh, extended *upwards* to its own top interface.
+
+[`get_z_vec`](@ref) starts every layer one step below its top boundary, so the raw meshes leave a
+`Δz`-wide hole at each interface. Prepending the interface depth closes it and gives each medium a
+mesh spanning its full thickness — which is what makes a per-medium trapezoid the whole integral
+rather than most of it.
+"""
+function medium_mesh(env::UnderwaterEnv, props::AcousticProblemProperties)
+    z_tops = vcat(zero(eltype(env.layer_depth)), env.layer_depth[1:(end - 1)])
+    return [vcat(z_tops[i], props.zn_vec[i]) for i in eachindex(props.zn_vec)]
+end
+
+"""
+    medium_mode(ψ, props::AcousticProblemProperties)
+
+Each medium's slice of the mode shape, extended to its top interface.
+
+The mode function is *continuous* across an interface, so a medium's value there is simply the last
+sample of the medium above — and zero at the surface, which is the pressure-release condition. This
+is the one quantity that needs no special treatment at a boundary; the profiles are the ones that
+jump.
+"""
+function medium_mode(ψ, props::AcousticProblemProperties)
+    ranges = layer_ranges(props)
+    return [vcat(i == 1 ? zero(eltype(ψ)) : ψ[first(ranges[i]) - 1], ψ[ranges[i]]) for i in eachindex(ranges)]
+end
+
+"""
+    medium_property(sample, profile, props::AcousticProblemProperties)
+
+Each medium's samples of `profile` (via `sample`, one of [`soundspeed`](@ref), [`density`](@ref) or
+[`attenuation`](@ref)), extended to its top interface **from inside that medium**.
+
+This is the part a flat integral gets wrong. The value of `ρ` or `α` *at* an interface depends on
+which side you approach from, and the interpolant cannot be asked — querying exactly on the knot
+returns the medium above (see `linear_interp_partials` in `src/kraken_ad.jl`, where that convention
+is chosen deliberately and for good reasons of its own). So the top value is obtained by linear
+extrapolation from the medium's own first two samples, `2p₁ - p₂`.
+
+That is **exact**, not an approximation: the profiles are piecewise linear, the augmented mesh is
+uniform (a layer's first sample sits exactly `Δz` below its top, and its interior spacing is also
+`Δz`), and both samples lie strictly inside the medium. It is also traceable, which `nextfloat` —
+the obvious alternative — is not, having no method for a `Dual`.
+"""
+function medium_property(sample, profile, props::AcousticProblemProperties)
+    return map(props.zn_vec) do z
+        p = sample(profile, z)
+        return vcat(2 * p[1] - p[2], p)
+    end
+end
+
+"""
+    mode_energy(ψ, env::UnderwaterEnv, props::AcousticProblemProperties)
+
+`∫ ψ(z)² / ρ(z) dz` over the water column and every sediment layer, integrated medium by medium so
+the density discontinuities at the interfaces are resolved exactly rather than averaged across.
+"""
+function mode_energy(ψ, env::UnderwaterEnv, props::AcousticProblemProperties)
+    zz = medium_mesh(env, props)
+    vv = medium_mode(ψ, props)
+    ρρ = medium_property(density, env.ρ, props)
+    return sum(i -> integral_trapz(abs2.(vv[i]) ./ ρρ[i], zz[i]), eachindex(zz))
+end
+
 function create_finite_diff_matrix!(kr, env, props, cache)
     g = get_g(kr, env, props)
 
@@ -742,11 +1030,120 @@ coefficients, and leaving it traced means the backend reaches `env.ρ` through t
 than the eigenvector rule having to carry an interpolant adjoint of its own.
 """
 function normalize_mode(v, kr, env::UnderwaterEnv, props::AcousticProblemProperties)
-    zn = reduce(vcat, props.zn_vec)
-    ρn = density(env.ρ, zn)
-    amp1 = integral_trapz(abs2.(v) ./ ρn, zn) # Amplitude of the waveguide
+    amp1 = mode_energy(v, env, props) # Amplitude of the waveguide, integrated medium by medium
     amp2 = v[end]^2 / (2 * env.ρb * sqrt(kr^2 - (2pi * props.freq / env.cb)^2)) # Same for the bottom half-space
     return v ./ sqrt(amp1 + amp2)
+end
+
+### Modal attenuation by perturbation
+#
+# `kraken.exe` does not solve a complex eigenproblem. It solves the real one, then adds the loss as a
+# first-order perturbation of the eigenvalue — and `krakenc.exe` is the separate program that does
+# the full complex solve. This follows `kraken.exe`, for the reasons in the milestone's key
+# decisions: it is a much smaller change than a complex root find, and it leaves every Milestone 4
+# rule real-valued.
+#
+# The derivation, so the code below is checkable rather than incantation. The depth equation is
+#
+#     ρ (ψ'/ρ)' + (ω²/c² - kᵣ²) ψ = 0,        ∫ ψ²/ρ dz = 1
+#
+# and attenuation enters by making `c` complex. KRAKEN's `CRCI` builds `c̃ = c + i a c²/ω` from an
+# attenuation `a` in nepers/m, which to first order gives
+#
+#     ω²/c̃² ≈ ω²/c² - 2i ω a / c
+#
+# Standard first-order eigenvalue perturbation of a self-adjoint operator: the change in the
+# eigenvalue is the perturbation of the potential, averaged against the normalized eigenfunction. The
+# eigenvalue here is kᵣ², so
+#
+#     δ(kᵣ²) = ∫ δ(ω²/c²) ψ²/ρ dz = -2iω ∫ a ψ² / (c ρ) dz
+#
+# over the water column, plus the bottom half-space, where the mode decays as ψ(D) e^{-γ(z-D)} with
+# γ = √(kᵣ² - (ω/c_b)²). That integral is elementary:
+#
+#     ∫_D^∞ (-2iω a_b/c_b) ψ(D)² e^{-2γ(z-D)} / ρ_b dz = -i ω a_b ψ(D)² / (γ c_b ρ_b)
+#
+# and finally kᵣ = √(kᵣ² + δ(kᵣ²)). Every step of that is what `Normalize` in `Kraken/kraken.f90`
+# does: it accumulates `h · i · B1C · Φ²/ρ` with `B1C = AIMAG(ω²/c̃²)`, adds the half-space term as
+# `-i·AIMAG(√(x - ω²/c̃_b²))·Φ(D)²/ρ_b`, and `Solve` closes with `k = SQRT(Extrap + k)`.
+#
+# Two things are deliberately *not* simplified to the linearized forms above:
+#
+#   * `B1C` is computed as `imag(ω²/c̃²)` from the complex sound speed, not as `-2ωa/c`. That is what
+#     the Fortran evaluates, and the difference — O((ac/ω)²), around 1e-8 relative — costs nothing.
+#   * kᵣ is recovered with `sqrt(kᵣ² + δ)`, not as `kᵣ + δ/(2kᵣ)`. Same reason.
+#
+# The mode shapes come from the *coarsest* mesh while the wavenumbers are Richardson-extrapolated, so
+# the perturbation is evaluated on the coarse mesh and added to the extrapolated kᵣ². That is not an
+# oversight: `kraken.f90` calls `Vector` only when `iSet == 1` and combines the two exactly this way.
+
+"""
+    complex_soundspeed(c, α_nepers, ω)
+
+KRAKEN's complex sound speed: `c + i α c² / ω`, for an attenuation `α` already in nepers per metre.
+
+This is the last line of `CRCI` (`alphaT = alphaT * c * c / omega; CRCI = CMPLX( c, alphaT )`). The
+imaginary part is arranged so that `ω / c̃ ≈ ω/c - iα`, i.e. so a plane wave in a homogeneous medium
+loses exactly `α` nepers per metre — which is what makes `α` mean what its units say.
+"""
+complex_soundspeed(c, α_nepers, ω) = complex(c, α_nepers * c^2 / ω)
+
+"""
+    modal_attenuation(ψ, kr, env::UnderwaterEnv, props::AcousticProblemProperties)
+
+First-order perturbation `δ(kᵣ²)` of a mode's squared wavenumber due to material absorption.
+
+`ψ` is a mode shape already normalized by [`normalize_mode`](@ref) — the perturbation formula assumes
+`∫ψ²/ρ + ψ(D)²/(2ρ_b γ) = 1`, so passing an unnormalized eigenvector gives an answer wrong by that
+factor. `kr` is the real wavenumber the lossless solve converged to.
+
+The result is purely imaginary and negative, so `√(kᵣ² + δ)` has a negative imaginary part and the
+mode decays with range. See the derivation in the comment block above; the units of `env.α`/`env.αb`
+are `env.atten_units` and are converted here, where the frequency is finally known.
+
+# Accuracy
+
+Two independent limits, measured against `kraken.exe` and recorded in `test/README.md`. They hit
+opposite ends of the mode spectrum, which is a useful way to tell which one you are looking at.
+
+  * **The half-space term is first order in `2ω a_b/(c_b γ²)`, not in `a_b`.** Since `γ → 0` at the
+    bottom cutoff, a strongly attenuating half-space degrades the *least*-trapped mode first — 10%
+    for a near-cutoff mode over a 0.5 dB/λ seabed. Inherent to perturbation theory; only a full
+    complex solve (`krakenc.exe`) fixes it.
+  * **Everything else is ordinary discretization, at second order.** The volume integral is taken
+    medium by medium (see [`mode_energy`](@ref) and the note above it), so a jump in `ρ` or `α` at a
+    layer interface is resolved exactly rather than averaged across by a straddling trapezoid. That
+    is worth 27x on `one_layer_env(; α1=0.4)` — 8.1e-2 against `kraken.exe` with one flat trapezoid,
+    2.9e-3 medium by medium — and it is what keeps a lossy sediment layer usable at the default mesh.
+    Observed convergence order on that case: 2.00.
+
+Calibrating against Fortran below about 1e-3 on a layered case measures `kraken.exe`'s mesh rather
+than this one: its automatic mesh carries ~1.6e-3 of discretization error on `one_layer_env`.
+"""
+function modal_attenuation(ψ, kr, env::UnderwaterEnv, props::AcousticProblemProperties)
+    ω = 2pi * props.freq
+    zz = medium_mesh(env, props)
+    vv = medium_mode(ψ, props)
+    ρρ = medium_property(density, env.ρ, props)
+    cc = medium_property(soundspeed, env.c, props)
+    αα = medium_property(attenuation, env.α, props)
+
+    # Water column: ∫ i·Im(ω²/c̃²)·ψ²/ρ dz, medium by medium and with the same quadrature
+    # `normalize_mode` uses — the two have to be weighted alike or their ratio is not the average the
+    # perturbation formula asks for. That is why both moved to `mode_energy`/`medium_*` together.
+    volume = sum(eachindex(zz)) do i
+        a_np = attenuation_nepers_per_m.(αα[i], cc[i], props.freq, env.atten_units)
+        b1c = imag.(ω^2 ./ complex_soundspeed.(cc[i], a_np, ω) .^ 2)
+        return integral_trapz(b1c .* abs2.(vv[i]) ./ ρρ[i], zz[i])
+    end
+
+    # Bottom half-space: the mode leaks into it as ψ(D)e^{-γ(z-D)}, and the integral is closed form.
+    ab_np = attenuation_nepers_per_m(env.αb, env.cb, props.freq, env.atten_units)
+    cb_complex = complex_soundspeed(env.cb, ab_np, ω)
+    γ_complex = sqrt(complex(kr^2) - ω^2 / cb_complex^2)
+    halfspace = -imag(γ_complex) * ψ[end]^2 / env.ρb
+
+    return im * (volume + halfspace)
 end
 
 """
@@ -867,7 +1264,7 @@ function kraken_jl(env, freq; n_meshes=5, rmax=10_000, method=ITP(), dont_break=
     krs_coarse, modes = inverse_iteration(krs, env, props, cache)
     # If we want only one mesh calculation (n_meshes = 1), return the result
     if n_meshes == 1
-        return NormalModeSolution(krs_coarse, modes, env, props)
+        return NormalModeSolution(add_attenuation(krs_coarse, modes, env, props), modes, env, props)
     end
 
     # Richardson Extrapolation from here on out if n_mesh > 1
@@ -909,7 +1306,24 @@ function kraken_jl(env, freq; n_meshes=5, rmax=10_000, method=ITP(), dont_break=
         krs_old = krs_new
     end
 
-    return NormalModeSolution(rich_krs[1:M], modes[:, 1:M], env, props)
+    return NormalModeSolution(add_attenuation(rich_krs[1:M], modes[:, 1:M], env, props), modes[:, 1:M], env, props)
+end
+
+"""
+    add_attenuation(krs, modes, env, props)
+
+Turn converged real wavenumbers into complex ones by adding the first-order attenuation perturbation
+of [`modal_attenuation`](@ref) to each `kᵣ²`.
+
+**Returns `krs` unchanged, and still real, when `env` declares no attenuation.** That is the point of
+the `is_lossy` guard rather than adding a zero: a lossless environment goes through the same
+arithmetic it always did and every existing result stays bit-identical, instead of acquiring a
+`0.0im` that changes the element type of `NormalModeSolution.kr` and of everything downstream of it.
+"""
+function add_attenuation(krs, modes, env::UnderwaterEnv, props::AcousticProblemProperties)
+    is_lossy(env) || return krs
+    isempty(krs) && return krs
+    return map(m -> sqrt(complex(krs[m]^2) + modal_attenuation(view(modes, :, m), krs[m], env, props)), eachindex(krs))
 end
 
 struct NormalModeSolution{T1,T2}
