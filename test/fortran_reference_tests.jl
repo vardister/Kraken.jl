@@ -166,6 +166,52 @@ const KR = KrakenReference
         return joinpath(dir, as)
     end
 
+    # Reading a .prt does not need a Fortran binary, so this runs everywhere -- which matters,
+    # because the format it pins is only ever produced by the Linux build.
+    @testset "Group Speed table with an unfilled VG column" begin
+        # Byte-for-byte the table AcousticsToolbox_jll's Linux kraken.exe writes for Pekeris_AV at
+        # 100 Hz. Its group-speed array is uninitialised, and Fortran's F/G edit descriptors drop
+        # the `E` from a three-digit exponent, so the garbage prints as `0.968142-315`. Parsing
+        # that as end-of-table truncated the table to the single mode whose VG happened to be
+        # clean, silently comparing mode 2 against mode 1's reference wavenumber.
+        prt = """
+ Nominal Frequency =   100.0    Hz
+
+    I       k             alpha     Phase Speed     Group Speed
+          (1/m)           (1/m)        (m/s)           (m/s)
+    1  0.4179077218       0.0       1503.486291      0.968142-315
+    2  0.4149628502       0.0       1514.156100       0.00000
+    3  0.4099680381       0.0       1532.603697      0.106098-152
+    4  0.4028501244       0.0       1559.683100      0.212024+162
+    5  0.3938075024       0.0       1595.496599      0.234263-305
+ _________________________________________________
+"""
+        mktempdir() do dir
+            path = joinpath(dir, "garbage.prt")
+            write(path, prt)
+            grp = KR.read_grp(path)
+
+            # The whole table, not just the rows that printed cleanly.
+            @test grp.m == 1:5
+            @test length(grp.kᵣ) == 5
+            @test real(grp.kᵣ[1]) ≈ 0.4179077218 atol = 1e-9
+            @test real(grp.kᵣ[5]) ≈ 0.3938075024 atol = 1e-9
+            @test grp.phase_speed[1] ≈ 1503.486291 atol = 1e-6
+
+            # Garbage is still garbage: the column must not be mistaken for real group speeds.
+            @test !KR.has_group_speeds(grp)
+        end
+    end
+
+    @testset "Fortran exponent spellings" begin
+        @test KR._parse_fortran_float("1503.486291") ≈ 1503.486291
+        @test KR._parse_fortran_float("-0.25") ≈ -0.25          # a leading sign is not an exponent
+        @test KR._parse_fortran_float("0.968142-315") ≈ 0.968142e-315
+        @test KR._parse_fortran_float("0.212024+162") ≈ 0.212024e162
+        @test KR._parse_fortran_float("1.5D-3") ≈ 1.5e-3
+        @test KR._parse_fortran_float("not a number") === nothing
+    end
+
     if KR.fortran_available()
         @testset ".mod and .prt readers" begin
             @testset "Pekeris_AV" begin
@@ -367,8 +413,16 @@ const KR = KrakenReference
             # Run directories are `mktempdir()` children holding a `case.env`. Identifying them by
             # that file rather than by counting entries keeps these assertions honest when another
             # process is also writing to the system temp directory.
+            # `tempdir()` is shared with the rest of the machine, and not every entry in it is
+            # readable: an Ubuntu CI runner has a root-only `/tmp/snap-private-tmp`, where `isfile`
+            # raises EACCES rather than returning false. Anything we cannot stat is by definition
+            # not one of our run directories, so treat a throw as "no".
             run_dirs() = filter(readdir(tempdir(); join=true)) do path
-                isdir(path) && isfile(joinpath(path, "case.env"))
+                try
+                    isdir(path) && isfile(joinpath(path, "case.env"))
+                catch
+                    false
+                end
             end
 
             @testset "temporary directories are cleaned up" begin
