@@ -1,7 +1,7 @@
 name = "Kraken"
 uuid = "269dd85f-649c-4475-a373-cd87bf6afec3"
 authors = ["Ariel Vardi"]
-version = "0.2.2"
+version = "0.3.0"
 
 [deps]
 DataInterpolations = "82cc6244-b520-54b8-b5a6-8a565e85f1d0"
