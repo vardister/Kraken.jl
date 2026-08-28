@@ -10,6 +10,9 @@ sftp.json
 *.o
 .vscode
 
+# Agent implementation plans - development history, not part of the package tarball.
+plans/
+
 # Compiled Fortran artifacts. No binary belongs in this tree: the Fortran sources moved to
 # KrakenFortran.jl in 49d9343, and Milestone 3 gets its reference binaries from
 # AcousticsToolbox_jll instead of a local build.
