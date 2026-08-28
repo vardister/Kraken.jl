@@ -157,14 +157,40 @@ const GRP_MAX_ROWS_PRINTED = 30
 # One table row: `WRITE( PRTFile, '( I5, G18.10, G10.2, G18.10, G14.6 )' ) mode, k, omega/k, VG`.
 # `k` is COMPLEX, so it consumes two edit descriptors -- hence five numbers per row, with the
 # second and third being the real and imaginary parts of the wavenumber.
+"""
+    _parse_fortran_float(s) -> Union{Float64,Nothing}
+
+`tryparse(Float64, s)`, plus the two spellings Fortran emits that Julia does not accept.
+
+`D` is double-precision exponent notation. More awkwardly, the `F`/`G` edit descriptors **drop the
+`E` when the exponent needs three digits**, so a denormal prints as `0.968142-315` rather than
+`0.968142E-315`. That is not a hypothetical: `AcousticsToolbox_jll`'s Linux `kraken.exe` leaves the
+group-speed array uninitialised, and the resulting garbage lands in exactly that form.
+
+The repair is attempted only after a plain parse has failed, so ordinary numbers are untouched.
+"""
+function _parse_fortran_float(s::AbstractString)
+    v = tryparse(Float64, s)
+    v === nothing || return v
+    t = replace(s, 'D' => 'E', 'd' => 'e')
+    t = replace(t, r"(?<=[0-9])(?=[+-][0-9]+$)" => "E")
+    return tryparse(Float64, t)
+end
+
 function _parse_grp_row(line::AbstractString)
     fields = split(line)
     length(fields) == 5 || return nothing
     mode = tryparse(Int, fields[1])
     mode === nothing && return nothing
-    values = map(f -> tryparse(Float64, f), fields[2:5])
-    any(isnothing, values) && return nothing
-    return (mode, values[1], values[2], values[3], values[4])
+    kr, alpha, cp = map(_parse_fortran_float, fields[2:4])
+    (kr === nothing || alpha === nothing || cp === nothing) && return nothing
+    # Group Speed is the one column a broken binary is known to fill with uninitialised memory, and
+    # an unreadable value there must not cost us the whole row: `read_grp_blocks` treats the first
+    # unparseable line after it has collected something as the end of the table, so rejecting the
+    # row truncated the table to whichever modes happened to print cleanly. `has_group_speeds` is
+    # what decides whether this column can be trusted; NaN simply makes "cannot" explicit.
+    vg = _parse_fortran_float(fields[5])
+    return (mode, kr, alpha, cp, vg === nothing ? NaN : vg)
 end
 
 """
@@ -227,9 +253,12 @@ end
 
 Whether a table returned by [`read_grp`](@ref) actually carries group speeds.
 
-**`kraken.exe` as shipped by `AcousticsToolbox_jll` v2025.9 writes `0.00000` in the Group Speed
-column for every mode.** Its wavenumbers and mode shapes are correct and agree digit for digit with
-a local Acoustics Toolbox build; only `VG` is lost. The same jll's `krakenc.exe` is fine, and so is
+**`kraken.exe` as shipped by `AcousticsToolbox_jll` v2025.9 does not fill in the Group Speed
+column.** Its wavenumbers and mode shapes are correct and agree digit for digit with a local
+Acoustics Toolbox build; only `VG` is lost. What lands in the column is platform-dependent: the
+macOS binary prints `0.00000` for every mode, while the Linux one prints whatever was in the
+uninitialised array — denormals and huge values such as `0.968142-315` or `0.212024+162`. So the
+test cannot be "are they all zero"; it is whether every entry is a physically possible speed. The same jll's `krakenc.exe` is fine, and so is
 the 2023 OALIB build of both binaries — so this is a regression in that one binary, not a property
 of the format or of the environment.
 
@@ -237,7 +266,7 @@ A group-speed comparison therefore has to run `complex=true`, or point `KRAKEN_F
 local build. Checking this predicate is what keeps that from surfacing as a spurious "group speeds
 differ by 100%".
 """
-has_group_speeds(grp) = !isempty(grp.v) && any(!iszero, grp.v)
+has_group_speeds(grp) = !isempty(grp.v) && all(v -> isfinite(v) && 0 < v < 1e5, grp.v)
 
 """
     read_grp(path; freq=nothing) -> NamedTuple
