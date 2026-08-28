@@ -125,27 +125,21 @@ sspHS = [sspTHS; sspBHS]
 nz = nsr + nrc
 frq=vcat(10:1:30, 32:2:50, 55:5:100, 110:10:250)
 
-env = EnvKRAKEN(
-    ssp,
-    b,
-    sspHS,
-    zrc,
-    zsr,
-)
+env = EnvKRAKEN(ssp, b, sspHS, zrc, zsr)
 
 CP=zeros(nm, length(frq))
 CG=zeros(nm, length(frq))
 
 for (i, ff) in enumerate(frq)
-    res = kraken(env, ff; n_modes = nm)
+    res = kraken(env, ff; n_modes=nm)
     CP[:, i] = res["cp"]
     CG[:, i] = res["cg"]
 end
 
 #%% Plot group and phase speeds
 f = Figure();
-ax1 = Axis(f[1, 1], xlabel = "Frequency (Hz)", ylabel = "Phase Speed (m/s)", title = "Phase Speed")
-series!(ax1, frq, CP, color = :tab20)
-ax2 = Axis(f[1, 2], xlabel = "Frequency (Hz)", ylabel = "Group Speed (m/s)", title = "Group Speed")
-series!(ax2, frq, CG, color = :tab20)
+ax1 = Axis(f[1, 1]; xlabel="Frequency (Hz)", ylabel="Phase Speed (m/s)", title="Phase Speed")
+series!(ax1, frq, CP; color=:tab20)
+ax2 = Axis(f[1, 2]; xlabel="Frequency (Hz)", ylabel="Group Speed (m/s)", title="Group Speed")
+series!(ax2, frq, CG; color=:tab20)
 display(f)

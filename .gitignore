@@ -3,16 +3,36 @@
 ################################################################################
 *.sublime-project
 *.sublime-workspace
-*.dylib
 obj/
 mod/
 sftp-config.json
 sftp.json
-*.prt
-*.mod
-Manifest.toml
 *.o
 .vscode
+
+# Agent implementation plans - development history, not part of the package tarball.
+plans/
+
+# Compiled Fortran artifacts. No binary belongs in this tree: the Fortran sources moved to
+# KrakenFortran.jl in 49d9343, and Milestone 3 gets its reference binaries from
+# AcousticsToolbox_jll instead of a local build.
+*.dylib
+*.so
+*.dll
+
+# KRAKEN run products (`kraken.exe` writes these next to the .env it is given)
+*.prt
+*.mod
+*.grn
+*.shd
+
+# Resolved environments. Kraken is a library, so manifests are not committed — see
+# test/README.md for why the test environment must be dev-linked by hand.
+Manifest.toml
+
+# Coverage output
+*.cov
+
 ################################################################################
 #                          DrWatson Project Structure                          #
 ################################################################################
@@ -432,6 +452,3 @@ $RECYCLE.BIN/
 
 ## Acknowledgements
 # Many thanks to `https://gitignore.io/`, written and maintained by Joe Blau, which contributed much material to this gitignore file.
-
-*.so
-*.dll

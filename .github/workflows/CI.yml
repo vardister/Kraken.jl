@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [master, revival]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+# One in-flight run per ref. A new push supersedes the previous one instead of queueing behind it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Julia ${{ matrix.version }} - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # "1.10" is the declared lower bound in Project.toml and must actually be exercised —
+        # developing on 1.12 while claiming 1.10 is how the bound silently rots. "lts" and "1"
+        # track whatever Julia currently calls long-term-support and latest-stable, so the matrix
+        # keeps meaning the same thing as those move.
+        version: ["1.10", "lts", "1"]
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: ${{ matrix.version }}
+      - uses: julia-actions/cache@v2
+      - uses: julia-actions/julia-buildpkg@v1
+      # Runs Pkg.test() from the root environment, which is what picks up test/Project.toml as the
+      # test environment. See test/README.md for why --project=test is wrong here.
+      - uses: julia-actions/julia-runtest@v1
+
+  # Benchmarks are opt-in and timing-sensitive, so they run once rather than across the matrix.
+  # Thresholds are set to catch order-of-magnitude regressions, not to police CI runner variance.
+  performance:
+    name: Performance suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1"
+      - uses: julia-actions/cache@v2
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-runtest@v1
+        env:
+          KRAKEN_RUN_PERFORMANCE_TESTS: "true"
+
+  # Build only, no deploy — publishing needs a DOCUMENTER_KEY, which is the maintainer's call to
+  # set up. The point of this job is that the docs build cannot silently rot again: it was broken
+  # for the entire life of the repo because make.jl said `using KRAKEN` and the module is `Kraken`,
+  # and nothing ever ran it.
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1"
+      - uses: julia-actions/cache@v2
+      - name: Instantiate docs environment
+        run: julia --project=docs -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate()'
+      - name: Build
+        run: julia --project=docs docs/make.jl

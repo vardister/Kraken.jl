@@ -128,9 +128,9 @@ function solve_pekeris_equation(span, func_to_min, p; method=ITP())
 end
 
 """
-    get_modal_function(env, krs, freq, zr, zs)
+    get_modal_function_values(env, krs, freq, zr, zs)
 
-    Get the modal function for the Pekeris model.
+    Evaluate the Pekeris modal functions at the receiver and source depths.
 
     # Arguments
     - `env::PekerisUnderwaterEnv`: The underwater environment.
@@ -149,11 +149,10 @@ function get_modal_function_values(env, krs, freq, zr, zs)
     kzw = sqrt.((ω / c1)^2 .- krs .^ 2) # vertical wavenumber in the water column
     kzb = sqrt.(krs .^ 2 .- (ω / cb)^2) # vertical wavenumber in the bottom half-space
     # The amplitude `amplitude` of the modes
-    amplitude =
-        sqrt.(
-            (4 .* kzb .* kzw .* ρ1 .* ρb) ./
-            (2 .* kzw .* ρ1 .* sin.(depth .* kzw) .^ 2 .- kzb .* ρb .* (-2 .* depth .* kzw .+ sin.(2 .* depth .* kzw)))
-        )
+    amplitude = sqrt.(
+        (4 .* kzb .* kzw .* ρ1 .* ρb) ./
+        (2 .* kzw .* ρ1 .* sin.(depth .* kzw) .^ 2 .- kzb .* ρb .* (-2 .* depth .* kzw .+ sin.(2 .* depth .* kzw))),
+    )
     # The mode function
     function Ψ(z, mode)
         return amplitude[mode] * sin(kzw[mode] * z) * (z .<= depth) +
@@ -164,19 +163,26 @@ function get_modal_function_values(env, krs, freq, zr, zs)
     return modes_zr, modes_zs
 end
 
+"""
+    get_modal_function(env, krs, freq)
 
+Build the Pekeris mode function `Ψ(z, mode)` for wavenumbers `krs` at frequency `freq`.
 
+Returns a closure, so it can be evaluated at any depth: sinusoidal in the water column and
+exponentially decaying below the interface, normalized the same way as
+[`get_modal_function_values`](@ref) (which is the right call when you only need a fixed pair of
+depths).
+"""
 function get_modal_function(env, krs, freq)
     @unpack c1, cb, ρ1, ρb, depth = env
     ω = 2π * freq
     kzw = sqrt.((ω / c1)^2 .- krs .^ 2) # vertical wavenumber in the water column
     kzb = sqrt.(krs .^ 2 .- (ω / cb)^2) # vertical wavenumber in the bottom half-space
     # The amplitude `amplitude` of the modes
-    amplitude =
-        sqrt.(
-            (4 .* kzb .* kzw .* ρ1 .* ρb) ./
-            (2 .* kzw .* ρ1 .* sin.(depth .* kzw) .^ 2 .- kzb .* ρb .* (-2 .* depth .* kzw .+ sin.(2 .* depth .* kzw)))
-        )
+    amplitude = sqrt.(
+        (4 .* kzb .* kzw .* ρ1 .* ρb) ./
+        (2 .* kzw .* ρ1 .* sin.(depth .* kzw) .^ 2 .- kzb .* ρb .* (-2 .* depth .* kzw .+ sin.(2 .* depth .* kzw))),
+    )
     # The mode function
     function Ψ(z, mode)
         return amplitude[mode] * sin(kzw[mode] * z) * (z .<= depth) +
@@ -211,7 +217,10 @@ function pressure_f(env::PekerisUnderwaterEnv, krs, freq, r, zs, zr; t0=0.1, max
         return 0.0 + 0.0im
     end
     @unpack c1, cb, ρ1, ρb, depth = env
-    ψ_zr, ψ_zs = get_modal_function(env, krs, freq, zr, zs)
+    # `get_modal_function(env, krs, freq)` returns a *function* of (z, mode); the values at the
+    # receiver and source depths come from `get_modal_function_values`, which is the 5-argument
+    # method this call always wanted.
+    ψ_zr, ψ_zs = get_modal_function_values(env, krs, freq, zr, zs)
     t_offset = r / min(c1, cb) - t0  # align window correctly in time
     n_modes = Int(min(max_modes, length(krs)))
     pf =

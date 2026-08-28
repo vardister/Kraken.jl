@@ -1,25 +1,42 @@
 # Kraken.jl
 
+[![CI](https://github.com/vardister/Kraken.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/vardister/Kraken.jl/actions/workflows/CI.yml)
+[![Format](https://github.com/vardister/Kraken.jl/actions/workflows/Format.yml/badge.svg)](https://github.com/vardister/Kraken.jl/actions/workflows/Format.yml)
+
 **❗Documentation is currently under construction.**
 
 KRAKEN.jl is a Normal-Mode based simulation package for underwater acoustic propagation. It's heavily based on [Michael Porter's KRAKEN Fortran code located in the Acoustics Toolbox](https://oalib-acoustics.org/models-and-software/normal-modes/) and [UnderwaterAcoustics.jl](https://github.com/org-arl/UnderwaterAcoustics.jl).
 
 This reimplementation is fully written in Julia, and is designed to be more user-friendly, and easier to extend. It is also designed to be more efficient, and to take advantage of Julia's parallelization capabilities.
 
-Access to the Fortran code is also available through Julia calls to the shared library, which can be useful for comparison and validation purposes.
-
-
 ## Features
 
 - Normal-Mode based simulation for underwater acoustic propagation fully written in Julia
 - User-friendly and easy to extend
-- Differential code (❗ currently only using [ForwardDiff.jl](https://github.com/JuliaDiff/ForwardDiff.jl))
-- Access to the Fortran code through Julia calls to the shared library
-- Re-using existing environmental data files from the Acoustics Toolbox
+- Differentiable code (❗ currently only using [ForwardDiff.jl](https://github.com/JuliaDiff/ForwardDiff.jl))
+- Re-using existing environmental data files from the Acoustics Toolbox — `.env` files are both read and written
+- Cross-validated against the **unmodified** Fortran `kraken.exe` on every push (see below)
+- Optional plotting via a package extension — `using CairoMakie` (or `GLMakie`) enables `plot_modes` and `plot_ssp` at no cost to anyone who does not
+
+## Validation
+
+Every push runs the solver against unmodified Fortran KRAKEN. The binaries come from
+[`AcousticsToolbox_jll`](https://github.com/JuliaBinaryWrappers/AcousticsToolbox_jll.jl), so CI needs
+no Fortran toolchain, and the comparison is driven over the toolbox's own `.env`/`.mod` file
+interface — nothing in this package links against Fortran code or ships a shared library.
+
+Across the five standard environments at 25–400 Hz, the largest relative wavenumber difference
+against `kraken.exe` is **2.7e-5** and the smallest mode-shape correlation is **0.99995**. Of the 402
+environment files shipped with the Acoustics Toolbox, 65 use only features Kraken.jl models today,
+and all 65 agree. See [`test/README.md`](test/README.md) for the per-environment table and for what
+blocks the other 337.
 
 ## Missing features
-- [ ] Compressional wave attenuation in environment
+- [ ] Compressional wave attenuation in environment (blocks 114 of the Acoustics Toolbox test cases — the single largest gap)
 - [ ] Inclusion of shear wave properties in environment
+- [ ] Boundary conditions other than a pressure-release surface over a fluid half-space
+- [ ] SSP interpolation other than C-linear
+- [ ] Reverse-mode automatic differentiation
 
 ## Installation
 
@@ -76,7 +93,10 @@ group_speeds = 2pi ./ ForwardDiff.derivative(calculate_kr_pekeris, freq)
 
 
 ## More examples
-More examples can be accessed in the `examples` folder.
+
+More examples can be accessed in the `examples` folder. ❗Most of them do not currently run: they
+call an `EnvKRAKEN` API that was removed when the Fortran sources moved out of this repository.
+They are being rewritten against the current API.
 
 ## Contributing
 

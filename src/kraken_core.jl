@@ -13,6 +13,7 @@ using DocStringExtensions
 
 # Exports
 export SampledSSP, SampledDensity
+export soundspeed, maxsoundspeed, density
 export UnderwaterEnv, AcousticProblemProperties, UnderwaterEnvFORTRAN
 export AcousticProblemCache, bisection, solve_for_kr, inverse_iteration, det_sturm, kraken_jl, find_kr, get_g
 
@@ -81,7 +82,9 @@ SampledDensity(depth, ρ) = SampledDensity1D(depth, ρ, DataInterpolations.Linea
 SampledDensity(depth, ρ, type::Symbol) = SampledDensity1D(depth, ρ, type)
 
 function Base.show(io::IO, ρint::SampledDensity1D{T1,T2,T3}) where {T1,T2,T3}
-    return print(io, "SampledDensity1D{", T1, ",", T2, ",", ρint.type, "}(", length(ρint.z), " points)")
+    # Mirrors the SampledSSP1D method above: the third slot is the interpolant, `f`. There is no
+    # `.type` field on this struct — printing one threw on every `show` of a density profile.
+    return print(io, "SampledDensity1D{", T1, ",", T2, ",", ρint.f, "}(", length(ρint.z), " points)")
 end
 
 ### Underwater Environment
@@ -132,6 +135,12 @@ Constructor for `UnderwaterEnv`.
 
 Create an underwater environment based on the sound speed profile `ssp`, the layer information `layers`, and the sound speed profile
 at the surface and bottom half-space `sspHS`.
+
+`depth` — the interface with the bottom half-space — is taken from `layers[end, 3]` in both this
+constructor and the `UnderwaterEnvFORTRAN` one. `layers` is what defines the media boundaries (it is
+already the sole input to `get_thickness`, which sizes the finite-difference mesh); the `ssp` table
+is only samples *within* those media. They coincide in every well-formed environment, but when they
+disagree it is `ssp` that is short or long, not `layers` that is wrong.
 """
 function UnderwaterEnv(ssp, layers, sspHS)
     c = SampledSSP(ssp[:, 1], ssp[:, 2])
@@ -156,7 +165,7 @@ function UnderwaterEnv(krak_ssp::UnderwaterEnvFORTRAN{T}) where {T}
     cb = krak_ssp.sspHS[2, 2]
     layer_thickness = get_thickness(krak_ssp.layers)
     layer_depth = krak_ssp.layers[:, 3]
-    depth = krak_ssp.ssp[end, 1]
+    depth = krak_ssp.layers[end, 3]  # see the note on the (ssp, layers, sspHS) constructor
     return UnderwaterEnv{typeof(c),typeof(ρ),T}(c, ρ, cb, ρb, layer_thickness, layer_depth, depth)
 end
 
@@ -295,6 +304,12 @@ e_element(ρ, h) = @. 1 / (h * ρ)
     get_g(kr, env::UnderwaterEnv, props::AcousticProblemProperties)
 
 Get the value of `g` for the bottom half-space finite-difference element.
+
+Only defined for `kr >= 2π * freq / cb`, i.e. for modes that are evanescent in the bottom
+half-space — below that cutoff the vertical wavenumber in the bottom is real (a radiating,
+leaky mode) and this real-valued formulation has no solution. `bisection` therefore only ever
+searches `kr ∈ [ω/cb, max(ω/c)]`; calling `get_g` (or `det_sturm`) below the cutoff throws a
+`DomainError` from `sqrt`.
 """
 function get_g(kr, env::UnderwaterEnv, props::AcousticProblemProperties)
     g = sqrt(kr^2 - (2pi * props.freq / env.cb)^2) / env.ρb
@@ -376,13 +391,19 @@ function scale_const(p1, p2, Φ=1e20, Γ=1e-20)
 end
 
 """
-    det_sturm(
-        kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache;
-        stop_at_k = nothing, return_det = false, scale = true)
+    det_sturm(kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; scale=true)
+
+Evaluate the Sturm sequence of the finite-difference system at trial wavenumber `kr`.
+
+Returns `(det, mode_num)`: the determinant of the tridiagonal system, and the number of modes with
+wavenumber above `kr` (the count decreases as `kr` sweeps up through the trapped band). `scale=true`
+rescales the sequence whenever it would overflow or underflow; the factor is piecewise constant in
+both `kr` and the environment parameters, so it cancels in any derivative of the root and does not
+affect the mode count.
+
+Only defined for `kr >= 2π * freq / cb` — see [`get_g`](@ref).
 """
-function det_sturm(
-    kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; stop_at_k=nothing, scale=true
-)
+function det_sturm(kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; scale=true)
     local p2, p1, p0, λ
     mode_count = 0
     g = get_g(kr, env, props)
@@ -424,9 +445,6 @@ function det_sturm(
                 end
                 p0 = p1
                 p1 = p2
-                if stop_at_k !== nothing && k == stop_at_k
-                    p2, mode_count
-                end
             end
         end
     end
@@ -437,6 +455,10 @@ end
     bisection(env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache)
 
 Bisection method to find the intervals where the roots (wavenumbers) lie.
+
+Searches `kr ∈ [ω/(0.9999 cb), max(ω/c)]`, the band in which modes are trapped. Returns an
+`n_modes × 2` matrix of `[left right]` brackets, or `nothing` when the environment supports no
+trapped modes at this frequency (e.g. water too shallow relative to the wavelength).
 """
 function bisection(env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache)
     ω = 2pi * props.freq
@@ -473,6 +495,10 @@ function bisection(env::UnderwaterEnv, props::AcousticProblemProperties, cache::
                         k2 = kmid
                         kRight[mm] = kmid
                     else
+                        # Reaching here means Δn >= mm >= 1, so `kLeft[Δn]` is in bounds, and
+                        # Δn <= n_max - n_min <= n_max, so `kRight[Δn + 1]` is too (both vectors
+                        # have n_max + 1 entries). Keep that invariant in mind before changing the
+                        # branch condition — indexing here is not otherwise guarded.
                         k1 = kmid
                         if kRight[Δn + 1] >= kmid
                             kRight[Δn + 1] = kmid
@@ -501,9 +527,10 @@ function bisection(env::UnderwaterEnv, props::AcousticProblemProperties, cache::
 end
 
 """
-    find_kr(env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; method=Roots.A42, kwargs...)
+    find_kr(env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; method=ITP(), kwargs...)
 
-Find the roots of the acoustic problem.
+Find the roots of the acoustic problem. `method` is any bracketing solver accepted by
+`IntervalNonlinearProblem`. Returns an empty vector when `bisection` finds no trapped modes.
 """
 function find_kr(
     env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; method=ITP(), kwargs...
@@ -541,13 +568,15 @@ function integral_trapz(y, x)
     return solve(problem, method).u
 end
 
-
 function create_finite_diff_matrix!(kr, env, props, cache)
     g = get_g(kr, env, props)
 
-    # Update the diagonal elements
+    # Update the diagonal elements.
+    # Spelled `.= x .- y` rather than `.-=`: `@views` on an updating broadcast is a syntax error on
+    # Julia 1.10 ("invalid let syntax"), which is the lower bound declared in Project.toml. Same
+    # allocation behaviour — @views makes both sides views either way.
     cache.a_vec[end] = 0.5 * cache.a_vec[end] - kr^2 .* cache.λ_scaling[end] - g
-    @views cache.a_vec[1:(end - 1)] .-= kr^2 .* cache.λ_scaling[1:(end - 1)]
+    @views cache.a_vec[1:(end - 1)] .= cache.a_vec[1:(end - 1)] .- kr^2 .* cache.λ_scaling[1:(end - 1)]
 
     # The Tridiagonal matrix will automatically reflect these changes
     # since it's using views of the vectors
@@ -557,7 +586,7 @@ end
 function return_finite_diff_matrix!(kr, env, props, cache)
     g = get_g(kr, env, props)
     cache.a_vec[end] = 2 * (cache.a_vec[end] + kr^2 .* cache.λ_scaling[end] + g)
-    @views cache.a_vec[1:(end - 1)] .+= kr^2 .* cache.λ_scaling[1:(end - 1)]
+    @views cache.a_vec[1:(end - 1)] .= cache.a_vec[1:(end - 1)] .+ kr^2 .* cache.λ_scaling[1:(end - 1)]  # see above
     # The Tridiagonal matrix will automatically reflect these changes
     # since it's using views of the vectors
     return nothing
@@ -624,6 +653,36 @@ function richard_extrap(h_meshes, krs_meshes)
     return sqrt(sol[1])
 end
 
+"""
+    kraken_jl(env, freq; n_meshes=5, rmax=10_000, method=ITP(), dont_break=false, abstol=1e-6, reltol=1e-6)
+
+Solve the normal-mode problem for environment `env` at frequency `freq` (Hz). Top-level entry point.
+
+Discretizes the depth-separated wave equation on a sequence of successively finer meshes, brackets
+each mode with [`bisection`](@ref), refines it with [`solve_for_kr`](@ref), recovers the mode shapes
+with [`inverse_iteration`](@ref), and Richardson-extrapolates the squared wavenumbers across mesh
+levels until they converge.
+
+Returns a `NormalModeSolution` with fields `kr` (horizontal wavenumbers, descending), `modes` (one
+column per mode, sampled on the finest mesh), `env`, and `props`. Returns an empty solution when the
+environment supports no trapped modes at this frequency.
+
+# Keyword arguments
+- `n_meshes`: maximum number of mesh refinement levels to extrapolate across.
+- `rmax`: maximum range of interest (m). Sets the convergence criterion — refinement stops once the
+  wavenumber change would shift phase by less than one radian over `rmax`.
+- `method`: bracketing solver passed to `IntervalNonlinearProblem`.
+- `dont_break`: run all `n_meshes` levels even after convergence. Useful for studying mesh error.
+- `abstol`, `reltol`: tolerances forwarded to the root solver.
+
+# Example
+```julia
+env = UnderwaterEnv(pekeris_env()...)
+sol = kraken_jl(env, 100.0)
+sol.kr        # 5 wavenumbers
+sol.modes     # mode shapes, one column each
+```
+"""
 function kraken_jl(env, freq; n_meshes=5, rmax=10_000, method=ITP(), dont_break=false, abstol=1e-6, reltol=1e-6)
     # First mesh first
     local rich_krs
