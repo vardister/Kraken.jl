@@ -171,17 +171,17 @@ g_sum = Zygote.gradient(modal_sum, θ_pek)[1]
 # 4. A whole sound-speed profile as the unknown
 # -----------------------------------------------------------------------------------------------
 # This is the case reverse mode exists for: the parameter is not a handful of scalars but an
-# `M`-point profile, and you want the sensitivity of the wavenumbers to every point of it.
+# `N`-point profile, and you want the sensitivity of the wavenumbers to every point of it.
 #
 # Note the depth grid `z` is built OUTSIDE the differentiated function. It does not depend on the
 # unknowns, and `range` is one of the few things reverse mode cannot trace (it stores its endpoints
 # in an extended-precision form that has no derivative rule).
 
 function env_from_profile(cvec, z; cb=1600.0, ρ0=1000.0, ρb=1500.0)
-    M = length(cvec)
+    N = length(cvec)
     depth = z[end]
     # Columns are [z, cp, cs, ρ, αp, αs] — the KRAKEN .env SSP record layout.
-    ssp = hcat(z, cvec, zero(cvec), fill(ρ0, M), zero(cvec), zero(cvec))
+    ssp = hcat(z, cvec, zero(cvec), fill(ρ0, N), zero(cvec), zero(cvec))
     layers = [0.0 0.0 depth]
     sspHS = [
         0.0 343.0 0.0 0.00121 0.0 0.0
@@ -215,29 +215,29 @@ println("   (largest near the surface, where the modes have most of their energy
 # -----------------------------------------------------------------------------------------------
 # The theory: forward mode costs one solve per parameter, so it grows linearly; reverse mode costs
 # roughly one solve regardless. That is the whole reason for this milestone, and it is what the table
-# below shows — forward mode's multiple of the primal climbs with M while reverse mode's sits flat at
+# below shows — forward mode's multiple of the primal climbs with N while reverse mode's sits flat at
 # about 6×, so the two cross somewhere near a dozen parameters and the gap only widens after that.
 #
 # Getting there took one fix rather than a rewrite. Reverse mode used to be flat-ish but *high* — 7.5
-# ms at M = 50 against forward mode's 1.7 — and 93% of that was Zygote tracing the two
+# ms at N = 50 against forward mode's 1.7 — and 93% of that was Zygote tracing the two
 # `DataInterpolations` constructors inside `UnderwaterEnv`, not the solver and not the rules. The
 # interpolants now carry their own rules (`src/kraken_ad.jl`), so the constructors are never entered.
 
 bench(f, n=5) = (f(); minimum(@elapsed(f()) for _ in 1:n))
 
 println("\n5. COST vs NUMBER OF PARAMETERS (milliseconds)")
-@printf("\n   %5s %10s %10s %10s %10s %10s\n", "M", "primal", "forward", "reverse", "fwd/prim", "rev/prim")
-for M in (5, 10, 25, 50)
-    local zM = collect(range(0.0, 100.0, M))
-    local cM = 1500.0 .+ 5 .* sin.(range(0, 3, M))
-    f = cc -> profile_sum(cc, zM)
-    t0 = bench(() -> f(cM))
-    tf = bench(() -> ForwardDiff.gradient(f, cM))
-    tz = bench(() -> Zygote.gradient(f, cM))
-    @printf("   %5d %10.3f %10.2f %10.2f %10.1f %10.1f\n", M, t0 * 1e3, tf * 1e3, tz * 1e3, tf / t0, tz / t0)
+@printf("\n   %5s %10s %10s %10s %10s %10s\n", "N", "primal", "forward", "reverse", "fwd/prim", "rev/prim")
+for N in (5, 10, 25, 50)
+    local zN = collect(range(0.0, 100.0, N))
+    local cN = 1500.0 .+ 5 .* sin.(range(0, 3, N))
+    f = cc -> profile_sum(cc, zN)
+    t0 = bench(() -> f(cN))
+    tf = bench(() -> ForwardDiff.gradient(f, cN))
+    tz = bench(() -> Zygote.gradient(f, cN))
+    @printf("   %5d %10.3f %10.2f %10.2f %10.1f %10.1f\n", N, t0 * 1e3, tf * 1e3, tz * 1e3, tf / t0, tz / t0)
 end
 println("""
-   Forward mode's column grows linearly with M, exactly as predicted; reverse mode's stays flat.""")
+   Forward mode's column grows linearly with N, exactly as predicted; reverse mode's stays flat.""")
 
 #%% ---------------------------------------------------------------------------------------------
 # 6. Where the reverse-mode time actually goes
@@ -247,15 +247,15 @@ println("""
 # pointed at the two `DataInterpolations` constructors rather than at the solver or the rules.
 
 let
-    M = 50
-    z50 = collect(range(0.0, 100.0, M))
-    c50 = 1500.0 .+ 5 .* sin.(range(0, 3, M))
+    N = 50
+    z50 = collect(range(0.0, 100.0, N))
+    c50 = 1500.0 .+ 5 .* sin.(range(0, 3, N))
 
     full = bench(() -> Zygote.gradient(cc -> profile_sum(cc, z50), c50))
     envonly = bench(() -> Zygote.gradient(cc -> sum(env_from_profile(cc, z50).c.c), c50))
     interp = bench(() -> Zygote.gradient(cc -> sum(SampledSSP(z50, cc).c), c50))
 
-    println("\n6. WHERE THE TIME GOES (M = 50)")
+    println("\n6. WHERE THE TIME GOES (N = 50)")
     @printf("   whole gradient                       %8.3f ms\n", full * 1e3)
     @printf("   ... just building UnderwaterEnv      %8.3f ms\n", envonly * 1e3)
     @printf("   ... just one SampledSSP interpolant  %8.3f ms\n", interp * 1e3)

@@ -47,11 +47,11 @@ using Kraken, Zygote, ForwardDiff, Printf
 
 depth = 100.0
 
-# Build an environment from an M-point sound-speed profile on a fixed depth grid.
+# Build an environment from an N-point sound-speed profile on a fixed depth grid.
 function profile_env(cvec, z)
-    M = length(z)
+    N = length(z)
     # Columns are [z, cp, cs, ρ, αp, αs] — the KRAKEN .env SSP record layout.
-    ssp = hcat(z, cvec, zero(cvec), fill(1000.0, M), zero(cvec), zero(cvec))
+    ssp = hcat(z, cvec, zero(cvec), fill(1000.0, N), zero(cvec), zero(cvec))
     layers = [0.0 0.0 depth]
     sspHS = [
         0.0 343.0 0.0 0.00121 0.0 0.0
@@ -85,11 +85,12 @@ g_fwd = ForwardDiff.gradient(cc -> modal_sum(cc, z), c)
 
 This is the whole reason reverse mode exists here. Timings below are from
 `test/performance_tests.jl` on a 2021 M1 laptop — differentiating the sum of the wavenumbers of a
-Pekeris-like waveguide at 100 Hz with respect to an `M`-point profile. They use the single-mesh
+Pekeris-like waveguide at 100 Hz with respect to an `N`-point profile — `N` inputs and a single
+output, `M = 1` (throughout, `N` counts inputs and `M` outputs). They use the single-mesh
 [`bisection`](@ref)/[`solve_for_kr`](@ref) path rather than [`kraken_jl`](@ref), so the ratios
 isolate the cost of differentiation from the mesh-refinement loop:
 
-| `M` | primal | forward | reverse | forward / primal | reverse / primal |
+| `N` | primal | forward | reverse | forward / primal | reverse / primal |
 |---:|---:|---:|---:|---:|---:|
 | 1 | 0.081 ms | 0.092 ms | 0.431 ms | 1.1× | 5.3× |
 | 5 | 0.063 ms | 0.164 ms | 0.410 ms | 2.6× | 6.5× |
@@ -100,9 +101,9 @@ isolate the cost of differentiation from the mesh-refinement loop:
 
 (The test asserts the first four rows; the last two are the same benchmark run out further.)
 
-Forward mode's multiple of the primal grows linearly with `M`, exactly as the theory says; reverse
+Forward mode's multiple of the primal grows linearly with `N`, exactly as the theory says; reverse
 mode's sits flat at about 6×. The two cross near a dozen parameters, and past that the gap widens
-without limit — at `M = 50` reverse mode is already 4.4× faster, at `M = 500` it is **47×** faster,
+without limit — at `N = 50` reverse mode is already 4.4× faster, at `N = 500` it is **47×** faster,
 and nothing about that trend turns around.
 
 That 6× is not a floor on reverse mode's cost, it is a floor on reverse mode's *overhead*: Zygote
@@ -225,7 +226,7 @@ refinement — never had to change:
 | Seam | Rule |
 |---|---|
 | [`solve_for_kr`](@ref) | Implicit function theorem on the Sturm-sequence determinant: ``\partial k_r/\partial\theta = -D_\theta/D_{k_r}`` at the converged root |
-| [`inverse_iteration`](@ref) | Eigenvector adjoint, a bordered tridiagonal solve that projects out the ``\psi`` direction. `O(N)`, so a mode-shape gradient costs about what a wavenumber gradient costs |
+| [`inverse_iteration`](@ref) | Eigenvector adjoint, a bordered tridiagonal solve that projects out the ``\psi`` direction. Linear in the mesh size, so a mode-shape gradient costs about what a wavenumber gradient costs |
 | [`soundspeed`](@ref), [`density`](@ref) | Linear-interpolant adjoint over the values, the **knots**, and the query depth |
 | [`bisection`](@ref) | Non-differentiable: mode counting is integer-valued and piecewise constant, so it correctly contributes zero |
 

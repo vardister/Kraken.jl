@@ -156,8 +156,8 @@ using Zygote
         end
 
         # The point of Milestone 4, measured rather than asserted from theory: forward mode costs one
-        # solve per parameter and therefore grows linearly with M, while reverse mode costs a fixed
-        # multiple of the primal no matter how many parameters there are. The two cross near M ≈ 10,
+        # solve per parameter and therefore grows linearly with N, while reverse mode costs a fixed
+        # multiple of the primal no matter how many parameters there are. The two cross near N ≈ 10,
         # and past that the gap only widens — which is what makes fitting a whole sound-speed profile
         # practical.
         #
@@ -167,16 +167,16 @@ using Zygote
         @testset "Reverse vs Forward Scaling" begin
             depth = 100.0
 
-            # θ is an M-point sound-speed profile on a fixed depth grid. The grid is built outside
+            # θ is an N-point sound-speed profile on a fixed depth grid. The grid is built outside
             # the differentiated function on purpose: it does not depend on the unknowns, and
             # `range` is one of the few things reverse mode cannot trace.
             function profile_env(θ, z)
-                M = length(z)
-                # M = 1 means isovelocity, which still needs two knots, so the single parameter is
+                N = length(z)
+                # N = 1 means isovelocity, which still needs two knots, so the single parameter is
                 # written into both.
-                cvec = length(θ) == 1 ? fill(θ[1], M) : θ
+                cvec = length(θ) == 1 ? fill(θ[1], N) : θ
                 # Columns are [z, cp, cs, ρ, αp, αs] — the KRAKEN .env SSP record layout.
-                ssp = hcat(z, cvec, zero(cvec), fill(1000.0, M), zero(cvec), zero(cvec))
+                ssp = hcat(z, cvec, zero(cvec), fill(1000.0, N), zero(cvec), zero(cvec))
                 layers = [0.0 0.0 depth]
                 sspHS = [
                     0.0 343.0 0.0 0.00121 0.0 0.0
@@ -197,14 +197,14 @@ using Zygote
             # mostly scheduler noise.
             bench(f, n=5) = (f(); minimum(@elapsed(f()) for _ in 1:n))
 
-            Ms = (1, 5, 10, 50)
+            Ns = (1, 5, 10, 50)
             t_primal = Float64[]
             t_forward = Float64[]
             t_reverse = Float64[]
 
-            for M in Ms
-                z = collect(range(0.0, depth, max(M, 2)))
-                θ = M == 1 ? [1500.0] : 1500.0 .+ 5 .* sin.(range(0, 3, M))
+            for N in Ns
+                z = collect(range(0.0, depth, max(N, 2)))
+                θ = N == 1 ? [1500.0] : 1500.0 .+ 5 .* sin.(range(0, 3, N))
                 f = p -> profile_sum(p, z)
 
                 g_fwd = ForwardDiff.gradient(f, θ)
@@ -218,11 +218,11 @@ using Zygote
             end
 
             println("\nGradient cost vs parameter count (Σkr over all modes, Pekeris-like, 100 Hz):")
-            println("      M     primal/ms    forward/ms    reverse/ms      fwd/prim      rev/prim")
-            for (i, M) in enumerate(Ms)
+            println("      N     primal/ms    forward/ms    reverse/ms      fwd/prim      rev/prim")
+            for (i, N) in enumerate(Ns)
                 println(
                     "  " *
-                    rpad(M, 5) *
+                    rpad(N, 5) *
                     lpad(fmt(t_primal[i] * 1e3), 12) *
                     lpad(fmt(t_forward[i] * 1e3), 14) *
                     lpad(fmt(t_reverse[i] * 1e3), 14) *
@@ -231,7 +231,7 @@ using Zygote
                 )
             end
 
-            # Forward mode scales with M. Measured 18x between M = 1 and M = 50 on a 2021 M1; 5x is
+            # Forward mode scales with N. Measured 18x between N = 1 and N = 50 on a 2021 M1; 5x is
             # far enough below that to be safe while still failing if the linear growth vanished
             # (which would mean the benchmark stopped measuring what it claims to).
             @test t_forward[end] / t_forward[1] > 5
@@ -243,7 +243,7 @@ using Zygote
             # And at 50 parameters reverse mode wins outright. Measured 4.4x; assert 2x.
             @test t_forward[end] / t_reverse[end] > 2
 
-            # Reverse mode's fixed overhead. Measured ~5.8x the primal solve across every M; the
+            # Reverse mode's fixed overhead. Measured ~5.8x the primal solve across every N; the
             # ceiling catches a regression like the one 4.5 fixed, where tracing the interpolant
             # constructors put it at ~100x.
             @test t_reverse[end] / t_primal[end] < 25

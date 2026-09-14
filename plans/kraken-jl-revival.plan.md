@@ -390,7 +390,7 @@ These are facts established by running the code, not assumptions. Tasks below re
   1.7 ms, and it does not flatten with parameter count the way the milestone's success criterion
   requires. Decomposed:
 
-  | | ms (M = 50) |
+  | | ms (N = 50) |
   |---|---|
   | whole reverse gradient | 7.5 |
   | …of which just building `UnderwaterEnv` | 7.0 |
@@ -402,7 +402,7 @@ These are facts established by running the code, not assumptions. Tasks below re
   wavenumber solve. The fix is therefore small and local — an `rrule` for `SampledSSP`/
   `SampledDensity` construction, which only stores its arguments — rather than a rewrite of
   `finite_difference_coefficients` as previously supposed. Forward mode's cost grows linearly with
-  parameter count exactly as predicted (2.5× → 25.5× the primal from M = 5 to 50), so the crossover
+  parameter count exactly as predicted (2.5× → 25.5× the primal from N = 5 to 50), so the crossover
   is real and only this overhead is hiding it.
 
 - **The eigenvector rule attaches one level below `inverse_iteration`, and the normalization stays
@@ -506,17 +506,17 @@ These are facts established by running the code, not assumptions. Tasks below re
   4.4 made possible, closes them to 1e-4, the finite-difference step's own truncation.
 
 - **The performance target was met by the same change, and reverse mode now flattens** (measured
-  during 4.5, against the 4.2 decomposition that predicted it). Σkr over an `M`-point sound-speed
+  during 4.5, against the 4.2 decomposition that predicted it). Σkr over an `N`-point sound-speed
   profile at 100 Hz, as multiples of the primal solve:
 
-  | M | primal | forward | reverse (before 4.5) | reverse (after) |
+  | N | primal | forward | reverse (before 4.5) | reverse (after) |
   |---|---|---|---|---|
   | 5 | 0.063 ms | 2.6× | — | 6.8× |
   | 10 | 0.063 ms | 4.9× | — | 6.4× |
   | 25 | 0.061 ms | 13.5× | — | 6.6× |
   | 50 | 0.065 ms | 25.1× | ~115× (7.5 ms) | **6.1× (0.40 ms)** |
 
-  Reverse mode is now flat in `M` — 19× faster at M = 50 than before — and crosses forward mode at
+  Reverse mode is now flat in `N` — 19× faster at N = 50 than before — and crosses forward mode at
   about a dozen parameters. It is 6× the primal rather than the milestone's stated ~3×; that gap is
   4.8's to characterize, and it is a constant, not a scaling problem. (4.8 characterized it: a ~0.3 ms
   Zygote tape floor, so the ratio falls to 1.9× on a 400 Hz solve. See the decision below.)
@@ -638,16 +638,16 @@ These are facts established by running the code, not assumptions. Tasks below re
   demanding precision below what either method reaches, not detecting an error. `reverse_ad_tests.jl`
   had already established this idiom as `relerr_norm`; 4.7 rediscovered it the hard way.
 
-- **The scaling claim holds out to 500 parameters** (measured during 4.8). Σkr over an `M`-point
-  profile at 100 Hz: forward mode goes 1.1× → 25.7× → 47.3× → **253×** the primal at M = 1, 50, 100,
-  500, while reverse mode reads 5.3× → 5.8× → 5.7× → **5.4×**. At M = 500 reverse mode is 47× faster
-  in wall clock (0.42 ms vs 20.0 ms). `test/performance_tests.jl` asserts the M ∈ {1, 5, 10, 50}
+- **The scaling claim holds out to 500 parameters** (measured during 4.8). Σkr over an `N`-point
+  profile at 100 Hz: forward mode goes 1.1× → 25.7× → 47.3× → **253×** the primal at N = 1, 50, 100,
+  500, while reverse mode reads 5.3× → 5.8× → 5.7× → **5.4×**. At N = 500 reverse mode is 47× faster
+  in wall clock (0.42 ms vs 20.0 ms). `test/performance_tests.jl` asserts the N ∈ {1, 5, 10, 50}
   rows — the shape, not the values — because these are sub-millisecond timings and a tight bound
   would flake on a CI runner.
 
 - **The milestone's "~3× a forward solve" target is met — the 6× was a fixed overhead measured on a
   problem too small to amortize it** (established during 4.8, closing the question 4.5 left open).
-  Reverse mode's *absolute* cost has a ~0.3 ms floor that is Zygote's tape, not the rules: at M = 50
+  Reverse mode's *absolute* cost has a ~0.3 ms floor that is Zygote's tape, not the rules: at N = 50
   the forward pass under Zygote costs 2.7× the plain primal and the pullback another 4.2×. That floor
   is constant, so the ratio is worst when the solve is trivially cheap. Holding the parameter count
   at 50 and making the physics bigger instead:

@@ -179,11 +179,11 @@ grad = Zygote.gradient(modal_sum, c)[1]   # all 50 derivatives, one pass
 ```
 
 Measured on a 2021 M1 — the sum of all modal wavenumbers of that waveguide at 100 Hz, differentiated
-with respect to an `M`-point profile. (The measurement uses the single-mesh
+with respect to an `N`-point profile. (The measurement uses the single-mesh
 `bisection`/`solve_for_kr` path rather than `kraken_jl`, so the ratios isolate the cost of
 differentiation from the mesh-refinement loop.)
 
-| `M` | forward / primal | reverse / primal |
+| `N` | forward / primal | reverse / primal |
 |---:|---:|---:|
 | 1 | 1.1× | 5.3× |
 | 5 | 2.6× | 6.5× |
@@ -191,7 +191,11 @@ differentiation from the mesh-refinement loop.)
 | 50 | 25.7× | 5.8× |
 | 500 | 253× | 5.4× |
 
-Forward mode grows linearly with `M`; reverse mode stays flat. The two cross near a dozen parameters,
+Here `N` is the number of inputs (the profile points) and `M` the number of outputs. Forward mode
+costs one pass per input, so it scales as `O(N)`; reverse mode costs one pass per output, so it
+scales as `O(M)` — and a misfit between predicted and measured data is a scalar, so `M = 1`.
+
+Forward mode grows linearly with `N`; reverse mode stays flat. The two cross near a dozen parameters,
 and at a 500-point profile reverse mode is 47× faster.
 The residual 5.8× is mostly Zygote's fixed ~0.3 ms tape overhead on a very small solve — at 400 Hz,
 where the same waveguide carries 18 modes, a 50-parameter gradient costs 1.9× the primal.
