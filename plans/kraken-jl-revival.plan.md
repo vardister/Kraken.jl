@@ -1509,7 +1509,7 @@ match against.
 |---|---|---|---|
 | Vacuum above surface | `V` | top | supported (current hardcoded behavior) |
 | Rigid surface | `R` | top | new |
-| Acoustic halfspace above | `A` | top | new |
+| Acoustic halfspace above | `A` | top | out of scope — see 6.1's outcome |
 | Acoustic halfspace below | `A` | bottom | supported (current behavior) |
 | Vacuum below | `V` | bottom | new |
 | Rigid below | `R` | bottom | new |
@@ -1537,10 +1537,18 @@ Decisions worth carrying into 6.2:
 - **The types are tags and carry no data.** A half-space's `cb`/`ρb`/`αb` stay on the environment,
   because that is where both rrules (`Tangent{typeof(env)}(; cb, ρb)`) and the Mooncake rdata bridge
   read them. A data-carrying `AcousticHalfspace(c, ρ, α)` would have made two sources of truth for the
-  same number. Consequence for 6.2+: a **top** acoustic half-space has nowhere to keep its properties
-  yet (`sspHS` row 1 is read by nothing). No task currently implements top `A` either — the Deliverable
-  Spec lists it as "new" but 6.2 covers only rigid and vacuum. Either add it to 6.2's scope along with
-  top half-space fields on the env, or mark it out of scope.
+  same number. A **top** acoustic half-space therefore has nowhere to keep its properties
+  (`sspHS` row 1 is read by nothing), and it stays that way.
+- **Top acoustic half-space (`A`) is out of scope** (decided 2026-09-14). Every OALIB `.env` file whose top
+  option is `A` (59 of them) is a transparent-surface or BELLHOP case, not a modal problem. They live
+  mainly in `Bellhop3DTests/*`, `BeamPattern`, `free`, `halfspace`, `LloydMirror`, `terrain`,
+  `TabRefCoef` and `VolAtt`, and almost all set the half-space above to the water's own sound speed
+  (`0.0 1500.0 …`). With no trapped spectrum, there is nothing for KRAKEN to find — the same reason
+  `VolAtt` was set aside in 5.3. The physical cases do not need it either. Air (343 m/s, ρ≈0.0012)
+  makes every mode radiate upward, which only a complex solve (5.6) could handle, and its impedance
+  mismatch makes it indistinguishable from `PressureRelease` in practice. Ice is elastic, and elastic
+  layers are already out of scope. `AcousticHalfspace` remains a valid *bottom* condition, and
+  `assert_supported_boundaries` keeps refusing it on top.
 - **Solving a non-default pair is refused, not silently defaulted.** `AcousticProblemProperties` calls
   `assert_supported_boundaries(env)`, which dispatches on the two types and throws an `ArgumentError`
   for everything but `PressureRelease()` over `AcousticHalfspace()`. Constructing works (6.2 needs to).
