@@ -17,6 +17,7 @@ using DocStringExtensions
 export SampledSSP, SampledDensity, SampledAttenuation
 export soundspeed, maxsoundspeed, density, attenuation
 export attenuation_nepers_per_m, ATTENUATION_UNIT_CHARS, DEFAULT_ATTENUATION_UNITS, is_lossy
+export BoundaryCondition, PressureRelease, RigidBoundary, AcousticHalfspace
 export UnderwaterEnv, AcousticProblemProperties, UnderwaterEnvFORTRAN
 export AcousticProblemCache, bisection, solve_for_kr, inverse_iteration, det_sturm, kraken_jl, find_kr, get_g
 export finite_difference_coefficients, mode_eigenvector, normalize_mode
@@ -284,6 +285,50 @@ function attenuation_nepers_per_m(α, c, freq, units::Symbol)
     )
 end
 
+### Boundary conditions
+
+"""
+    BoundaryCondition
+
+Supertype of the conditions that close the depth-separated problem at the top of the water column
+and at the bottom of the last medium. They correspond to KRAKEN's boundary-option characters:
+[`PressureRelease`](@ref) is `V`, [`RigidBoundary`](@ref) is `R`, [`AcousticHalfspace`](@ref) is `A`.
+
+The types are tags and carry no data. A half-space's properties stay on the environment (`cb`, `ρb`,
+`αb` for the bottom), which is where the reverse-mode rules and the Mooncake bridge read them.
+"""
+abstract type BoundaryCondition end
+
+"""
+    PressureRelease()
+
+A vacuum beyond the boundary, so the pressure vanishes on it: KRAKEN's `V` option. This is the
+default top boundary of an [`UnderwaterEnv`](@ref), the free sea surface.
+"""
+struct PressureRelease <: BoundaryCondition end
+
+"""
+    RigidBoundary()
+
+A perfectly rigid boundary, so the normal particle velocity (and with it `∂ψ/∂z`) vanishes on it:
+KRAKEN's `R` option.
+"""
+struct RigidBoundary <: BoundaryCondition end
+
+"""
+    AcousticHalfspace()
+
+A homogeneous fluid half-space beyond the boundary: KRAKEN's `A` option. This is the default bottom
+boundary of an [`UnderwaterEnv`](@ref), whose half-space sound speed, density and attenuation are its
+`cb`, `ρb` and `αb`.
+"""
+struct AcousticHalfspace <: BoundaryCondition end
+
+# Print as the exported constructor call. The default `show` qualifies the name with `Kraken.` in any
+# module that has not imported it, so an environment's `show` and the unsupported-boundary error would
+# otherwise read differently depending on where they are printed.
+Base.show(io::IO, bc::BoundaryCondition) = print(io, nameof(typeof(bc)), "()")
+
 ### Underwater Environment
 
 """
@@ -319,8 +364,13 @@ Underwater environment containing the sound speed profile, density profile and a
 nothing converts them until a frequency is known. An environment whose attenuations are all zero is
 lossless and [`kraken_jl`](@ref) then returns real wavenumbers, exactly as it did before attenuation
 existed — see [`is_lossy`](@ref).
+
+`top_bc` and `bottom_bc` are the [`BoundaryCondition`](@ref)s closing the problem above the water
+column and below the last medium.
 """
-struct UnderwaterEnv{T1<:SoundSpeedProfile,T2<:DensityProfile,T3<:Real,T4<:AttenuationProfile}
+struct UnderwaterEnv{
+    T1<:SoundSpeedProfile,T2<:DensityProfile,T3<:Real,T4<:AttenuationProfile,TB<:BoundaryCondition,BB<:BoundaryCondition
+}
     c::T1
     ρ::T2
     cb::T3
@@ -331,6 +381,8 @@ struct UnderwaterEnv{T1<:SoundSpeedProfile,T2<:DensityProfile,T3<:Real,T4<:Atten
     α::T4
     αb::T3
     atten_units::Symbol
+    top_bc::TB
+    bottom_bc::BB
 end
 
 """
@@ -346,8 +398,19 @@ constructor and the `UnderwaterEnvFORTRAN` one. `layers` is what defines the med
 already the sole input to `get_thickness`, which sizes the finite-difference mesh); the `ssp` table
 is only samples *within* those media. They coincide in every well-formed environment, but when they
 disagree it is `ssp` that is short or long, not `layers` that is wrong.
+
+`top_bc` and `bottom_bc` default to a pressure-release surface over an acoustic half-space, which is
+what KRAKEN's `V` top option and `A` bottom option describe and the only pair the solver implements
+so far; anything else constructs, but [`AcousticProblemProperties`](@ref) refuses to solve it.
 """
-function UnderwaterEnv(ssp, layers, sspHS; atten_units::Symbol=DEFAULT_ATTENUATION_UNITS)
+function UnderwaterEnv(
+    ssp,
+    layers,
+    sspHS;
+    atten_units::Symbol=DEFAULT_ATTENUATION_UNITS,
+    top_bc::BoundaryCondition=PressureRelease(),
+    bottom_bc::BoundaryCondition=AcousticHalfspace(),
+)
     c = SampledSSP(ssp[:, 1], ssp[:, 2])
     ρ = SampledDensity(ssp[:, 1], ssp[:, 4])
     α = SampledAttenuation(ssp[:, 1], ssp[:, 5])
@@ -357,8 +420,8 @@ function UnderwaterEnv(ssp, layers, sspHS; atten_units::Symbol=DEFAULT_ATTENUATI
     layer_thickness = get_thickness(layers)
     layer_depth = layers[:, 3]
     depth = layers[end, 3]
-    return UnderwaterEnv{typeof(c),typeof(ρ),typeof(cb),typeof(α)}(
-        c, ρ, cb, ρb, layer_thickness, layer_depth, depth, α, αb, atten_units
+    return UnderwaterEnv{typeof(c),typeof(ρ),typeof(cb),typeof(α),typeof(top_bc),typeof(bottom_bc)}(
+        c, ρ, cb, ρb, layer_thickness, layer_depth, depth, α, αb, atten_units, top_bc, bottom_bc
     )
 end
 
@@ -367,7 +430,12 @@ end
 
 Constructor for `UnderwaterEnv` using the `UnderwaterEnvFORTRAN` struct.
 """
-function UnderwaterEnv(krak_ssp::UnderwaterEnvFORTRAN{T}; atten_units::Symbol=DEFAULT_ATTENUATION_UNITS) where {T}
+function UnderwaterEnv(
+    krak_ssp::UnderwaterEnvFORTRAN{T};
+    atten_units::Symbol=DEFAULT_ATTENUATION_UNITS,
+    top_bc::BoundaryCondition=PressureRelease(),
+    bottom_bc::BoundaryCondition=AcousticHalfspace(),
+) where {T}
     c = SampledSSP(krak_ssp.ssp[:, 1], krak_ssp.ssp[:, 2])
     ρ = SampledDensity(krak_ssp.ssp[:, 1], krak_ssp.ssp[:, 4])
     α = SampledAttenuation(krak_ssp.ssp[:, 1], krak_ssp.ssp[:, 5])
@@ -377,13 +445,14 @@ function UnderwaterEnv(krak_ssp::UnderwaterEnvFORTRAN{T}; atten_units::Symbol=DE
     layer_thickness = get_thickness(krak_ssp.layers)
     layer_depth = krak_ssp.layers[:, 3]
     depth = krak_ssp.layers[end, 3]  # see the note on the (ssp, layers, sspHS) constructor
-    return UnderwaterEnv{typeof(c),typeof(ρ),T,typeof(α)}(
-        c, ρ, cb, ρb, layer_thickness, layer_depth, depth, α, αb, atten_units
+    return UnderwaterEnv{typeof(c),typeof(ρ),T,typeof(α),typeof(top_bc),typeof(bottom_bc)}(
+        c, ρ, cb, ρb, layer_thickness, layer_depth, depth, α, αb, atten_units, top_bc, bottom_bc
     )
 end
 
-function Base.show(io::IO, env::UnderwaterEnv{T1,T2,T3,T4}) where {T1,T2,T3,T4}
-    return print(io, "UnderwaterEnv{$T1, $T2, $T3}", is_lossy(env) ? " (lossy, $(env.atten_units))" : "")
+function Base.show(io::IO, env::UnderwaterEnv{T1,T2,T3}) where {T1,T2,T3}
+    print(io, "UnderwaterEnv{$T1, $T2, $T3}", is_lossy(env) ? " (lossy, $(env.atten_units))" : "")
+    return print(io, " [top: ", env.top_bc, ", bottom: ", env.bottom_bc, "]")
 end
 
 """
@@ -403,6 +472,29 @@ while Zygote evaluates this on the primal and takes the lossless one (zero). Dif
 nonzero attenuation. See the note at the end of `src/kraken_ad.jl`.
 """
 is_lossy(env::UnderwaterEnv) = any(!iszero, env.α.α) || !iszero(env.αb)
+
+"""
+    assert_supported_boundaries(env::UnderwaterEnv)
+
+Throw an `ArgumentError` unless the finite-difference scheme implements `env`'s pair of boundary
+conditions. Today that is only a [`PressureRelease`](@ref) top over an [`AcousticHalfspace`](@ref)
+bottom. Solving any other pair with that scheme would give a confident answer to a different problem,
+so it is refused instead.
+
+It dispatches on the boundary *types* and never on a value, so it has nothing to differentiate and
+nothing that could send the AD modes down different branches.
+"""
+assert_supported_boundaries(env::UnderwaterEnv) = _assert_supported_boundaries(env.top_bc, env.bottom_bc)
+
+_assert_supported_boundaries(::PressureRelease, ::AcousticHalfspace) = nothing
+function _assert_supported_boundaries(top::BoundaryCondition, bottom::BoundaryCondition)
+    return throw(
+        ArgumentError(
+            "Kraken.jl cannot yet solve with top boundary $top and bottom boundary $bottom: the " *
+            "finite-difference scheme implements only a PressureRelease() top over an AcousticHalfspace() bottom."
+        ),
+    )
+end
 
 ### Sound Speed and Density Functions to extract values from profiles at a give depth from profiles
 """
@@ -538,6 +630,7 @@ function AcousticProblemProperties(env::UnderwaterEnv, freq; factor::Int=1, n_pe
     if freq isa Int
         freq = float(freq)
     end
+    assert_supported_boundaries(env)
     Nz_vec, Δz_vec = get_Nz_vec(env, freq; factor=factor, n_per_wavelength=n_per_wavelength)
     zn_vec = get_z_vec(env, Nz_vec, Δz_vec)
 

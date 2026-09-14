@@ -33,8 +33,19 @@ using Random: AbstractRNG
 
 function env_with(env; cb=env.cb, ρb=env.ρb, αb=env.αb)
     T = promote_type(typeof(cb), typeof(ρb), typeof(αb))
-    return UnderwaterEnv{typeof(env.c),typeof(env.ρ),T,typeof(env.α)}(
-        env.c, env.ρ, T(cb), T(ρb), T.(env.h_vec), T.(env.layer_depth), T(env.depth), env.α, T(αb), env.atten_units
+    return UnderwaterEnv{typeof(env.c),typeof(env.ρ),T,typeof(env.α),typeof(env.top_bc),typeof(env.bottom_bc)}(
+        env.c,
+        env.ρ,
+        T(cb),
+        T(ρb),
+        T.(env.h_vec),
+        T.(env.layer_depth),
+        T(env.depth),
+        env.α,
+        T(αb),
+        env.atten_units,
+        env.top_bc,
+        env.bottom_bc,
     )
 end
 

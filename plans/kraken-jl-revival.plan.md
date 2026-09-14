@@ -1519,7 +1519,7 @@ match against.
 | Cubic spline SSP | `S` | ssp | new |
 | Analytic SSP | `A` | ssp | out of scope |
 
-### 6.1 [ ] Introduce boundary-condition types
+### 6.1 [x] Introduce boundary-condition types *(completed 2026-09-14)*
 - **Files:** `src/kraken_core.jl`
 - **What:** Add explicit top and bottom boundary-condition fields to `UnderwaterEnv` with a small type
   hierarchy (`PressureRelease`, `RigidBoundary`, `AcousticHalfspace`), defaulting to today's behavior
@@ -1527,6 +1527,34 @@ match against.
   the solver still handles just the defaults after this task.
 - **Acceptance:** All existing tests pass unchanged; `UnderwaterEnv` shows its boundary conditions.
 - **Dependencies:** 5.5
+
+**Outcome.** `abstract type BoundaryCondition` with three singleton subtypes, exported; `UnderwaterEnv`
+gained `top_bc::TB` and `bottom_bc::BB` as two new *type parameters* (so the struct stays concrete), and
+both constructors take `top_bc`/`bottom_bc` keywords defaulting to `PressureRelease()` /
+`AcousticHalfspace()`. `show` now ends in `[top: PressureRelease(), bottom: AcousticHalfspace()]`.
+Decisions worth carrying into 6.2:
+
+- **The types are tags and carry no data.** A half-space's `cb`/`ρb`/`αb` stay on the environment,
+  because that is where both rrules (`Tangent{typeof(env)}(; cb, ρb)`) and the Mooncake rdata bridge
+  read them. A data-carrying `AcousticHalfspace(c, ρ, α)` would have made two sources of truth for the
+  same number. Consequence for 6.2+: a **top** acoustic half-space has nowhere to keep its properties
+  yet (`sspHS` row 1 is read by nothing). No task currently implements top `A` either — the Deliverable
+  Spec lists it as "new" but 6.2 covers only rigid and vacuum. Either add it to 6.2's scope along with
+  top half-space fields on the env, or mark it out of scope.
+- **Solving a non-default pair is refused, not silently defaulted.** `AcousticProblemProperties` calls
+  `assert_supported_boundaries(env)`, which dispatches on the two types and throws an `ArgumentError`
+  for everything but `PressureRelease()` over `AcousticHalfspace()`. Constructing works (6.2 needs to).
+  6.2 extends the dispatch table; it branches on types only, so AD cannot take different sides of it.
+- **`test/reverse_ad_tests.jl`'s `env_with` helper builds `UnderwaterEnv` positionally** and had to
+  learn the two fields. Anything else that calls the inner constructor directly will need the same.
+- **The boundary types have their own `show`.** The default prints a singleton as `Kraken.RigidBoundary()`
+  in any module that has not imported the name — which includes TestItemRunner's sandbox — so the env's
+  `show` and the error message changed with where they were printed. Caught only by the real
+  TestItemRunner run; an in-REPL run with `using Kraken` in scope passed the same assertions.
+- **Verified by per-file runs, not `Pkg.test()`** (see `test/README.md` for why): environment +
+  integration 365/365, reverse AD 183 + 84 + 50 + 42, forward AD 48, numerical methods 96, Fortran
+  reference green with OALIB coverage unchanged at 167/402. Before any of it would start, the test env
+  needed `Pkg.develop(path="."); Pkg.instantiate()` again — the session died on `KeyError: Mooncake`.
 
 ### 6.2 [ ] Implement rigid and vacuum boundaries in the finite-difference scheme
 - **Files:** `src/kraken_core.jl`

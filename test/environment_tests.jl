@@ -153,6 +153,47 @@ end
     @test envf.α.α == lossy.α.α
 end
 
+@testitem "M6.1: environments carry their boundary conditions" begin
+    using Kraken
+
+    ssp, layers, sspHS = pekeris_env()
+
+    # The defaults are the one configuration the solver had before boundary conditions were types.
+    env = UnderwaterEnv(ssp, layers, sspHS)
+    @test env.top_bc === PressureRelease()
+    @test env.bottom_bc === AcousticHalfspace()
+    @test isconcretetype(typeof(env))
+    shown = sprint(show, env)
+    @test occursin("top: PressureRelease()", shown)
+    @test occursin("bottom: AcousticHalfspace()", shown)
+
+    # Spelling the defaults out is the same environment, down to the last bit of every wavenumber.
+    explicit = UnderwaterEnv(ssp, layers, sspHS; top_bc=PressureRelease(), bottom_bc=AcousticHalfspace())
+    @test typeof(explicit) === typeof(env)
+    @test kraken_jl(explicit, 100.0).kr == kraken_jl(env, 100.0).kr
+
+    # Both constructors carry a non-default choice through ...
+    rigid = UnderwaterEnv(ssp, layers, sspHS; top_bc=RigidBoundary(), bottom_bc=PressureRelease())
+    @test rigid.top_bc === RigidBoundary()
+    @test rigid.bottom_bc === PressureRelease()
+    @test occursin("top: RigidBoundary()", sprint(show, rigid))
+    envf = UnderwaterEnv(
+        UnderwaterEnvFORTRAN(ssp, layers, sspHS); top_bc=RigidBoundary(), bottom_bc=PressureRelease()
+    )
+    @test envf.top_bc === rigid.top_bc
+    @test envf.bottom_bc === rigid.bottom_bc
+
+    # ... but until the finite-difference scheme implements it, solving refuses rather than quietly
+    # applying the default boundaries to a problem that asked for different ones.
+    @test_throws ArgumentError AcousticProblemProperties(rigid, 100.0)
+    @test_throws ArgumentError kraken_jl(rigid, 100.0)
+    for (top, bottom) in ((AcousticHalfspace(), AcousticHalfspace()), (PressureRelease(), RigidBoundary()))
+        @test_throws ArgumentError AcousticProblemProperties(
+            UnderwaterEnv(ssp, layers, sspHS; top_bc=top, bottom_bc=bottom), 100.0
+        )
+    end
+end
+
 @testitem "UnderwaterEnv Construction" begin
     using Kraken
 
