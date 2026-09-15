@@ -37,6 +37,7 @@ export modal_attenuation, complex_soundspeed, add_attenuation
 #   * `finite_difference_coefficients`                     — the whole assembly `(env, props) -> (a, e, λ)`
 #   * `AcousticProblemCache(env, props)`                   — a thin wrapper over the above
 #   * `get_g`                                              — bottom half-space term, also used inside the rules
+#   * the boundary helpers (`mesh_top`, `close_medium`, `bottom_energy`, …) — dispatch on types only
 #   * `get_Nz_vec`, `get_z_vec`, `AcousticProblemProperties` — the mesh; see the caveat below
 #   * `richard_extrap`, `h_extrap_matrix`, and the mesh-refinement loop in `kraken_jl` — which is
 #     why that loop grows `h_list`/`krs_all` with `vcat` instead of `push!`ing into them, and why
@@ -321,6 +322,9 @@ struct RigidBoundary <: BoundaryCondition end
 A homogeneous fluid half-space beyond the boundary: KRAKEN's `A` option. This is the default bottom
 boundary of an [`UnderwaterEnv`](@ref), whose half-space sound speed, density and attenuation are its
 `cb`, `ρb` and `αb`.
+
+Supported at the bottom only. Above the surface it describes no modal problem — see
+[`assert_supported_boundaries`](@ref).
 """
 struct AcousticHalfspace <: BoundaryCondition end
 
@@ -400,8 +404,10 @@ is only samples *within* those media. They coincide in every well-formed environ
 disagree it is `ssp` that is short or long, not `layers` that is wrong.
 
 `top_bc` and `bottom_bc` default to a pressure-release surface over an acoustic half-space, which is
-what KRAKEN's `V` top option and `A` bottom option describe and the only pair the solver implements
-so far; anything else constructs, but [`AcousticProblemProperties`](@ref) refuses to solve it.
+what KRAKEN's `V` top option and `A` bottom option describe. The top may also be a
+[`RigidBoundary`](@ref), and the bottom a [`RigidBoundary`](@ref) or [`PressureRelease`](@ref), in
+which case `sspHS`'s bottom row is not used. A top [`AcousticHalfspace`](@ref) constructs, but
+[`AcousticProblemProperties`](@ref) refuses to solve it.
 """
 function UnderwaterEnv(
     ssp,
@@ -477,24 +483,117 @@ is_lossy(env::UnderwaterEnv) = any(!iszero, env.α.α) || !iszero(env.αb)
     assert_supported_boundaries(env::UnderwaterEnv)
 
 Throw an `ArgumentError` unless the finite-difference scheme implements `env`'s pair of boundary
-conditions. Today that is only a [`PressureRelease`](@ref) top over an [`AcousticHalfspace`](@ref)
-bottom. Solving any other pair with that scheme would give a confident answer to a different problem,
-so it is refused instead.
+conditions. Every pair is supported except an [`AcousticHalfspace`](@ref) *top*, which is out of
+scope: every KRAKEN test case that uses one is a transparent surface with no trapped modes, an air
+half-space behaves as [`PressureRelease`](@ref) in practice, and ice is elastic.
 
 It dispatches on the boundary *types* and never on a value, so it has nothing to differentiate and
 nothing that could send the AD modes down different branches.
 """
 assert_supported_boundaries(env::UnderwaterEnv) = _assert_supported_boundaries(env.top_bc, env.bottom_bc)
 
-_assert_supported_boundaries(::PressureRelease, ::AcousticHalfspace) = nothing
-function _assert_supported_boundaries(top::BoundaryCondition, bottom::BoundaryCondition)
+_assert_supported_boundaries(::Union{PressureRelease,RigidBoundary}, ::BoundaryCondition) = nothing
+function _assert_supported_boundaries(top::AcousticHalfspace, bottom::BoundaryCondition)
     return throw(
         ArgumentError(
-            "Kraken.jl cannot yet solve with top boundary $top and bottom boundary $bottom: the " *
-            "finite-difference scheme implements only a PressureRelease() top over an AcousticHalfspace() bottom."
+            "Kraken.jl does not solve with an $top top boundary: it describes a transparent surface with " *
+            "no trapped modes (and an air half-space behaves as PressureRelease()). Use PressureRelease() " *
+            "or RigidBoundary() for the top.",
         ),
     )
 end
+
+### How each boundary closes the finite-difference system
+#
+# The mesh samples the mode wherever its value is unknown, and the boundary conditions decide where
+# that is. They follow `BCImpedance` in `Kraken/kraken.f90`, which writes every condition as
+# `f ψ + g ψ'/ρ = 0`:
+#
+#   * `PressureRelease` (`f = 1, g = 0`) — `ψ = 0` is known, so the boundary is *not* a mesh point.
+#     At the surface that is what the mesh has always done; at the bottom the last layer stops one
+#     step short of `D`. Fortran keeps the point and decouples its row, which is the same system.
+#   * `RigidBoundary` (`f = 0, g = 1`) — `ψ' = 0` constrains the derivative, so the boundary is a mesh
+#     point, and eliminating the ghost point beyond it halves that row: the diagonal and the `kr²`
+#     weight both carry a factor ½, the off-diagonal does not.
+#   * `AcousticHalfspace` — the same halved row, less the half-space admittance `g = γ/ρb` of
+#     [`get_g`](@ref) (Fortran's `f/g`). Bottom only.
+#
+# The half-space methods are the expressions this file used before boundary conditions existed,
+# spelled identically, which is what keeps every existing result bit-identical.
+
+# Mesh points a boundary adds to (or removes from) its end layer, relative to one per interval.
+top_extra_points(::PressureRelease) = 0
+top_extra_points(::RigidBoundary) = 1
+bottom_extra_points(::PressureRelease) = -1
+bottom_extra_points(::BoundaryCondition) = 0
+
+# First depth of the top layer's mesh, and last depth of the bottom layer's.
+mesh_top(::PressureRelease, z_top, Δz) = z_top + Δz
+mesh_top(::RigidBoundary, z_top, Δz) = z_top
+mesh_bottom(::PressureRelease, z_bot, Δz) = z_bot - Δz
+mesh_bottom(::BoundaryCondition, z_bot, Δz) = z_bot
+
+# The sound speed that sets the target mesh spacing. With a half-space it is the half-space's, and
+# the solver requires it to be the fastest medium; a perfect bottom has no speed of its own.
+function mesh_soundspeed(::AcousticHalfspace, env)
+    @assert maxsoundspeed(env.c) < env.cb
+    return env.cb
+end
+mesh_soundspeed(::BoundaryCondition, env) = maxsoundspeed(env.c)
+
+# The lowest wavenumber `bisection` searches. Above a half-space's cutoff, modes are trapped; between
+# perfect boundaries every mode with `kr² > 0` is.
+kr_search_min(::AcousticHalfspace, ω, env) = ω / (0.9999 * env.cb)  # 0.9999 keeps clear of the cutoff
+kr_search_min(::BoundaryCondition, ω, env) = zero(ω)
+
+# The highest wavenumber `bisection` searches, given `max(ω/c)`. Between two rigid boundaries an
+# isovelocity column's first mode is the plane wave ψ = const, whose kr is `ω/c` *exactly* — on the
+# bound itself, where `det_sturm` returns roundoff and no bracket can enclose the root. Widening by a
+# hair lets it; no mode can lie above `max(ω/c)`, so nothing spurious gets in.
+kr_search_max(::BoundaryCondition, ::BoundaryCondition, kr_max) = kr_max
+kr_search_max(::RigidBoundary, ::RigidBoundary, kr_max) = kr_max * (1 + 1e-8)
+
+# Inverse iteration's starting vector, `N` entries of type `T`. A constant vector is the default, but
+# between two rigid boundaries it *is* the plane-wave eigenvector of a homogeneous column, exactly
+# orthogonal to every other mode — so iterating toward another mode can satisfy the stopping test while
+# still sitting on the plane wave (measured: mode 2 of an isovelocity rigid/rigid column came back as
+# mode 1). A decaying exponential overlaps every cosine mode, since its cosine transform never vanishes.
+initial_mode_guess(::BoundaryCondition, ::BoundaryCondition, T, N) = normalize(ones(T, N))
+initial_mode_guess(::RigidBoundary, ::RigidBoundary, T, N) = normalize(T.(exp.(-(0:(N - 1)) ./ N)))
+
+# The factor on the last row's diagonal and `kr²` weight: ½ where the bottom is a mesh point.
+bottom_row_factor(::PressureRelease) = 1.0
+bottom_row_factor(::BoundaryCondition) = 0.5
+
+# Halve the first row for a rigid surface. The bottom row's factor is applied where it always was.
+close_top_row(::PressureRelease, a_vec, λ_scaling) = (a_vec, λ_scaling)
+function close_top_row(::RigidBoundary, a_vec, λ_scaling)
+    return vcat(a_vec[1] / 2, a_vec[2:end]), vcat(λ_scaling[1] / 2, λ_scaling[2:end])
+end
+
+# Put a boundary's value back onto an end layer's samples for integration, unless it is a mesh point.
+close_top(::PressureRelease, head, x) = vcat(head, x)
+close_top(::RigidBoundary, head, x) = x
+close_bottom(::PressureRelease, tail, x) = vcat(x, tail)
+close_bottom(::BoundaryCondition, tail, x) = x
+
+"""
+    close_medium(i, n, env, head, tail, x)
+
+Medium `i` of `n`'s samples `x`, extended up to the medium's top interface with `head` and, for the
+last medium, down to the bottom with `tail` — except at an end where the boundary is itself a mesh
+point and `x` already reaches it.
+"""
+function close_medium(i, n, env, head, tail, x)
+    x = i == 1 ? close_top(env.top_bc, head, x) : vcat(head, x)
+    return i == n ? close_bottom(env.bottom_bc, tail, x) : x
+end
+
+# The bottom half-space's share of a mode's energy, `ψ(D)² / (2 ρb γ)`. Zero without a half-space.
+function bottom_energy(::AcousticHalfspace, v, kr, env, props)
+    return v[end]^2 / (2 * env.ρb * sqrt(kr^2 - (2pi * props.freq / env.cb)^2))
+end
+bottom_energy(::BoundaryCondition, v, kr, env, props) = zero(eltype(v))
 
 ### Sound Speed and Density Functions to extract values from profiles at a give depth from profiles
 """
@@ -554,17 +653,23 @@ This process is dependent on the frequency `f`.
 function get_Nz_vec(env::UnderwaterEnv, freq; n_per_wavelength=20, factor=1)
     ω = 2π * freq
     @assert ω >= 0 "Frequency must be non-negative"
-    @assert maxsoundspeed(env.c) < env.cb
-    kr_max = ω / env.cb  # here we assume the bottom half-space sound speed is highest
+    kr_max = ω / mesh_soundspeed(env.bottom_bc, env)  # the bottom half-space speed, when there is one
     Lmin = 2π / kr_max   # The lowest wavelength available in the problem
     # 20 points per wavelength. `factor` is for Richardson extrapolation.
     Δz = Lmin / n_per_wavelength
 
-    # `Nz_vec` is an integer count and so is piecewise constant in the parameters, but `Δz_vec` is
-    # `h / Nz` — *linear* in the layer thickness, hence differentiable. Written as comprehensions
+    # The interval count is an integer and so is piecewise constant in the parameters, but `Δz_vec` is
+    # `h / n` — *linear* in the layer thickness, hence differentiable. Written as comprehensions
     # rather than a fill-in loop so reverse-mode AD can trace it; see the seam note at the top.
-    Nz_vec = [n_mesh_points(h, Δz, factor) for h in env.h_vec]
-    Δz_vec = env.h_vec ./ Nz_vec
+    n_intervals = [n_mesh_points(h, Δz, factor) for h in env.h_vec]
+    Δz_vec = env.h_vec ./ n_intervals
+    # `Nz_vec` counts mesh *points*: one per interval, plus one for a rigid surface (a mesh point) and
+    # less one for a vacuum bottom (not one). See the boundary notes above `top_extra_points`.
+    last_layer = length(n_intervals)
+    Nz_vec = [
+        n + (i == 1 ? top_extra_points(env.top_bc) : 0) + (i == last_layer ? bottom_extra_points(env.bottom_bc) : 0)
+        for (i, n) in enumerate(n_intervals)
+    ]
     return Nz_vec, Δz_vec
 end
 
@@ -586,11 +691,20 @@ Get the depth vector for each layer of the underwater environment according to t
  and mesh spacing `Δz_vec`.
 """
 function get_z_vec(env::UnderwaterEnv, Nz_vec, Δz_vec)
-    # Layer `i` runs from the previous layer's bottom to its own, and its mesh starts one step in
-    # (there is no `z = 0` sample — see the Architecture Decisions). Non-mutating so reverse-mode AD
-    # can trace the layer-depth dependence.
+    # Layer `i` runs from the previous layer's bottom to its own, and its mesh starts one step in and
+    # ends on its bottom interface — except at the two ends, where the boundary conditions decide (a
+    # rigid surface is sampled at `z = 0`, a vacuum bottom is not sampled at `D`). With the default
+    # pressure-release surface there is no `z = 0` sample; see the Architecture Decisions.
+    # Non-mutating so reverse-mode AD can trace the layer-depth dependence.
     z_starts = vcat(zero(eltype(env.layer_depth)), env.layer_depth[1:(end - 1)])
-    return [layer_mesh(z_starts[i] + Δz_vec[i], env.layer_depth[i], Nz_vec[i]) for i in eachindex(Nz_vec)]
+    last_layer = length(Nz_vec)
+    return [
+        layer_mesh(
+            i == 1 ? mesh_top(env.top_bc, z_starts[i], Δz_vec[i]) : z_starts[i] + Δz_vec[i],
+            i == last_layer ? mesh_bottom(env.bottom_bc, env.layer_depth[i], Δz_vec[i]) : env.layer_depth[i],
+            Nz_vec[i],
+        ) for i in eachindex(Nz_vec)
+    ]
 end
 
 """
@@ -648,18 +762,23 @@ e_element(ρ, h) = @. 1 / (h * ρ)
 """
     get_g(kr, env::UnderwaterEnv, props::AcousticProblemProperties)
 
-Get the value of `g` for the bottom half-space finite-difference element.
+Get the value of `g` for the bottom half-space finite-difference element: `√(kr² - (ω/cb)²) / ρb`,
+or zero when the bottom is a [`RigidBoundary`](@ref) or [`PressureRelease`](@ref) and there is no
+half-space.
 
-Only defined for `kr >= 2π * freq / cb`, i.e. for modes that are evanescent in the bottom
-half-space — below that cutoff the vertical wavenumber in the bottom is real (a radiating,
+With a half-space, only defined for `kr >= 2π * freq / cb`, i.e. for modes that are evanescent in the
+bottom half-space — below that cutoff the vertical wavenumber in the bottom is real (a radiating,
 leaky mode) and this real-valued formulation has no solution. `bisection` therefore only ever
 searches `kr ∈ [ω/cb, max(ω/c)]`; calling `get_g` (or `det_sturm`) below the cutoff throws a
 `DomainError` from `sqrt`.
 """
-function get_g(kr, env::UnderwaterEnv, props::AcousticProblemProperties)
+get_g(kr, env::UnderwaterEnv, props::AcousticProblemProperties) = bottom_admittance(env.bottom_bc, kr, env, props)
+
+function bottom_admittance(::AcousticHalfspace, kr, env, props)
     g = sqrt(kr^2 - (2pi * props.freq / env.cb)^2) / env.ρb
     return g
 end
+bottom_admittance(::BoundaryCondition, kr, env, props) = zero(kr)
 
 """
 Cache for the acoustic problem vectors.
@@ -688,7 +807,8 @@ the top of this file). Reverse-mode AD traces this function, so keep it free of 
   is the average of the coefficients on either side.
 - `e_vec` — off-diagonals, from `e_element`.
 - `λ_scaling` — the factor multiplying `kr²` in the Sturm sequence: a two-point moving average of
-  `e_vec * Δz²`, with the final entry halved for the bottom half-space boundary condition.
+  `e_vec * Δz²`, with the final entry halved when the bottom is a mesh point (a half-space or rigid
+  bottom) and the first entry halved, along with `a_vec[1]`, for a rigid surface.
 
 The mesh (`Nz_vec`, `Δz_vec`, `zn_vec`) is piecewise constant in the parameters and is treated as a
 constant here — only `env` carries derivative information.
@@ -716,9 +836,14 @@ function finite_difference_coefficients(env::UnderwaterEnv, props::AcousticProbl
         map(k -> k in interfaces ? (a_raw[k] + a_raw[k + 1]) / 2 : a_raw[k], eachindex(a_raw))
     end
 
-    # λ_scaling: pairwise mean of e * Δz² over the column, with the bottom entry halved.
+    # λ_scaling: pairwise mean of e * Δz² over the column, with the bottom entry scaled by the bottom
+    # row's factor — ½ where the bottom is a mesh point. (`* 0.5` and the `/ 2` it replaced are the
+    # same IEEE operation, so the half-space result did not move.)
     s = e_vec .* Δzn .^ 2
-    λ_scaling = vcat((s[1:(end - 1)] .+ s[2:end]) ./ 2, e_vec[end] * props.Δz_vec[end]^2 / 2)
+    λ_scaling = vcat(
+        (s[1:(end - 1)] .+ s[2:end]) ./ 2, e_vec[end] * props.Δz_vec[end]^2 * bottom_row_factor(env.bottom_bc)
+    )
+    a_vec, λ_scaling = close_top_row(env.top_bc, a_vec, λ_scaling)
 
     return a_vec, e_vec, λ_scaling
 end
@@ -770,12 +895,13 @@ rescales the sequence whenever it would overflow or underflow; the factor is pie
 both `kr` and the environment parameters, so it cancels in any derivative of the root and does not
 affect the mode count.
 
-Only defined for `kr >= 2π * freq / cb` — see [`get_g`](@ref).
+With a half-space bottom, only defined for `kr >= 2π * freq / cb` — see [`get_g`](@ref).
 """
 function det_sturm(kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; scale=true)
     local p2, p1, p0, λ
     mode_count = 0
     g = get_g(kr, env, props)
+    ζ = bottom_row_factor(env.bottom_bc)
 
     # Calculate the Sturm Sequence.
     k = 1
@@ -790,7 +916,7 @@ function det_sturm(kr, env::UnderwaterEnv, props::AcousticProblemProperties, cac
             k += 1
             # If we reached the last element of the last layer
             if (i == length(props.Nz_vec)) && (j == Nz)
-                p2 = (λ - (0.5 * a - g)) * p1 - e^2 * p0
+                p2 = (λ - (ζ * a - g)) * p1 - e^2 * p0
                 if scale
                     s = scale_const(p1, p2)
                     p1 *= s
@@ -825,14 +951,15 @@ end
 
 Bisection method to find the intervals where the roots (wavenumbers) lie.
 
-Searches `kr ∈ [ω/(0.9999 cb), max(ω/c)]`, the band in which modes are trapped. Returns an
+Searches `kr ∈ [ω/(0.9999 cb), max(ω/c)]`, the band in which modes are trapped — or down to `kr = 0`
+when the bottom is rigid or vacuum and nothing can leak out of the column. Returns an
 `n_modes × 2` matrix of `[left right]` brackets, or `nothing` when the environment supports no
 trapped modes at this frequency (e.g. water too shallow relative to the wavelength).
 """
 function bisection(env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache)
     ω = 2pi * props.freq
-    kr_max = maximum(ω ./ env.c.c)
-    kr_min = ω / (0.9999 * env.cb)  # multiplying by 0.9999 so I don't touch the wavenumber boundary when root finding
+    kr_max = kr_search_max(env.top_bc, env.bottom_bc, maximum(ω ./ env.c.c))
+    kr_min = kr_search_min(env.bottom_bc, ω, env)  # just above the half-space cutoff, or zero
     kr_min, kr_max = promote(kr_min, kr_max)
     n_max = last(det_sturm(kr_min, env, props, cache))
     if n_max == 0
@@ -980,30 +1107,36 @@ Each medium's depth mesh, extended *upwards* to its own top interface.
 [`get_z_vec`](@ref) starts every layer one step below its top boundary, so the raw meshes leave a
 `Δz`-wide hole at each interface. Prepending the interface depth closes it and gives each medium a
 mesh spanning its full thickness — which is what makes a per-medium trapezoid the whole integral
-rather than most of it.
+rather than most of it. The boundaries follow [`close_medium`](@ref): a rigid surface is already
+sampled at `z = 0`, and a vacuum bottom's mesh is extended *down* to `D`.
 """
 function medium_mesh(env::UnderwaterEnv, props::AcousticProblemProperties)
     z_tops = vcat(zero(eltype(env.layer_depth)), env.layer_depth[1:(end - 1)])
-    return [vcat(z_tops[i], props.zn_vec[i]) for i in eachindex(props.zn_vec)]
+    n = length(props.zn_vec)
+    return [close_medium(i, n, env, z_tops[i], env.layer_depth[end], props.zn_vec[i]) for i in eachindex(props.zn_vec)]
 end
 
 """
-    medium_mode(ψ, props::AcousticProblemProperties)
+    medium_mode(ψ, env::UnderwaterEnv, props::AcousticProblemProperties)
 
 Each medium's slice of the mode shape, extended to its top interface.
 
 The mode function is *continuous* across an interface, so a medium's value there is simply the last
-sample of the medium above — and zero at the surface, which is the pressure-release condition. This
-is the one quantity that needs no special treatment at a boundary; the profiles are the ones that
-jump.
+sample of the medium above — and zero at a pressure-release surface or bottom, which is where the
+mesh leaves those points out. This is the one quantity that needs no special treatment at an
+interface; the profiles are the ones that jump.
 """
-function medium_mode(ψ, props::AcousticProblemProperties)
+function medium_mode(ψ, env::UnderwaterEnv, props::AcousticProblemProperties)
     ranges = layer_ranges(props)
-    return [vcat(i == 1 ? zero(eltype(ψ)) : ψ[first(ranges[i]) - 1], ψ[ranges[i]]) for i in eachindex(ranges)]
+    n = length(ranges)
+    return [
+        close_medium(i, n, env, i == 1 ? zero(eltype(ψ)) : ψ[first(ranges[i]) - 1], zero(eltype(ψ)), ψ[ranges[i]])
+        for i in eachindex(ranges)
+    ]
 end
 
 """
-    medium_property(sample, profile, props::AcousticProblemProperties)
+    medium_property(sample, profile, env::UnderwaterEnv, props::AcousticProblemProperties)
 
 Each medium's samples of `profile` (via `sample`, one of [`soundspeed`](@ref), [`density`](@ref) or
 [`attenuation`](@ref)), extended to its top interface **from inside that medium**.
@@ -1018,11 +1151,15 @@ That is **exact**, not an approximation: the profiles are piecewise linear, the 
 uniform (a layer's first sample sits exactly `Δz` below its top, and its interior spacing is also
 `Δz`), and both samples lie strictly inside the medium. It is also traceable, which `nextfloat` —
 the obvious alternative — is not, having no method for a `Dual`.
+
+A vacuum bottom's value at `D` is extrapolated the same way, `2pₙ - pₙ₋₁`, from the last two samples
+of the bottom medium; a rigid surface needs no extrapolation, being sampled at `z = 0` already.
 """
-function medium_property(sample, profile, props::AcousticProblemProperties)
-    return map(props.zn_vec) do z
-        p = sample(profile, z)
-        return vcat(2 * p[1] - p[2], p)
+function medium_property(sample, profile, env::UnderwaterEnv, props::AcousticProblemProperties)
+    n = length(props.zn_vec)
+    return map(eachindex(props.zn_vec)) do i
+        p = sample(profile, props.zn_vec[i])
+        return close_medium(i, n, env, 2 * p[1] - p[2], 2 * p[end] - p[end - 1], p)
     end
 end
 
@@ -1034,19 +1171,20 @@ the density discontinuities at the interfaces are resolved exactly rather than a
 """
 function mode_energy(ψ, env::UnderwaterEnv, props::AcousticProblemProperties)
     zz = medium_mesh(env, props)
-    vv = medium_mode(ψ, props)
-    ρρ = medium_property(density, env.ρ, props)
+    vv = medium_mode(ψ, env, props)
+    ρρ = medium_property(density, env.ρ, env, props)
     return sum(i -> integral_trapz(abs2.(vv[i]) ./ ρρ[i], zz[i]), eachindex(zz))
 end
 
 function create_finite_diff_matrix!(kr, env, props, cache)
     g = get_g(kr, env, props)
+    ζ = bottom_row_factor(env.bottom_bc)
 
     # Update the diagonal elements.
     # Spelled `.= x .- y` rather than `.-=`: `@views` on an updating broadcast is a syntax error on
     # Julia 1.10 ("invalid let syntax"), which is the lower bound declared in Project.toml. Same
     # allocation behaviour — @views makes both sides views either way.
-    cache.a_vec[end] = 0.5 * cache.a_vec[end] - kr^2 .* cache.λ_scaling[end] - g
+    cache.a_vec[end] = ζ * cache.a_vec[end] - kr^2 .* cache.λ_scaling[end] - g
     @views cache.a_vec[1:(end - 1)] .= cache.a_vec[1:(end - 1)] .- kr^2 .* cache.λ_scaling[1:(end - 1)]
 
     # The Tridiagonal matrix will automatically reflect these changes
@@ -1056,7 +1194,8 @@ end
 
 function return_finite_diff_matrix!(kr, env, props, cache)
     g = get_g(kr, env, props)
-    cache.a_vec[end] = 2 * (cache.a_vec[end] + kr^2 .* cache.λ_scaling[end] + g)
+    # `/ ζ` with ζ = 0.5 is the same IEEE operation as the `2 * (...)` it replaced.
+    cache.a_vec[end] = (cache.a_vec[end] + kr^2 .* cache.λ_scaling[end] + g) / bottom_row_factor(env.bottom_bc)
     @views cache.a_vec[1:(end - 1)] .= cache.a_vec[1:(end - 1)] .+ kr^2 .* cache.λ_scaling[1:(end - 1)]  # see above
     # The Tridiagonal matrix will automatically reflect these changes
     # since it's using views of the vectors
@@ -1083,7 +1222,7 @@ function mode_eigenvector(
     local kr_new, w0, w1
     N = sum(props.Nz_vec)
     # Initialization
-    w0 = normalize(ones(eltype(kr), N))
+    w0 = initial_mode_guess(env.top_bc, env.bottom_bc, eltype(kr), N)
     w1 = similar(w0)
     # Create the finite-difference matrix
     kr_try = kr - 1e3 * eps(kr)
@@ -1114,7 +1253,8 @@ Scale a mode shape so that its total energy — water column plus bottom half-sp
     ∫ v(z)² / ρ(z) dz  +  v(D)² / (2 ρb √(kr² - (ω/cb)²))  =  1
 
 `v` is [`mode_eigenvector`](@ref)'s unit-2-norm eigenvector; the scaling is what turns it into the
-mode function the field sum expects.
+mode function the field sum expects. With a rigid or vacuum bottom there is no half-space and the
+second term is zero.
 
 Kept *on the differentiable seam* deliberately. The normalization is the only part of a mode shape
 that depends on the density profile and the mesh coordinates other than through the finite-difference
@@ -1124,7 +1264,7 @@ than the eigenvector rule having to carry an interpolant adjoint of its own.
 """
 function normalize_mode(v, kr, env::UnderwaterEnv, props::AcousticProblemProperties)
     amp1 = mode_energy(v, env, props) # Amplitude of the waveguide, integrated medium by medium
-    amp2 = v[end]^2 / (2 * env.ρb * sqrt(kr^2 - (2pi * props.freq / env.cb)^2)) # Same for the bottom half-space
+    amp2 = bottom_energy(env.bottom_bc, v, kr, env, props) # Same for the bottom half-space, if any
     return v ./ sqrt(amp1 + amp2)
 end
 
@@ -1216,10 +1356,10 @@ than this one: its automatic mesh carries ~1.6e-3 of discretization error on `on
 function modal_attenuation(ψ, kr, env::UnderwaterEnv, props::AcousticProblemProperties)
     ω = 2pi * props.freq
     zz = medium_mesh(env, props)
-    vv = medium_mode(ψ, props)
-    ρρ = medium_property(density, env.ρ, props)
-    cc = medium_property(soundspeed, env.c, props)
-    αα = medium_property(attenuation, env.α, props)
+    vv = medium_mode(ψ, env, props)
+    ρρ = medium_property(density, env.ρ, env, props)
+    cc = medium_property(soundspeed, env.c, env, props)
+    αα = medium_property(attenuation, env.α, env, props)
 
     # Water column: ∫ i·Im(ω²/c̃²)·ψ²/ρ dz, medium by medium and with the same quadrature
     # `normalize_mode` uses — the two have to be weighted alike or their ratio is not the average the
@@ -1230,14 +1370,21 @@ function modal_attenuation(ψ, kr, env::UnderwaterEnv, props::AcousticProblemPro
         return integral_trapz(b1c .* abs2.(vv[i]) ./ ρρ[i], zz[i])
     end
 
-    # Bottom half-space: the mode leaks into it as ψ(D)e^{-γ(z-D)}, and the integral is closed form.
-    ab_np = attenuation_nepers_per_m(env.αb, env.cb, props.freq, env.atten_units)
-    cb_complex = complex_soundspeed(env.cb, ab_np, ω)
-    γ_complex = sqrt(complex(kr^2) - ω^2 / cb_complex^2)
-    halfspace = -imag(γ_complex) * ψ[end]^2 / env.ρb
+    halfspace = bottom_attenuation(env.bottom_bc, ψ, kr, env, props)
 
     return im * (volume + halfspace)
 end
+
+# Bottom half-space: the mode leaks into it as ψ(D)e^{-γ(z-D)}, and the integral is closed form. A rigid
+# or vacuum bottom has no half-space, so nothing below `D` to attenuate.
+function bottom_attenuation(::AcousticHalfspace, ψ, kr, env, props)
+    ω = 2pi * props.freq
+    ab_np = attenuation_nepers_per_m(env.αb, env.cb, props.freq, env.atten_units)
+    cb_complex = complex_soundspeed(env.cb, ab_np, ω)
+    γ_complex = sqrt(complex(kr^2) - ω^2 / cb_complex^2)
+    return -imag(γ_complex) * ψ[end]^2 / env.ρb
+end
+bottom_attenuation(::BoundaryCondition, ψ, kr, env, props) = zero(real(eltype(ψ)))
 
 """
     inverse_iteration(kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; kwargs...)

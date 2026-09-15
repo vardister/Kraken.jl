@@ -1564,7 +1564,7 @@ Decisions worth carrying into 6.2:
   reference green with OALIB coverage unchanged at 167/402. Before any of it would start, the test env
   needed `Pkg.develop(path="."); Pkg.instantiate()` again — the session died on `KeyError: Mooncake`.
 
-### 6.2 [ ] Implement rigid and vacuum boundaries in the finite-difference scheme
+### 6.2 [x] Implement rigid and vacuum boundaries in the finite-difference scheme *(completed 2026-09-14)*
 - **Files:** `src/kraken_core.jl`
 - **What:** The boundary condition determines the first and last rows of the tridiagonal system and the `g`
   term in `det_sturm`. Implement the rigid (zero normal derivative) and vacuum cases at both surface and
@@ -1573,6 +1573,72 @@ Decisions worth carrying into 6.2:
 - **Acceptance:** Existing lossless results are bit-identical; a rigid-bottom Pekeris variant produces the
   analytically known wavenumbers for that case.
 - **Dependencies:** 6.1
+
+**Outcome.** Every top ∈ {vacuum, rigid} × bottom ∈ {half-space, rigid, vacuum} solves; only a top
+half-space is refused (6.1's scope decision). Also touched `src/kraken_ad.jl`, since both rules hard-coded
+the half-space row. Measured:
+
+- **Bit-identical, not merely close.** `kr` and mode shapes for all 14 standard-environment cases
+  (every `*_env` at 50 and 100 Hz, plus the `αb = 0.5` variants) compared with `==` against a baseline
+  serialized before the first edit.
+- **Analytic isovelocity waveguide** (c = 1500, D = 100 m, 100 Hz), the new `M6.2` test item:
+  vacuum/rigid, vacuum/vacuum and rigid/vacuum find exactly the 13 analytic modes, with worst relative
+  `kr` error 1.8e-9, 7.6e-13 and 1.8e-9. Rigid/rigid finds all 14 at 3.9e-8, the plane wave included.
+  Normalized mode shapes agree to ~1e-9 of the amplitude, because the sampled sine is an exact
+  eigenvector of the FD operator. A uniformly lossy column gives `Im(kᵣ²) = Im(ω²/c̃²)` to 5e-16, which
+  checks that the ends close the attenuation and normalization integrals identically.
+
+How it maps onto `BCImpedance` in `kraken.f90` (`f ψ + g ψ'/ρ = 0`), and decisions worth keeping:
+
+- **A boundary is a mesh point exactly when `ψ` is unknown there.** Vacuum (`f=1, g=0`) is not: at
+  the surface the mesh already started at `Δz`, and at the bottom the last layer now stops at `D − Δz`.
+  Rigid (`f=0, g=1`) is: a `z = 0` node for a rigid surface, and the existing `z = D` node for a rigid
+  bottom. Eliminating the ghost point halves that row's diagonal and `kr²` weight but not its
+  off-diagonal, which keeps the matrix symmetric. A rigid bottom is therefore the old half-space row
+  with `g = 0`. Fortran instead keeps Dirichlet nodes and decouples their rows, which is the same system.
+- **`Nz_vec` now counts mesh *points*, not intervals.** `Δz_vec = h ./ n_intervals` is unchanged in
+  meaning; `Nz_vec` differs from the interval count by +1 for a rigid top and −1 for a vacuum bottom.
+  Everything downstream (`layer_ranges`, the Sturm loop, `sum(Nz_vec) == size(modes, 1)`) already
+  treated it as a point count.
+- **Bit-identity was designed, not hoped for.** The half-space methods are the old expressions spelled
+  the same way, and the two generalized spots are IEEE-exact rewrites: `0.5 * a` → `ζ * a` with
+  `ζ = 0.5`, `2 * (…)` → `(…) / 0.5`, `/ 2` → `* 0.5`.
+- **Per-medium integrals close the ends by dispatch** (`close_medium`). A vacuum bottom appends
+  `ψ(D) = 0`, `z = D` and the extrapolated `2pₙ − pₙ₋₁`; a rigid surface prepends nothing, since `z = 0`
+  is already sampled. `medium_mode` and `medium_property` gained an `env` argument for this.
+- **Search band for a perfect bottom is `kr ∈ [0, max(ω/c)]`**, and the mesh target spacing uses
+  `maxsoundspeed(env.c)` in place of `cb`. `sspHS`'s bottom row is ignored.
+- **Rigid over rigid needed `kr_search_max`.** An isovelocity column between rigid plates has the plane
+  wave ψ = const at `kr = ω/c` *exactly*. That is `bisection`'s upper bound, where `det_sturm` returns
+  roundoff (−1e-22) and already counts the mode as above the band. The bracket fails ("non-enclosing
+  interval"), a mode goes missing on one mesh, and the Richardson extrapolation takes `sqrt` of a
+  negative `kr²`. For that pair only, the bound is widened by a relative 1e-8. No mode can exceed
+  `max(ω/c)`, so nothing spurious enters. A graded profile never triggers it.
+- **Rigid over rigid also needed `initial_mode_guess`.** Inverse iteration started from
+  `normalize(ones(N))`, which between two rigid boundaries *is* the plane-wave eigenvector of a
+  homogeneous column, orthogonal to every other mode. Mode 2 satisfied the 1% stopping test while still
+  sitting on it and came back as a copy of mode 1 (shape error 7.6, i.e. amplitude + plane wave). It was
+  caught only by the full TestItemRunner run, since the earlier REPL check looked at the plane wave alone.
+  For that pair the start is now a decaying exponential, which overlaps every cosine mode. A linear ramp
+  would not do: it is orthogonal to the even ones. Every other pair keeps `ones`, and bit-identity held.
+- **Verified by per-file runs:** environment + integration 399/399, reverse AD 183 + 84 + 50 + 42,
+  forward AD 48, numerical methods 96, Fortran reference 809/809. The last four ran before the
+  start-vector fix, which only reaches the rigid/rigid path.
+- **The rules dispatch, not branch.** `sturm_sensitivities`, `shifted_matrix` and the eigenvector
+  pullback take `ζ = bottom_row_factor(env.bottom_bc)`. `half_space_sensitivities` returns zeros for a
+  non-half-space bottom, since `g ≡ 0` there. That keeps `sqrt(kr² − (ω/cb)²)` from being evaluated
+  on an unused `cb`, where it could be NaN. The rigid top lives entirely in `cache.a_vec[1]` and
+  `λ_scaling[1]`, which the rules already differentiate, so it needed no rule change. Whether the
+  gradients are *right* for the new options is 6.6's job.
+
+Loose ends for later tasks:
+
+- **6.4/6.5:** `test/reference/compare.jl` prepends `φ(0) = 0` only when the grid starts below 0, so a
+  rigid top already works. It does not append `φ(D) = 0` for a vacuum bottom, so the resampling would
+  clamp there. The writer also needs a `cHigh` large enough for `kraken.exe` to search down to `kr ≈ 0`.
+- **Mesh density differs from Fortran for perfect bottoms.** 20 points per wavelength at the fastest
+  *water* speed; KRAKEN uses its own `NG`. Richardson extrapolation makes this a cost question, not an
+  accuracy one.
 
 ### 6.3 [ ] Implement n²-linear and cubic-spline SSP interpolation
 - **Files:** `src/kraken_core.jl`

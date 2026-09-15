@@ -30,9 +30,10 @@ using ChainRulesCore
 # differentiable and stays traced — see the seam note in `kraken_core.jl`.
 @non_differentiable n_mesh_points(::Any, ::Any, ::Any)
 
-# `maxsoundspeed` exists to feed the `maxsoundspeed(env.c) < env.cb` assertion in `get_Nz_vec`, and
-# nothing on the seam consumes its value. Left traced, its `maximum` pullback reaches the assertion's
-# `Bool` and reverse mode fails trying to accumulate one into a thunk.
+# `maxsoundspeed` feeds the `maxsoundspeed(env.c) < env.cb` assertion in `mesh_soundspeed`, and for a
+# rigid or vacuum bottom the target mesh spacing — which reaches the solve only through the integer
+# count `n_mesh_points` returns, so nothing on the seam consumes its value. Left traced, its `maximum`
+# pullback reaches the assertion's `Bool` and reverse mode fails trying to accumulate one into a thunk.
 @non_differentiable maxsoundspeed(::Any)
 
 """
@@ -389,9 +390,8 @@ function sturm_sensitivities(kr, env, props, cache)
     N = sum(props.Nz_vec)
     T = promote_type(typeof(kr), eltype(a), eltype(e), eltype(L))
 
-    q = 2pi * props.freq / env.cb        # horizontal wavenumber at the bottom cutoff
-    β = sqrt(kr^2 - q^2)                 # vertical decay rate in the half-space
-    g = β / env.ρb                       # == get_g(kr, env, props)
+    g = get_g(kr, env, props)             # zero unless the bottom is an acoustic half-space
+    ζ = bottom_row_factor(env.bottom_bc)  # ½ where the bottom is a mesh point, 1 for a vacuum bottom
 
     # --- Forward sweep -------------------------------------------------------------------------
     # State at the start of step k is `v_k = (p0, p1)`; the step is `v_{k+1} = s_k * M_k * v_k` with
@@ -405,9 +405,9 @@ function sturm_sensitivities(kr, env, props, cache)
     for k in 1:N
         P0[k] = p0
         P1[k] = p1
-        # The last mesh point carries the bottom half-space boundary condition, exactly as in
-        # `det_sturm`: `α = 0.5 * a[N] - g` instead of `α = a[k]`.
-        α = k == N ? 0.5 * a[k] - g : a[k]
+        # The last mesh point carries the bottom boundary condition, exactly as in `det_sturm`:
+        # `α = ζ * a[N] - g` instead of `α = a[k]`.
+        α = k == N ? ζ * a[k] - g : a[k]
         p2 = (kr^2 * L[k] - α) * p1 - e[k]^2 * p0
         s = scale_const(p1, p2)
         S[k] = s
@@ -429,8 +429,8 @@ function sturm_sensitivities(kr, env, props, cache)
     w1 = one(T)
     for k in N:-1:1
         b = w1 * S[k]  # multiplier on everything inside the `p2` expression at step k
-        α = k == N ? 0.5 * a[k] - g : a[k]
-        dα = k == N ? T(0.5) : one(T)  # ∂α/∂a[k]
+        α = k == N ? ζ * a[k] - g : a[k]
+        dα = k == N ? T(ζ) : one(T)  # ∂α/∂a[k]
 
         da[k] = -b * dα * P1[k]
         k == N && (dg += b * P1[k])   # α = 0.5a - g, so ∂/∂g flips sign relative to ∂/∂a
@@ -455,9 +455,15 @@ is built from, returning a `NamedTuple` `(dkr, dcb, dρb, dfreq)`.
 
 `g = √(kr² - q²) / ρb` with `q = 2π·freq/cb` is three scalar expressions, so both rules in this file
 state its derivatives rather than differentiating it — `test/reverse_ad_tests.jl` checks them against
-ForwardDiff.
+ForwardDiff. A rigid or vacuum bottom has no half-space and `g ≡ 0`, so every sensitivity is zero.
 """
-function half_space_sensitivities(dg, kr, env, props)
+half_space_sensitivities(dg, kr, env, props) = half_space_sensitivities(env.bottom_bc, dg, kr, env, props)
+
+function half_space_sensitivities(::BoundaryCondition, dg, kr, env, props)
+    return (dkr=zero(dg), dcb=zero(dg), dρb=zero(dg), dfreq=zero(dg))
+end
+
+function half_space_sensitivities(::AcousticHalfspace, dg, kr, env, props)
     q = 2pi * props.freq / env.cb
     β = sqrt(kr^2 - q^2)
     g = β / env.ρb
@@ -524,8 +530,9 @@ function shifted_matrix(kr, env, props, cache)
     a, e, λ = cache.a_vec, cache.e_vec, cache.λ_scaling
     N = length(a)
     g = get_g(kr, env, props)
-    # The last row carries the bottom half-space boundary condition, exactly as in the primal.
-    d = [k == N ? 0.5 * a[N] - kr^2 * λ[N] - g : a[k] - kr^2 * λ[k] for k in 1:N]
+    ζ = bottom_row_factor(env.bottom_bc)
+    # The last row carries the bottom boundary condition, exactly as in the primal.
+    d = [k == N ? ζ * a[N] - kr^2 * λ[N] - g : a[k] - kr^2 * λ[k] for k in 1:N]
     return Tridiagonal(e[2:N], d, e[2:N])
 end
 
@@ -600,11 +607,12 @@ function ChainRulesCore.rrule(::typeof(mode_eigenvector), kr, env, props, cache;
         # ΔM = -y vᵀ, restricted to the tridiagonal pattern. `e_vec[k+1]` sits at both (k, k+1) and
         # (k+1, k), so it collects both; `e_vec[1]` appears in the matrix nowhere.
         Δd = -y .* v
-        Δa = [k == N ? 0.5 * Δd[N] : Δd[k] for k in 1:N]
+        ζ = bottom_row_factor(env.bottom_bc)
+        Δa = [k == N ? ζ * Δd[N] : Δd[k] for k in 1:N]
         Δλ = (-kr^2) .* Δd
         Δe = vcat(zero(eltype(Δd)), -(y[2:N] .* v[1:(N - 1)] .+ y[1:(N - 1)] .* v[2:N]))
 
-        # `d[N] = 0.5 a[N] - kr² λ[N] - g`, so `g` picks up the diagonal's cotangent with a sign flip.
+        # `d[N] = ζ a[N] - kr² λ[N] - g`, so `g` picks up the diagonal's cotangent with a sign flip.
         h = half_space_sensitivities(-Δd[N], kr, env, props)
         dkr += h.dkr - 2 * kr * dot(Δd, cache.λ_scaling)
 

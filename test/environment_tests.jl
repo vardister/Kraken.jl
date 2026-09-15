@@ -183,14 +183,70 @@ end
     @test envf.top_bc === rigid.top_bc
     @test envf.bottom_bc === rigid.bottom_bc
 
-    # ... but until the finite-difference scheme implements it, solving refuses rather than quietly
-    # applying the default boundaries to a problem that asked for different ones.
-    @test_throws ArgumentError AcousticProblemProperties(rigid, 100.0)
-    @test_throws ArgumentError kraken_jl(rigid, 100.0)
-    for (top, bottom) in ((AcousticHalfspace(), AcousticHalfspace()), (PressureRelease(), RigidBoundary()))
-        @test_throws ArgumentError AcousticProblemProperties(
-            UnderwaterEnv(ssp, layers, sspHS; top_bc=top, bottom_bc=bottom), 100.0
-        )
+    # ... and a top acoustic half-space, which is out of scope (see task 6.1's outcome in the plan),
+    # constructs but is refused at solve time rather than quietly solved as something else.
+    for bottom in (AcousticHalfspace(), RigidBoundary(), PressureRelease())
+        halfspace_top = UnderwaterEnv(ssp, layers, sspHS; top_bc=AcousticHalfspace(), bottom_bc=bottom)
+        @test_throws ArgumentError AcousticProblemProperties(halfspace_top, 100.0)
+        @test_throws ArgumentError kraken_jl(halfspace_top, 100.0)
+    end
+end
+
+@testitem "M6.2: rigid and vacuum boundaries reproduce the analytic isovelocity waveguide" begin
+    using Kraken
+
+    # An isovelocity column between two perfect boundaries has closed-form modes: ψ is a sine or cosine
+    # of kz·z with kz fixed by the pair, kr = √(k² − kz²), and `∫ψ²/ρ dz = 1` makes the amplitude
+    # √(2ρ/D). `pekeris_env`'s half-space row is simply not used by a rigid or vacuum bottom.
+    c0, ρ0, D, freq = 1500.0, 1000.0, 100.0, 100.0
+    k = 2π * freq / c0
+    amplitude = sqrt(2ρ0 / D)
+    ssp, layers, sspHS = pekeris_env(; c0=c0, ρ0=ρ0, depth=D)
+
+    # (top, bottom) => (kz of mode m, normalized mode at depth z). Rigid over rigid starts with the plane
+    # wave ψ = √(ρ/D), kz = 0: its kr is k *exactly*, on the upper bound of `bisection`'s search, which
+    # is the case `kr_search_max` exists for.
+    cases = [
+        (PressureRelease(), RigidBoundary()) => (m -> (m - 0.5) * π / D, (kz, z) -> amplitude * sin(kz * z)),
+        (PressureRelease(), PressureRelease()) => (m -> m * π / D, (kz, z) -> amplitude * sin(kz * z)),
+        (RigidBoundary(), PressureRelease()) => (m -> (m - 0.5) * π / D, (kz, z) -> amplitude * cos(kz * z)),
+        (RigidBoundary(), RigidBoundary()) =>
+            (m -> (m - 1) * π / D, (kz, z) -> (iszero(kz) ? sqrt(ρ0 / D) : amplitude) * cos(kz * z)),
+    ]
+    for ((top, bottom), (kz_of, ψ_of)) in cases
+        env = UnderwaterEnv(ssp, layers, sspHS; top_bc=top, bottom_bc=bottom)
+        sol = kraken_jl(env, freq)
+
+        # Every mode below cutoff is found, and nothing else — a perfect bottom traps them all.
+        @test length(sol.kr) == count(m -> kz_of(m) < k, 1:100)
+        kr_exact = sqrt.(k^2 .- kz_of.(eachindex(sol.kr)) .^ 2)
+        @test maximum(abs.(sol.kr .- kr_exact) ./ kr_exact) < 1e-6
+
+        # The mesh reaches exactly the boundaries that are unknowns, and no further.
+        z = reduce(vcat, sol.props.zn_vec)
+        @test (first(z) == 0) == (top isa RigidBoundary)
+        @test (last(z) ≈ D) == !(bottom isa PressureRelease)
+
+        # Mode shapes, including their normalization. On an isovelocity column the sampled sine or
+        # cosine is an *exact* eigenvector of the finite-difference operator, so even the coarse-mesh
+        # shapes agree to ~1e-9 (measured); 1e-6 leaves room without hiding a wrong end condition, which
+        # would show up at O(1). The solver fixes the sign so `ψ[1] ≥ 0`, as both analytic shapes are.
+        for m in 1:3
+            @test maximum(abs.(sol.modes[:, m] .- ψ_of.(kz_of(m), z))) < 1e-6 * amplitude
+        end
+    end
+
+    # A uniformly lossy column between perfect boundaries has no half-space term, so the perturbation of
+    # every mode is Im(ω²/c̃²) times its normalization integral, which is one — provided the ends close
+    # the attenuation integral exactly as they close the energy integral.
+    α0 = 0.1  # dB per wavelength, the default units
+    lossy_ssp, lossy_layers, lossy_sspHS = pekeris_env(; c0=c0, ρ0=ρ0, depth=D, α0=α0)
+    ω = 2π * freq
+    α_nepers = attenuation_nepers_per_m(α0, c0, freq, DEFAULT_ATTENUATION_UNITS)
+    expected = imag(ω^2 / Kraken.complex_soundspeed(c0, α_nepers, ω)^2)
+    for (top, bottom) in first.(cases)
+        sol = kraken_jl(UnderwaterEnv(lossy_ssp, lossy_layers, lossy_sspHS; top_bc=top, bottom_bc=bottom), freq)
+        @test all(m -> isapprox(imag(sol.kr[m]^2), expected; rtol=1e-8), eachindex(sol.kr))
     end
 end
 
