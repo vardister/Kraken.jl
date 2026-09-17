@@ -167,26 +167,46 @@ KRAKEN_OALIB_TESTS=~/programs/AcousticsToolboxOALIB/tests julia --project=. -e '
 Without that tree the toolbox cases skip; the reader itself stays covered by round-tripping this
 repo's own `test/standard_envs/` files through `write_env_file` → `read_env_file`.
 
-Coverage as of 2026-08-09, after Milestone 5.1 — **167 of 402 `.env` files parse, 101 of them lossy**.
-Attenuation was the single largest blocker and is gone from the list:
+Coverage as of 2026-09-16, after Milestone 6.4 — **211 of 402 `.env` files parse, up from 167** after
+Milestone 5.1. Milestone 6 lifted the rigid and vacuum boundaries and the n²-linear and cubic-spline
+interpolators:
 
-| Blocker | Files | Unblocked by |
-|---|---|---|
-| top boundary (not vacuum) | 65 | Milestone 6 |
-| bottom boundary (not an acoustic half-space) | 50 | Milestone 6 |
-| bottom half-space is not the fastest medium | 31 | leaky modes (M5 stretch) |
-| SSP interpolation over a varying profile | 28 | Milestone 6 |
-| added volume attenuation (THORP / Francois-Garrison / biological) | 27 | Milestone 5.x — `TopOpt(4:4)`, a separate feature |
-| elastic layer | 7 | out of scope |
-| interfacial roughness | 4 | out of scope |
-| power-law attenuation (`TopOpt(3:3) == 'm'`) | 1 | needs per-medium β and f_T records |
-| analytic SSP; profile not starting at the surface | 2 | — |
-| not a KRAKEN deck (BELLHOP3D `'H'`/`'Q'` SSP options, malformed) | 20 | n/a |
+| Blocker | after 5.1 | after 6.4 | Status |
+|---|---|---|---|
+| **parses** | **167** | **211** | |
+| top boundary | 65 | 65 | all `A` (acousto-elastic half-space above) — out of scope, plan task 6.1 |
+| bottom half-space is not the fastest medium | 31 | 34 | leaky modes (M5 stretch) |
+| added volume attenuation (THORP / Francois-Garrison / biological) | 27 | 27 | `TopOpt(4:4)`, a separate feature |
+| profile does not start at the surface | 1 | 21 | — |
+| elastic layer | 7 | 9 | out of scope |
+| interfacial roughness | 4 | 6 | out of scope |
+| bottom boundary | 50 | 6 | all `F` (reflection-coefficient file), which `kraken.f90` itself rejects |
+| SSP interpolation over a varying profile | 28 | 1 | a cubic spline over several media (`Munk/MunkB_ray.env`) |
+| power-law attenuation (`TopOpt(3:3) == 'm'`) | 1 | 1 | needs per-medium β and f_T records |
+| analytic SSP | 1 | 1 | — |
+| not a KRAKEN deck (BELLHOP3D `'H'`/`'Q'` SSP options, malformed) | 20 | 20 | n/a |
 
-(The previous count was 65 supported with 114 blocked on `attenuation`. Two of the shifts are not
-attenuation: `bottom half-space is not the fastest medium` rose from 19 to 31 and `interfacial
-roughness` fell from 5 to 4, because files that used to be rejected for attenuation first now get far
-enough to be judged on those instead — and because the bottom-option record bug below was fixed.)
+Some blockers *rose*. That is files the reader used to reject early, for their bottom option or
+interpolator, now getting far enough to be judged on something else — mostly BELLHOP decks whose
+profile starts below the surface.
+
+**Parsing is not reproducing**, so the milestone was also measured the way its success criterion is
+worded. Of the files that parse, the ones `kraken.exe` itself can run *as shipped* were solved by both
+and counted as reproduced when every compared `kᵣ` agrees within 1e-3 (the tolerance the lossy cases
+use). Most unrunnable decks are BELLHOP inputs whose NMESH is "too coarse" for KRAKEN:
+
+| | parses | parses and `kraken.exe` runs it | Kraken.jl reproduces `kᵣ` |
+|---|---|---|---|
+| after 5.1 (reader on `revival`, 2026-09-16) | 167 | 81 | **81** |
+| after 6.4 | 211 | 100 | **97** |
+
+The three new decks that do not reproduce are all perfect bottoms, and are the two defects described
+under "Boundary conditions and SSP interpolation validated against Fortran" below: `wedge/wedge.env`
+(vacuum, 4.2e-3 on its grazing modes) and `Dickins/Precalc/DickinsK.env` and
+`Bellhop3DTests/DoubleSeamount/DoubleSeamount3D_ray.env` (the mode-cutoff crash). Mode-shape
+correlation was deliberately left out of that count: at a thousand modes the writer's receiver grid,
+capped at 2001 points, cannot resolve the mode shapes, so `MunkS_500Hz.env` and the `DoubleSeamount`
+decks read ~0 on both branches.
 
 Regenerate this with `KrakenReference.categorize_env_tree` and `print_env_tree_report`. A file that
 uses an unsupported feature is *named*, never approximated — the whole point is that a case Kraken.jl
@@ -306,6 +326,84 @@ acousto-elastic half-space *above* the surface and gives the bottom the water's 
 there is no trapped spectrum to compare — they are free-space TL cases, not modal ones, and two of
 them additionally use `TopOpt(4:4)` volume-attenuation laws. `TLslices/atten.env` takes their place
 and is a better test anyway: 44 modes, loss in *both* media, and the only case exercising dB/(km·Hz).
+
+### Boundary conditions and SSP interpolation validated against Fortran (plan task 6.5)
+
+Each option Milestone 6 added is compared against `kraken.exe` in `fortran_reference_tests.jl`.
+Measured 2026-09-16.
+
+**Boundary conditions** — `pekeris_env`, which isolates the boundary rows because the column is
+isovelocity:
+
+| top / bottom | Hz | modes | max rel Δkᵣ | min corr | tolerance asserted |
+|---|---|---|---|---|---|
+| rigid / half-space | 100 | 5 | 6.2e-10 | 0.9999999 | 1e-8 / 0.9999 |
+| vacuum / rigid | 100 | 13 | 1.4e-10 | 0.9999944 | 1e-8 / 0.9999 |
+| vacuum / vacuum | 100 | 13 | 6.3e-9 | 0.9999935 | 1e-7 / 0.9999 |
+| rigid / rigid | 100 | 14 | 3.3e-10 | 0.9999928 | 1e-8 / 0.9999 |
+| rigid / vacuum | 100 | 13 | 1.4e-10 | 0.9999939 | 1e-8 / 0.9999 |
+| vacuum / vacuum | 50 | 6 | 2.2e-10 | 0.9999932 | 1e-8 / 0.9999 |
+| vacuum / rigid | 50 | 7 | 6.1e-5 | 0.9999905 | 2e-4 / 0.9999 |
+| `munk_env`, n²-linear, vacuum / rigid | 10 | 66 | 7.9e-6 | 0.9999854 | 5e-5 / 0.9999 |
+
+The 50 Hz rigid-bottom outlier is mode 7, which grazes at `kᵣ = 0.046` against `ω/c = 0.209`. A
+small absolute error in `kᵣ²` reads large relative to a small `kᵣ`.
+
+**SSP interpolation** — `munk_env` cannot test this. Its 100 m sampling of a smooth profile barely
+separates the interpolators: at 25 Hz the n²-linear solve matched Fortran's n²-linear run to 6.4e-6 and
+its *C-linear* run to 6.8e-6. The suite uses a coarse duct instead, five samples 50 m apart
+(1540, 1500, 1480, 1500, 1530 m/s over a 1700 m/s half-space), and checks the whole matrix. Max rel
+Δkᵣ at 50 Hz, Julia interpolation (rows) against Fortran interpolation (columns):
+
+| | Fortran `C` | Fortran `N` | Fortran `S` |
+|---|---|---|---|
+| `:c_linear` | **7.7e-8** | 1.2e-4 | 1.8e-3 |
+| `:n2_linear` | 1.2e-4 | **7.0e-8** | 1.8e-3 |
+| `:cubic_spline` | 1.8e-3 | 1.7e-3 | **3.1e-4** |
+
+C-linear and n²-linear are told apart by three orders of magnitude, so a wrong interpolator fails.
+100 Hz is within 4× of every entry. Asserted: diagonal < 1e-6 and off-diagonal > 1e-5 for C and N.
+
+**The toolbox's newly readable decks** (CLOW/CHIGH from the file; asserted in
+`"M6.5: the toolbox's newly readable options against kraken.exe"`):
+
+| deck | option | Hz | modes (Fortran) | max rel Δkᵣ | min corr | tolerance asserted |
+|---|---|---|---|---|---|---|
+| `TLslices/pekeris.env` | N | 10 | 44 | 1.8e-7 | 0.9999930 | 1e-6 / 0.9999 |
+| `Noise/Pekeris/pekeris.env` | N | 300 | 26 | 3.7e-5 | 0.9999939 | 1e-4 / 0.9999 |
+| `MunkLeaky/MunkK1525.env` | N | 50 | 28 | 3.2e-6 | 0.9999992 | 1e-5 / 0.9999 |
+| `Gulf/gulf_rd.env` | N | 50 | 63 | 1.1e-6 | 0.9999929 | 1e-5 / 0.9999 |
+| `Munk/MunkK.env` | N | 50 | 102 | 6.1e-5 | 0.9943636 | 2e-4 / 0.99 |
+| `Munk/MunkS.env` | S | 50 | 102 | 5.4e-5 | 0.9938562 | 2e-4 / 0.99 |
+| `wedge/wedge.env` | vacuum bottom | 25 | 59 | 4.2e-3 | 0.9998710 | 1e-2 / 0.999 |
+
+The Munk decks' worst modes are 99–102, the last trapped modes at the half-space cutoff, and **it is
+not the interpolator**: the same decks forced to C-linear on both sides give the same 6.1e-5 and
+0.9944. `wedge.env`'s worst modes are its grazing ones near `kᵣ = 0` (mode 59: `kᵣ = 0.0147` at
+`ω/c = 0.105`). `MunkK1525` and `gulf_rd` narrow CHIGH to 1525 m/s, so Fortran reports only their
+slow modes while Kraken.jl finds every trapped one; the leading modes are what is compared.
+
+#### Two defects this found, pinned as `@test_broken`
+
+Both are in `src/`, outside a test task's reach, and are plan tasks 6.7 and 6.8. Each is a
+`@test_broken` that reports "Unexpected Pass" the moment it is fixed.
+
+- **A perfect bottom can crash the solve when a mode sits at `kᵣ = 0`.** `richard_extrap` takes the
+  square root of an extrapolated `kᵣ²` that has crossed zero (`DomainError`); KRAKEN discards such a
+  mode (`kraken.f90` keeps only `kᵣ² > ω²/cHigh²`). For the 100 m Pekeris column the cutoffs are the
+  multiples of `c/2D = 7.5 Hz` with a vacuum bottom and the odd multiples of 3.75 Hz with a rigid one.
+  Swept over 20–200 Hz in 0.25 Hz steps: 10 of 721 frequencies fail for vacuum (75, 90, 120, 127.5,
+  … Hz — 10 of the 24 cutoffs in range) and 6 for rigid (93.75, 168.75 and 198.75 Hz, plus a
+  `SingularException` in inverse iteration's LU at 183.25–183.75 Hz, next to the 183.75 Hz cutoff).
+  Every failure is at or beside a cutoff, and round frequencies are the likely ones to be asked for. `Dickins/Precalc/DickinsK.env` (rigid, 230 Hz)
+  and `Bellhop3DTests/DoubleSeamount/DoubleSeamount3D_ray.env` hit it in the toolbox tree.
+- **`:cubic_spline` is a different spline from KRAKEN's.** Kraken.jl uses DataInterpolations'
+  *natural* spline; `cCubic` calls `CSPLINE` with `IBCBEG = IBCEND = 0`, which `misc/splinec.f90`
+  documents as *not-a-knot*. On the duct that is the whole 3.1e-4. Sampling each end condition's
+  spline at 0.5 m and solving it as a C-linear profile, the not-a-knot one matches Fortran's spline
+  run to 2.1e-7 and the natural one matches Kraken.jl's to 2.0e-7. `"the spline gap is the end
+  condition"` asserts both, so whoever fixes it has the target. On a finely sampled profile the two
+  end conditions barely differ (`Munk/MunkS.env`, splined, agrees to 5.4e-5; its C-linear control to 6.1e-5).
 
 ### AD through a lossy solve (plan task 5.4)
 

@@ -1739,13 +1739,46 @@ Loose ends for 6.5:
   (three reflowed expressions from 6.2/6.3). CI's format check pins v2, so it should be failing already.
   Left untouched here to keep this commit to 6.4's files.
 
-### 6.5 [ ] Cross-validate every new option and re-measure OALIB coverage
+### 6.5 [x] Cross-validate every new option and re-measure OALIB coverage *(completed 2026-09-16)*
 - **Files:** `test/fortran_reference_tests.jl`, `test/README.md`
 - **What:** Add a comparison case per new boundary condition and per interpolation mode. Re-run the 3.7
   coverage survey and record the before/after fraction of OALIB KRAKEN cases that Kraken.jl can reproduce, so
   the milestone's value is measured rather than asserted.
 - **Acceptance:** All new options pass cross-validation; the coverage delta is recorded in `test/README.md`.
 - **Dependencies:** 6.4
+
+**Outcome.** Every boundary pair and interpolation is compared against `kraken.exe`, and so are seven
+newly readable toolbox decks. The coverage delta is in `test/README.md`. **Two options do not fully
+pass, and both are `src/` defects rather than test gaps**, pinned as `@test_broken` and split out as
+6.7 and 6.8 below. Also touched `test/reference/compare.jl`, which now appends `φ(D) = 0` for a
+vacuum bottom (6.2's loose end). Verified by a per-file run: `fortran_reference_tests.jl` 1137 pass,
+5 broken.
+
+- **Boundary conditions agree to 1e-8 or better** on `pekeris_env` at 100 Hz for all five non-default
+  pairs, with equal mode counts and correlation > 0.99999. The one looser case is a grazing mode at
+  50 Hz (6.1e-5 at `kᵣ = 0.046`).
+- **C-linear and n²-linear are identified, not merely consistent.** `munk_env` cannot show that: at
+  25 Hz its n²-linear solve matched Fortran's n²-linear run to 6.4e-6 and its C-linear run to 6.8e-6.
+  So the suite uses a five-point duct and asserts the whole Julia × Fortran matrix. The diagonal is
+  7e-8, and off the diagonal it is 1.2e-4 or worse.
+- **Reproduction, not just parsing**, is the milestone's criterion, so that is what was measured: a
+  file counts if it parses, `kraken.exe` runs it as shipped, and every compared `kᵣ` agrees within 1e-3.
+  **81 → 97** (parsing went 167 → 211; runnable 81 → 100). `revival`'s reader and this branch's were run
+  over the same tree against the same `src/`.
+- **The Munk decks' 0.994 correlation is pre-existing, not the interpolators.** Their worst modes are the
+  last trapped ones at the half-space cutoff, and the same decks forced to C-linear give the same numbers.
+
+Found, and not fixable in a test task:
+
+- **Perfect bottoms crash at mode cutoffs** (`DomainError` in `richard_extrap`, and one
+  `SingularException` band in inverse iteration). 10/721 and 6/721 frequencies for Pekeris
+  vacuum/rigid over 20–200 Hz, every one at or beside a cutoff. Two toolbox decks hit it. → 6.7.
+- **`:cubic_spline` is a natural spline; KRAKEN's is not-a-knot.** That end condition accounts for all
+  of the 3.1e-4 on the duct: a densely sampled not-a-knot profile matches Fortran's spline run to
+  2.1e-7. → 6.8.
+- **Mode-shape correlation is meaningless past ~1000 modes** in the harness, because the writer caps
+  the receiver grid at 2001 points (`_default_nrd`). `MunkS_500Hz.env` and `DoubleSeamount` read ~0 on
+  both branches. Not a solver issue, and nothing asserts on those decks. Noted rather than tasked.
 
 ### 6.6 [ ] Confirm AD still holds across the new options
 - **Files:** `test/reverse_ad_tests.jl`
@@ -1754,6 +1787,37 @@ Loose ends for 6.5:
   environment per new option, so a later change cannot break gradients silently for a non-default
   configuration.
 - **Acceptance:** Zygote matches ForwardDiff for every boundary condition and interpolation mode.
+- **Dependencies:** 6.5, 6.7, 6.8 — both change code on the differentiable path (the Richardson
+  extrapolation and the spline coefficients), so gradients checked before them would be re-checked after.
+
+### 6.7 [ ] Stop perfect-bottom solves from crashing at mode cutoffs
+- **Files:** `src/kraken_core.jl`, `test/fortran_reference_tests.jl`, `test/integration_tests.jl`
+- **What:** With a vacuum or rigid bottom, a mode whose `kᵣ` sits at or near zero can have its
+  extrapolated `kᵣ²` cross zero, and `richard_extrap` then throws a `DomainError` from `sqrt`. KRAKEN
+  keeps only `kᵣ² > ω²/cHigh²` and drops the rest. Do the equivalent: a mode that is not propagating
+  after extrapolation is not a mode, so truncate it the way `kraken_jl` already truncates `M` when a finer
+  mesh finds fewer modes. Also resolve the `SingularException` from inverse iteration's LU at
+  183.25–183.75 Hz on vacuum/rigid Pekeris (a shift landing exactly on an eigenvalue). The discard is a
+  discrete choice of *which* modes exist, so keep it out of the AD tape the way the mesh-stopping decision
+  already is (`ignore_derivatives`).
+- **Acceptance:** The three `@test_broken` in `"M6.5: every boundary condition against kraken.exe"` pass
+  (switch them to `@test`). The 20–200 Hz, 0.25 Hz sweep from 6.5 has zero failures for both bottoms, and
+  at each former failure frequency the mode count matches `kraken.exe`. `Dickins/Precalc/DickinsK.env`
+  solves. Every existing result is bit-identical (the 6.2 baseline check).
+- **Dependencies:** 6.5
+
+### 6.8 [ ] Match KRAKEN's not-a-knot cubic spline
+- **Files:** `src/kraken_core.jl`, `src/kraken_ad.jl` (if the spline type changes), `test/fortran_reference_tests.jl`
+- **What:** `SampledSSP`'s `:cubic_spline` is `DataInterpolations.CubicSpline`, a natural spline.
+  KRAKEN's `cCubic` calls `CSPLINE` with `IBCBEG = IBCEND = 0`, which `misc/splinec.f90` documents as
+  not-a-knot, so the two solve different problems on a coarsely sampled profile: 3.1e-4 on 6.5's duct.
+  Use the not-a-knot end condition, either through a DataInterpolations option if one exists or with a
+  small spline of our own. `"the spline gap is the end condition"` in the reference suite already has a
+  reference not-a-knot implementation to check against. Keep ForwardDiff working through it, since reverse
+  mode refuses a spline and names ForwardDiff as the way.
+- **Acceptance:** The two spline `@test_broken` in `"M6.5: every SSP interpolation against kraken.exe"`
+  pass (Julia spline vs Fortran `S` < 1e-6 at 50 and 100 Hz), and the 6.3 ForwardDiff checks on a spline
+  profile still pass. The duct matrix's spline row then looks like the C and N rows.
 - **Dependencies:** 6.5
 
 ---

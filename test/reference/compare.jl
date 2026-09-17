@@ -6,7 +6,7 @@ using LinearAlgebra: dot, norm
 # dependency and the AD suite loads it anyway, so there is nothing to gain from deferring it.
 using ForwardDiff
 
-using Kraken: kraken_jl
+using Kraken: kraken_jl, PressureRelease
 
 """
     FortranComparison
@@ -145,13 +145,14 @@ end
 """
     _julia_mode_grid(sol) -> (depths, modes)
 
-The Julia mode shapes with the surface point put back.
+The Julia mode shapes with the pressure-release end points put back.
 
-`get_z_vec` starts each layer's mesh at `z0 + Δz`, so the solver's grid *excludes* `z = 0` and the
-returned `modes` matrix has no row for it. The Fortran `zTab` does include 0. Resampling without
-that point would clamp to the first interior sample — a visibly wrong value right where the mode is
-steepest — so the pressure-release condition `φ(0) = 0` is prepended, which is exact rather than an
-approximation.
+A pressure-release boundary is not a mesh point, because `ψ` is already known there (plan task 6.2).
+So a vacuum surface's grid starts at `Δz` and a vacuum bottom's stops at `D − Δz`, while the Fortran
+`zTab` runs from 0 to `D`. Resampling without those points would clamp to the nearest interior
+sample, which is a visibly wrong value right where the mode is steepest. So `φ = 0` is added at each
+missing end, which is exact rather than an approximation. A rigid or half-space end is already a
+mesh point and gets nothing.
 """
 function _julia_mode_grid(sol)
     z = Float64.(vcat(sol.props.zn_vec...))
@@ -159,6 +160,11 @@ function _julia_mode_grid(sol)
     if isempty(z) || first(z) > 0
         z = vcat(0.0, z)
         modes = vcat(zeros(1, size(modes, 2)), modes)
+    end
+    depth = Float64(sol.env.depth)
+    if sol.env.bottom_bc isa PressureRelease && last(z) < depth
+        z = vcat(z, depth)
+        modes = vcat(modes, zeros(1, size(modes, 2)))
     end
     return z, modes
 end

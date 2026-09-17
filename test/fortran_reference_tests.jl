@@ -969,6 +969,152 @@ const KR = KrakenReference
             end
         end
 
+        # --- Milestone 6 options against kraken.exe (plan task 6.5) ---------------------------
+        #
+        # Measured 2026-09-16; the tables are in test/README.md under "Boundary conditions and SSP
+        # interpolation validated against Fortran".
+
+        @testset "M6.5: every boundary condition against kraken.exe" begin
+            # Pekeris' isovelocity column isolates the boundary rows: nothing else about the problem
+            # differs between the cases. 100 Hz is away from every mode cutoff (see the broken tests
+            # below for why that matters).
+            bc_cases = [
+                (top=RigidBoundary(), bottom=AcousticHalfspace(), freq=100.0, nmodes=5, kr_rtol=1e-8),
+                (top=PressureRelease(), bottom=RigidBoundary(), freq=100.0, nmodes=13, kr_rtol=1e-8),
+                (top=PressureRelease(), bottom=PressureRelease(), freq=100.0, nmodes=13, kr_rtol=1e-7),
+                (top=RigidBoundary(), bottom=RigidBoundary(), freq=100.0, nmodes=14, kr_rtol=1e-8),
+                (top=RigidBoundary(), bottom=PressureRelease(), freq=100.0, nmodes=13, kr_rtol=1e-8),
+                (top=PressureRelease(), bottom=PressureRelease(), freq=50.0, nmodes=6, kr_rtol=1e-8),
+                # Mode 7 is grazing, kᵣ = 0.046 against ω/c = 0.209, so a small absolute error in kᵣ²
+                # reads large relative to kᵣ: 6.1e-5 here, from 1.4e-10 at 100 Hz.
+                (top=PressureRelease(), bottom=RigidBoundary(), freq=50.0, nmodes=7, kr_rtol=2e-4),
+            ]
+            @testset "$(case.top) over $(case.bottom), $(case.freq) Hz" for case in bc_cases
+                env = UnderwaterEnv(pekeris_env()...; top_bc=case.top, bottom_bc=case.bottom)
+                c = KR.compare_with_fortran(env, case.freq)
+                @test c.n_julia == case.nmodes
+                @test c.n_fortran == case.nmodes
+                @test KR.max_kr_reldiff(c) < case.kr_rtol
+                @test KR.min_mode_corr(c) > 0.9999
+            end
+
+            # A curved profile over a perfect bottom, so the boundary rows meet a varying column.
+            c = KR.compare_with_fortran(
+                UnderwaterEnv(munk_env()...; ssp_interp=:n2_linear, bottom_bc=RigidBoundary()), 10.0
+            )
+            @test c.n_julia == c.n_fortran == 66
+            @test KR.max_kr_reldiff(c) < 5e-5
+            @test KR.min_mode_corr(c) > 0.9999
+
+            # A perfect bottom can crash the solve when a mode sits at kᵣ = 0 -- for this 100 m
+            # column the cutoffs are the multiples of c/2D = 7.5 Hz (vacuum) and the odd multiples
+            # of 3.75 Hz (rigid). `richard_extrap` takes the square root of an extrapolated kᵣ² that
+            # has crossed zero; KRAKEN discards such a mode instead. Measured over 20-200 Hz in
+            # 0.25 Hz steps: 10 of 721 frequencies fail for vacuum, 6 for rigid, three of those a
+            # SingularException in inverse iteration at 183.25-183.75 Hz. Every failure is at or
+            # beside a cutoff, but not every cutoff fails. Plan task 6.7.
+            solves(env, freq) =
+                try
+                    kraken_jl(env, freq)
+                    true
+                catch
+                    false
+                end
+            @test_broken solves(UnderwaterEnv(pekeris_env()...; bottom_bc=PressureRelease()), 75.0)
+            @test_broken solves(UnderwaterEnv(pekeris_env()...; bottom_bc=RigidBoundary()), 93.75)
+            @test_broken solves(UnderwaterEnv(pekeris_env()...; bottom_bc=RigidBoundary()), 183.5)
+        end
+
+        @testset "M6.5: every SSP interpolation against kraken.exe" begin
+            # A coarse, strongly curved duct: five samples 50 m apart, so the three interpolants
+            # genuinely disagree between them. On `munk_env`'s 100 m sampling of a smooth profile
+            # they do not -- at 25 Hz the n²-linear solve matched Fortran's n²-linear run to 6.4e-6
+            # and Fortran's *C-linear* run to 6.8e-6, which cannot tell the options apart.
+            duct_z = [0.0, 50.0, 100.0, 150.0, 200.0]
+            duct_c = [1540.0, 1500.0, 1480.0, 1500.0, 1530.0]
+            function duct(z=duct_z, c=duct_c; kw...)
+                n = length(z)
+                ssp = hcat(z, c, zeros(n), fill(1000.0, n), zeros(n), zeros(n))
+                sspHS = [0.0 343.0 0.0 0.00121 0.0 0.0; 200.0 1700.0 0.0 1800.0 0.0 0.0]
+                return UnderwaterEnv(ssp, [0.0 0.0 200.0], sspHS; kw...)
+            end
+            function reldiff(a, b)
+                n = min(length(a), length(b))
+                return maximum(abs.(a[1:n] .- b[1:n]) ./ abs.(b[1:n]))
+            end
+
+            interps = (:c_linear, :n2_linear, :cubic_spline)
+            @testset "$(freq) Hz" for freq in (50.0, 100.0)
+                fortran = Dict(
+                    m => KR._best_fortran_kr(KR.run_fortran_kraken(duct(; ssp_interp=m), freq)) for m in interps
+                )
+                julia = Dict(m => Float64.(real.(kraken_jl(duct(; ssp_interp=m), freq).kr)) for m in interps)
+                for m in interps
+                    @test length(julia[m]) == length(fortran[m])
+                end
+                # The matrix of max rel Δkᵣ, Julia interpolation × Fortran interpolation. Measured:
+                #                 C        N        S       (50 Hz; 100 Hz is within 4x of each entry)
+                #   C-linear   7.7e-8   1.2e-4   1.8e-3
+                #   n²-linear  1.2e-4   7.0e-8   1.8e-3
+                #   spline     1.8e-3   1.7e-3   3.1e-4
+                # C and N are told apart by three orders of magnitude, so a wrong interpolator fails.
+                for m in (:c_linear, :n2_linear)
+                    @test reldiff(julia[m], fortran[m]) < 1e-6
+                    @test all(reldiff(julia[m], fortran[o]) > 1e-5 for o in interps if o !== m)
+                end
+                # The spline agrees only to 3e-4, and the reason is the end condition, not the solver
+                # (checked below): Kraken.jl's spline is DataInterpolations' natural spline, KRAKEN's
+                # `CSPLINE` is called with IBCBEG = IBCEND = 0, which `splinec.f90` documents as
+                # not-a-knot. Plan task 6.8.
+                @test reldiff(julia[:cubic_spline], fortran[:cubic_spline]) < 5e-4
+                @test_broken reldiff(julia[:cubic_spline], fortran[:cubic_spline]) < 1e-6
+                @test all(reldiff(julia[:cubic_spline], fortran[o]) > 1e-3 for o in (:c_linear, :n2_linear))
+            end
+
+            @testset "the spline gap is the end condition" begin
+                # Sample each end condition's spline through the duct at 0.5 m and solve that as a
+                # C-linear profile. The not-a-knot one reproduces Fortran's spline run; the natural
+                # one reproduces Kraken.jl's. Measured at 50 Hz: 2.1e-7 and 2.0e-7, against 3.1e-4
+                # crosswise.
+                function spline_moments(x, y, not_a_knot)
+                    n = length(x)
+                    h = diff(x)
+                    A = zeros(n, n)
+                    b = zeros(n)
+                    for i in 2:(n - 1)
+                        A[i, (i - 1):(i + 1)] = [h[i - 1], 2 * (h[i - 1] + h[i]), h[i]]
+                        b[i] = 6 * ((y[i + 1] - y[i]) / h[i] - (y[i] - y[i - 1]) / h[i - 1])
+                    end
+                    if not_a_knot   # third derivative continuous across x[2] and x[n-1]
+                        A[1, 1:3] = [-1 / h[1], 1 / h[1] + 1 / h[2], -1 / h[2]]
+                        A[n, (n - 2):n] = [-1 / h[n - 2], 1 / h[n - 2] + 1 / h[n - 1], -1 / h[n - 1]]
+                    else            # natural: zero second derivative at both ends
+                        A[1, 1] = A[n, n] = 1
+                    end
+                    return A \ b
+                end
+                function spline_at(x, y, M, xq)
+                    i = clamp(searchsortedlast(x, xq), 1, length(x) - 1)
+                    h, a, b = x[i + 1] - x[i], x[i + 1] - xq, xq - x[i]
+                    return M[i] * a^3 / (6h) +
+                           M[i + 1] * b^3 / (6h) +
+                           (y[i] / h - M[i] * h / 6) * a +
+                           (y[i + 1] / h - M[i + 1] * h / 6) * b
+                end
+                dense = collect(0.0:0.5:200.0)
+                sampled(not_a_knot) =
+                    let M = spline_moments(duct_z, duct_c, not_a_knot)
+                        Float64.(
+                            real.(kraken_jl(duct(dense, [spline_at(duct_z, duct_c, M, z) for z in dense]), 50.0).kr)
+                        )
+                    end
+                fortran_spline = KR._best_fortran_kr(KR.run_fortran_kraken(duct(; ssp_interp=:cubic_spline), 50.0))
+                julia_spline = Float64.(real.(kraken_jl(duct(; ssp_interp=:cubic_spline), 50.0).kr))
+                @test reldiff(sampled(true), fortran_spline) < 1e-6
+                @test reldiff(sampled(false), julia_spline) < 1e-6
+            end
+        end
+
         # --- AD gradients against Fortran (plan task 4.7) ------------------------------------
         #
         # Milestone 4's gradients are already checked against ForwardDiff and FiniteDiff in
@@ -1533,6 +1679,50 @@ const KR = KrakenReference
                         end
                         @test err isa KR.UnsupportedEnvFeature
                         @test err.feature == "power-law attenuation"
+                    end
+                end
+
+                @testset "M6.5: the toolbox's newly readable options against kraken.exe" begin
+                    # Every case here was refused by the reader before Milestone 6. CLOW/CHIGH come
+                    # from the file, because several decks narrow the band on purpose: MunkK1525 and
+                    # gulf_rd stop at 1525 m/s, so Fortran reports only the slow modes while
+                    # Kraken.jl finds every trapped one, and the leading modes are what is compared.
+                    #
+                    # The Munk decks' worst modes are the last trapped ones, 99-102 at the half-space
+                    # cutoff. That is not the interpolator: forcing C-linear on both sides gives the
+                    # same 6.1e-5 and 0.9944. wedge.env's worst are its grazing modes near kᵣ = 0
+                    # (mode 59, kᵣ = 0.0147 at ω/c = 0.105), where relative error is inflated.
+                    toolbox_options = [
+                        (file="TLslices/pekeris.env", nmodes=44, kr_rtol=1e-6, corr=0.9999),
+                        (file="Noise/Pekeris/pekeris.env", nmodes=26, kr_rtol=1e-4, corr=0.9999),
+                        (file="MunkLeaky/MunkK1525.env", nmodes=28, kr_rtol=1e-5, corr=0.9999),
+                        (file="Gulf/gulf_rd.env", nmodes=63, kr_rtol=1e-5, corr=0.9999),
+                        (file="Munk/MunkK.env", nmodes=102, kr_rtol=2e-4, corr=0.99),
+                        (file="Munk/MunkS.env", nmodes=102, kr_rtol=2e-4, corr=0.99),
+                        (file="wedge/wedge.env", nmodes=59, kr_rtol=1e-2, corr=0.999),
+                    ]
+                    @testset "$(case.file)" for case in toolbox_options
+                        path = joinpath(oalib_tree, case.file)
+                        if !isfile(path)
+                            @info "Not present in this Acoustics Toolbox checkout — skipped." path
+                            continue
+                        end
+                        parsed = KR.read_env_file(path)
+                        c = KR.compare_with_fortran(parsed.env, parsed.freqs[1]; clow=parsed.clow, chigh=parsed.chigh)
+                        @test c.n_fortran == case.nmodes
+                        @test c.n_julia >= c.n_fortran
+                        @test KR.max_kr_reldiff(c) < case.kr_rtol
+                        @test KR.min_mode_corr(c) > case.corr
+                    end
+                    # What each case exercises, so a change in how the reader maps them is caught here.
+                    modes_of(file) =
+                        let e = KR.read_env_file(joinpath(oalib_tree, file)).env
+                            (e.c.mode, e.bottom_bc)
+                        end
+                    if isfile(joinpath(oalib_tree, "wedge/wedge.env"))
+                        @test modes_of("Munk/MunkK.env") == (:n2_linear, AcousticHalfspace())
+                        @test modes_of("Munk/MunkS.env") == (:cubic_spline, AcousticHalfspace())
+                        @test modes_of("wedge/wedge.env") == (:c_linear, PressureRelease())
                     end
                 end
 
