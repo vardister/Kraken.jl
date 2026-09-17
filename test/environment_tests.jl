@@ -336,6 +336,28 @@ end
     spline_loss(cvec) = sum(soundspeed(SampledSSP(z, cvec, :cubic_spline), [45.0]))
     @test_throws ArgumentError Zygote.gradient(spline_loss, c)
     @test ForwardDiff.gradient(spline_loss, c)[3] != 0  # forward mode goes straight through
+
+    # The spline is KRAKEN's not-a-knot one (task 6.8), not a natural spline. Not-a-knot reproduces any
+    # cubic exactly, which a natural spline cannot unless the cubic has zero curvature at both ends;
+    # with three points it is the parabola through them and with two the line, as in `CSPLINE`.
+    cubic(x) = 1500 - 0.3x + 0.004x^2 - 2e-5x^3
+    tk = [0.0, 13.0, 40.0, 55.0, 100.0]
+    zq_all = collect(range(0.0, 100.0; length=401))
+    @test soundspeed(SampledSSP(tk, cubic.(tk), :cubic_spline), zq_all) ≈ cubic.(zq_all) rtol = 1e-14
+    parabola(x) = 1500 + 0.2x - 0.003x^2
+    t3 = [0.0, 30.0, 100.0]
+    @test soundspeed(SampledSSP(t3, parabola.(t3), :cubic_spline), zq_all) ≈ parabola.(zq_all) rtol = 1e-14
+    @test soundspeed(SampledSSP([0.0, 100.0], [1500.0, 1520.0], :cubic_spline), 25.0) ≈ 1505.0
+    @test profiles[:cubic_spline].f isa Kraken.NotAKnotSpline
+    @test soundspeed(profiles[:cubic_spline], [-10.0, 150.0]) == [c[1], c[end]]  # constant extrapolation
+
+    # ForwardDiff through the knot depths, against central differences: the spline's coefficients are
+    # generic in the element type, and a depth enters every one of them.
+    knot_loss(zvec) = soundspeed(SampledSSP(zvec, c, :cubic_spline), 45.0)
+    h = 1e-6
+    bump(k) = h .* (eachindex(z) .== k)
+    fd_knot = [(knot_loss(z .+ bump(k)) - knot_loss(z .- bump(k))) / 2h for k in eachindex(z)]
+    @test ForwardDiff.gradient(knot_loss, z) ≈ fd_knot rtol = 1e-5
 end
 
 @testitem "UnderwaterEnv Construction" begin

@@ -359,10 +359,12 @@ its *C-linear* run to 6.8e-6. The suite uses a coarse duct instead, five samples
 |---|---|---|---|
 | `:c_linear` | **7.7e-8** | 1.2e-4 | 1.8e-3 |
 | `:n2_linear` | 1.2e-4 | **7.0e-8** | 1.8e-3 |
-| `:cubic_spline` | 1.8e-3 | 1.7e-3 | **3.1e-4** |
+| `:cubic_spline` | 1.8e-3 | 1.8e-3 | **5.2e-9** |
 
 C-linear and n²-linear are told apart by three orders of magnitude, so a wrong interpolator fails.
-100 Hz is within 4× of every entry. Asserted: diagonal < 1e-6 and off-diagonal > 1e-5 for C and N.
+100 Hz is within 4× of every entry (the spline diagonal is 9.6e-9 there). Asserted: diagonal < 1e-6 for
+all three, off-diagonal > 1e-5 for C and N and > 1e-3 for the spline. The spline diagonal was 3.1e-4
+until task 6.8 — see below.
 
 **The toolbox's newly readable decks** (CLOW/CHIGH from the file; asserted in
 `"M6.5: the toolbox's newly readable options against kraken.exe"`):
@@ -374,7 +376,7 @@ C-linear and n²-linear are told apart by three orders of magnitude, so a wrong 
 | `MunkLeaky/MunkK1525.env` | N | 50 | 28 | 3.2e-6 | 0.9999992 | 1e-5 / 0.9999 |
 | `Gulf/gulf_rd.env` | N | 50 | 63 | 1.1e-6 | 0.9999929 | 1e-5 / 0.9999 |
 | `Munk/MunkK.env` | N | 50 | 102 | 6.1e-5 | 0.9943636 | 2e-4 / 0.99 |
-| `Munk/MunkS.env` | S | 50 | 102 | 5.4e-5 | 0.9938562 | 2e-4 / 0.99 |
+| `Munk/MunkS.env` | S | 50 | 102 | 6.1e-5 | 0.9944935 | 2e-4 / 0.99 |
 | `wedge/wedge.env` | vacuum bottom | 25 | 59 | 4.2e-3 | 0.9998710 | 1e-2 / 0.999 |
 
 The Munk decks' worst modes are 99–102, the last trapped modes at the half-space cutoff, and **it is
@@ -385,8 +387,8 @@ slow modes while Kraken.jl finds every trapped one; the leading modes are what i
 
 #### Two defects this found
 
-Both were in `src/`, outside a test task's reach, and became plan tasks 6.7 and 6.8. A defect still
-open is a `@test_broken` that reports "Unexpected Pass" the moment it is fixed.
+Both were in `src/`, outside a test task's reach, and became plan tasks 6.7 and 6.8. Both are fixed,
+and the `@test_broken` that pinned them are now plain `@test`.
 
 - **Fixed in 6.7 — a perfect bottom could crash the solve when a mode sat at `kᵣ = 0`.** `richard_extrap` takes the
   square root of an extrapolated `kᵣ²` that has crossed zero (`DomainError`); KRAKEN discards such a
@@ -408,13 +410,19 @@ open is a `@test_broken` that reports "Unexpected Pass" the moment it is fixed.
   `CHIGH = 10000` cuts off `kᵣ < 0.1445`). Its modes 1–264, trapped above the sediment, agree to
   3e-8; beyond, they reach into 1000 m of 0.5 dB/λ sediment and drift to 1.6e-3 in `kᵣ`. That is the
   lossy-medium limit of 5.3/5.5, not this: with the attenuation zeroed, all 1212 agree to 2.6e-6.
-- **`:cubic_spline` is a different spline from KRAKEN's.** Kraken.jl uses DataInterpolations'
+- **Fixed in 6.8 — `:cubic_spline` was a different spline from KRAKEN's.** Kraken.jl used DataInterpolations'
   *natural* spline; `cCubic` calls `CSPLINE` with `IBCBEG = IBCEND = 0`, which `misc/splinec.f90`
   documents as *not-a-knot*. On the duct that is the whole 3.1e-4. Sampling each end condition's
   spline at 0.5 m and solving it as a C-linear profile, the not-a-knot one matches Fortran's spline
   run to 2.1e-7 and the natural one matches Kraken.jl's to 2.0e-7. `"the spline gap is the end
-  condition"` asserts both, so whoever fixes it has the target. On a finely sampled profile the two
-  end conditions barely differ (`Munk/MunkS.env`, splined, agrees to 5.4e-5; its C-linear control to 6.1e-5).
+  condition"` asserted both. On a finely sampled profile the two end conditions barely differ
+  (`Munk/MunkS.env`, splined, agreed to 5.4e-5; its C-linear control to 6.1e-5).
+
+  After 6.8 the spline is `NotAKnotSpline`, a line-for-line transcription of `CSPLINE` with
+  `IBCBEG = IBCEND = 0` (two points give the line, three the parabola). The duct's spline diagonal is
+  5.2e-9 at 50 Hz and 9.6e-9 at 100 Hz, and the sampled not-a-knot profile now matches Kraken.jl's own
+  spline solve as well as Fortran's. `MunkS.env` reads 6.1e-5 / 0.99449, the same as its C-linear
+  control, so what remains there is the cutoff modes, not the interpolator.
 
 ### AD through a lossy solve (plan task 5.4)
 

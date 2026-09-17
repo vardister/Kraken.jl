@@ -1056,26 +1056,28 @@ const KR = KrakenReference
                 #                 C        N        S       (50 Hz; 100 Hz is within 4x of each entry)
                 #   C-linear   7.7e-8   1.2e-4   1.8e-3
                 #   n²-linear  1.2e-4   7.0e-8   1.8e-3
-                #   spline     1.8e-3   1.7e-3   3.1e-4
+                #   spline     1.8e-3   1.8e-3   5.2e-9   (3.1e-4 on the diagonal before task 6.8)
                 # C and N are told apart by three orders of magnitude, so a wrong interpolator fails.
                 for m in (:c_linear, :n2_linear)
                     @test reldiff(julia[m], fortran[m]) < 1e-6
                     @test all(reldiff(julia[m], fortran[o]) > 1e-5 for o in interps if o !== m)
                 end
-                # The spline agrees only to 3e-4, and the reason is the end condition, not the solver
-                # (checked below): Kraken.jl's spline is DataInterpolations' natural spline, KRAKEN's
-                # `CSPLINE` is called with IBCBEG = IBCEND = 0, which `splinec.f90` documents as
-                # not-a-knot. Plan task 6.8.
-                @test reldiff(julia[:cubic_spline], fortran[:cubic_spline]) < 5e-4
-                @test_broken reldiff(julia[:cubic_spline], fortran[:cubic_spline]) < 1e-6
+                # Until task 6.8 the spline agreed only to 3.1e-4, because Kraken.jl used
+                # DataInterpolations' natural spline and KRAKEN's `CSPLINE` is called with
+                # IBCBEG = IBCEND = 0, which `splinec.f90` documents as not-a-knot (checked below).
+                # `NotAKnotSpline` transcribes `CSPLINE`, so the spline row now looks like the others:
+                # 5.2e-9 at 50 Hz and 9.6e-9 at 100 Hz.
+                @test reldiff(julia[:cubic_spline], fortran[:cubic_spline]) < 1e-6
                 @test all(reldiff(julia[:cubic_spline], fortran[o]) > 1e-3 for o in (:c_linear, :n2_linear))
             end
 
             @testset "the spline gap is the end condition" begin
                 # Sample each end condition's spline through the duct at 0.5 m and solve that as a
-                # C-linear profile. The not-a-knot one reproduces Fortran's spline run; the natural
-                # one reproduces Kraken.jl's. Measured at 50 Hz: 2.1e-7 and 2.0e-7, against 3.1e-4
-                # crosswise.
+                # C-linear profile. The not-a-knot one reproduces both Fortran's spline run and, since
+                # task 6.8, Kraken.jl's; the natural one (what Kraken.jl used before) reproduces
+                # neither. Measured at 50 Hz before 6.8: 2.1e-7 for the matching pairs, 3.1e-4
+                # crosswise. This independent implementation is what `NotAKnotSpline` is checked
+                # against.
                 function spline_moments(x, y, not_a_knot)
                     n = length(x)
                     h = diff(x)
@@ -1111,7 +1113,8 @@ const KR = KrakenReference
                 fortran_spline = KR._best_fortran_kr(KR.run_fortran_kraken(duct(; ssp_interp=:cubic_spline), 50.0))
                 julia_spline = Float64.(real.(kraken_jl(duct(; ssp_interp=:cubic_spline), 50.0).kr))
                 @test reldiff(sampled(true), fortran_spline) < 1e-6
-                @test reldiff(sampled(false), julia_spline) < 1e-6
+                @test reldiff(sampled(true), julia_spline) < 1e-6
+                @test reldiff(sampled(false), julia_spline) > 1e-4
             end
         end
 

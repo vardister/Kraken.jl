@@ -210,7 +210,8 @@ ssp_value_cotangent(mode::Symbol, c, Δu) = mode === :n2_linear ? Δu .* (-2 ./ 
 # A cubic spline's coefficients solve a tridiagonal system over *all* the knots, so its derivative
 # w.r.t. a value or a knot depth is not the local expression `linear_interp_partials` returns, and
 # there is no rule for it here. Reverse mode refuses rather than returning the linear interpolant's
-# derivative for a spline's value. Forward mode goes straight through `DataInterpolations`.
+# derivative for a spline's value. Forward mode goes straight through `NotAKnotSpline`, which is
+# generic in its element type.
 function assert_reverse_mode_interp(mode::Symbol)
     mode === :cubic_spline && throw(
         ArgumentError(

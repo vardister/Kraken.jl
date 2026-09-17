@@ -76,7 +76,8 @@ abstract type SampledSSP <: SoundSpeedProfile end
 #   * `:c_linear` (`C`) — `c` linear in `z`. The default, and what this package has always done.
 #   * `:n2_linear` (`N`) — `1/c²` linear in `z`, i.e. `c = 1/√((1-R)·n²ₖ + R·n²ₖ₊₁)` across a segment,
 #     which is `n2Linear` in `sspMod.f90` exactly.
-#   * `:cubic_spline` (`S`) — a cubic spline through the samples.
+#   * `:cubic_spline` (`S`) — the not-a-knot cubic spline `cCubic` builds with `CSPLINE`; see
+#     [`NotAKnotSpline`](@ref).
 #
 # Density and attenuation stay linear under every option. That matches `cLinear`/`n2Linear`, which
 # interpolate `rho` linearly whatever the sound speed does, but *not* `cCubic`, which splines density
@@ -102,8 +103,113 @@ _c_from_n2(v::Number) = 1 / sqrt(v)
 _c_from_n2(v) = 1 ./ sqrt.(v)
 
 function ssp_interp_ctor(mode::Symbol)
-    return mode === :cubic_spline ? DataInterpolations.CubicSpline : DataInterpolations.LinearInterpolation
+    return mode === :cubic_spline ? NotAKnotSpline : DataInterpolations.LinearInterpolation
 end
+
+"""
+    NotAKnotSpline(u, t; extrapolation=ExtrapolationType.Constant)
+
+The cubic spline through `(t[i], u[i])` with de Boor's *not-a-knot* end condition: the third derivative
+is continuous across `t[2]` and `t[n-1]`, so the first two and the last two polynomial pieces coincide.
+Two points give the line through them and three the parabola. Outside `[t[1], t[n]]` it returns the end
+value, like the linear interpolants it stands beside.
+
+This is the spline `cCubic` in `sspMod.f90` tabulates, and it is here rather than
+`DataInterpolations.CubicSpline` because that one is a *natural* spline (zero curvature at both ends).
+The two differ near the ends of a coarsely sampled profile by enough to move `kᵣ` by 3e-4 (task 6.5).
+The coefficients are `CSPLINE` in `misc/splinec.f90` with `IBCBEG = IBCEND = 0`, transcribed line for
+line, and are generic in the element type so that ForwardDiff goes through both the values and the knots.
+"""
+struct NotAKnotSpline{Tt,T}
+    t::Vector{Tt}
+    c1::Vector{T}   # on [t[i], t[i+1]], with h = z - t[i]:
+    c2::Vector{T}   #     c1[i] + h * (c2[i] + h * (c3[i] / 2 + h * c4[i] / 6))
+    c3::Vector{T}
+    c4::Vector{T}
+end
+
+function NotAKnotSpline(u::AbstractVector, t::AbstractVector; extrapolation=ExtrapolationType.Constant)
+    extrapolation == ExtrapolationType.Constant ||
+        throw(ArgumentError("NotAKnotSpline only extrapolates as a constant, not $extrapolation"))
+    n = length(t)
+    n == length(u) || throw(DimensionMismatch("$(length(u)) values for $n knots"))
+    n >= 2 || throw(ArgumentError("A spline needs at least two points, got $n"))
+    T = typeof(one(eltype(u)) / one(eltype(t)))
+    c1 = collect(T, u)
+    c2, c3, c4 = zeros(T, n), zeros(T, n), zeros(T, n)
+    L = n - 1
+
+    for m in 2:n
+        c3[m] = t[m] - t[m - 1]
+        c4[m] = (c1[m] - c1[m - 1]) / c3[m]
+    end
+
+    # Beginning boundary condition, IBCBEG = 0 (not-a-knot).
+    if n > 2
+        c4[1] = c3[3]
+        c3[1] = c3[2] + c3[3]
+        c2[1] = ((c3[2] + 2 * c3[1]) * c4[2] * c3[3] + c3[2]^2 * c4[3]) / c3[1]
+    else
+        c4[1] = 1
+        c3[1] = 1
+        c2[1] = 2 * c4[2]
+    end
+
+    # Forward elimination through the interior knots.
+    for m in 2:L
+        g = -c3[m + 1] / c4[m - 1]
+        c2[m] = g * c2[m - 1] + 3 * (c3[m] * c4[m + 1] + c3[m + 1] * c4[m])
+        c4[m] = g * c3[m - 1] + 2 * (c3[m] + c3[m + 1])
+    end
+
+    # Ending boundary condition, IBCEND = 0 (not-a-knot).
+    if n == 2
+        c2[n] = c4[n]
+    else
+        if n == 3
+            c2[n] = 2 * c4[n]
+            c4[n] = 1
+            g = -1 / c4[n - 1]
+        else
+            g = c3[n - 1] + c3[n]
+            c2[n] = ((c3[n] + 2 * g) * c4[n] * c3[n - 1] + c3[n]^2 * (c1[n - 1] - c1[n - 2]) / c3[n - 1]) / g
+            g = -g / c4[n - 1]
+            c4[n] = c3[n - 1]
+        end
+        c4[n] = g * c3[n - 1] + c4[n]
+        c2[n] = (g * c2[n - 1] + c2[n]) / c4[n]
+    end
+
+    # Back substitution: c2 is now the slope at every knot.
+    for j in L:-1:1
+        c2[j] = (c2[j] - c3[j] * c2[j + 1]) / c4[j]
+    end
+
+    # Curvature and its rate of change on each interval.
+    for i in 2:n
+        dtau = c3[i]
+        divdf1 = (c1[i] - c1[i - 1]) / dtau
+        divdf3 = c2[i - 1] + c2[i] - 2 * divdf1
+        c3[i - 1] = 2 * (divdf1 - c2[i - 1] - divdf3) / dtau
+        c4[i - 1] = (divdf3 / dtau) * (6 / dtau)
+    end
+
+    return NotAKnotSpline(collect(t), c1, c2, c3, c4)
+end
+
+function (s::NotAKnotSpline)(z::Number)
+    t = s.t
+    z <= t[1] && return s.c1[1]
+    z >= t[end] && return s.c1[end]
+    # The interval `cCubic` picks: the first knot at or beyond `z` closes it, so a query on a knot
+    # evaluates the piece to its left.
+    i = searchsortedfirst(t, z) - 1
+    h = z - t[i]
+    return s.c1[i] + h * (s.c2[i] + h * (s.c3[i] / 2 + h * s.c4[i] / 6))
+end
+(s::NotAKnotSpline)(z::AbstractVector) = map(s, z)
+
+Base.show(io::IO, s::NotAKnotSpline) = print(io, "NotAKnotSpline(", length(s.t), " knots)")
 
 """
 Sound speed profile based on measurements at discrete depths `z` in meters and sound speed `c` in m/s.

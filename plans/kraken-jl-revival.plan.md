@@ -1847,7 +1847,7 @@ Not caused by this, but surfaced by `DickinsK.env` solving at all:
 - **Mode counts differ on decks that narrow `CHIGH`.** `DickinsK.env` sets 10000 m/s, so `kraken.exe`
   drops `kᵣ < ω/cHigh` = 0.1445 (1212 modes) where Kraken.jl keeps all 1226. The leading modes match.
 
-### 6.8 [ ] Match KRAKEN's not-a-knot cubic spline
+### 6.8 [x] Match KRAKEN's not-a-knot cubic spline *(completed 2026-09-16)*
 - **Files:** `src/kraken_core.jl`, `src/kraken_ad.jl` (if the spline type changes), `test/fortran_reference_tests.jl`
 - **What:** `SampledSSP`'s `:cubic_spline` is `DataInterpolations.CubicSpline`, a natural spline.
   KRAKEN's `cCubic` calls `CSPLINE` with `IBCBEG = IBCEND = 0`, which `misc/splinec.f90` documents as
@@ -1860,6 +1860,31 @@ Not caused by this, but surfaced by `DickinsK.env` solving at all:
   pass (Julia spline vs Fortran `S` < 1e-6 at 50 and 100 Hz), and the 6.3 ForwardDiff checks on a spline
   profile still pass. The duct matrix's spline row then looks like the C and N rows.
 - **Dependencies:** 6.5
+
+**Outcome.** DataInterpolations has no not-a-knot option in any installed version, so `:cubic_spline` is
+now `NotAKnotSpline` in `src/kraken_core.jl`, a line-for-line transcription of `CSPLINE` in
+`misc/splinec.f90` with `IBCBEG = IBCEND = 0`. It keeps `CSPLINE`'s special cases: two points give the
+line and three the parabola. It evaluates the piece `cCubic` picks, and outside the knots it returns the
+end value like the linear interpolants. `src/kraken_ad.jl` changed only a comment. Measured:
+
+- **The duct's spline diagonal is 5.2e-9 at 50 Hz and 9.6e-9 at 100 Hz**, down from 3.1e-4. That is
+  tighter than the C and N diagonals (7e-8 to 3e-7), and the off-diagonal is unchanged at ~1.8e-3. Both
+  `@test_broken` are `@test`, and `"the spline gap is the end condition"` now also asserts that the
+  independent not-a-knot reference matches Kraken.jl's own spline solve (and that the natural one does
+  not).
+- **`Munk/MunkS.env` reads 6.1e-5 / 0.99449** (was 5.4e-5 / 0.99386), the same as its C-linear control,
+  so what remains is 6.5's cutoff modes, not the interpolator.
+- **ForwardDiff goes through values and knot depths.** The coefficients are generic in the element
+  type; the knot-depth gradient matches central differences to ~1e-7. Reverse mode still refuses a
+  spline, as 6.3 decided. New assertions in `"M6.3: SSP interpolation modes"`: not-a-knot reproduces a
+  cubic exactly (a natural spline cannot), a three-point parabola and a two-point line, constant
+  extrapolation, and the knot-depth gradient.
+- **Verified by per-file runs** (not one `Pkg.test()`), with `KRAKEN_OALIB_TESTS` set: environment +
+  integration 1442, Fortran reference 1141 with 0 broken (was 1140 + 2 broken), numerical methods 96,
+  forward AD 48, reverse AD 183 + 84 + 50 + 42. Format check clean with JuliaFormatter 2.13.
+
+Not touched: `cCubic` also splines density, and Kraken.jl keeps it linear (6.3's note). Splining per
+medium, which `Munk/MunkB_ray.env` would need, is still refused.
 
 ---
 
