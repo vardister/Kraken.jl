@@ -1640,7 +1640,7 @@ Loose ends for later tasks:
   *water* speed; KRAKEN uses its own `NG`. Richardson extrapolation makes this a cost question, not an
   accuracy one.
 
-### 6.3 [ ] Implement n²-linear and cubic-spline SSP interpolation
+### 6.3 [x] Implement n²-linear and cubic-spline SSP interpolation *(completed 2026-09-16)*
 - **Files:** `src/kraken_core.jl`
 - **What:** Add an interpolation-mode field to `SampledSSP` supporting c-linear (current), n²-linear (linear
   in `1/c²`), and cubic spline via `DataInterpolations`. The mode must flow through from the `.env` top-options
@@ -1648,6 +1648,40 @@ Loose ends for later tasks:
 - **Acceptance:** All three modes agree at the SSP sample depths and differ between them; existing tests
   unchanged under the default.
 - **Dependencies:** 6.2
+
+**Outcome.** `SampledSSP1D` gained a `mode::Symbol` field; `SampledSSP(depth, c, mode)` and
+`UnderwaterEnv(...; ssp_interp=mode)` select it, `SSP_INTERPOLATION_CHARS` maps `C`/`N`/`S` onto
+`:c_linear`/`:n2_linear`/`:cubic_spline` for 6.4's reader, and `DEFAULT_SSP_INTERPOLATION = :c_linear`.
+Also touched `src/kraken_ad.jl` and `ext/KrakenMooncakeExt.jl`. Measured: all 14 baseline cases still
+compare `==` against the pre-6.2 serialized baseline, and at 45 m on a four-point profile the three modes
+read 1487.5 / 1487.44 / 1484.54 m/s — agreeing at every sample depth and differing between them.
+
+- **n²-linear is a transform on both sides of the interpolant, not another interpolant.** The stored
+  interpolant carries `n² = 1/c²` and `soundspeed` returns `v^(-1/2)`, which is `n2Linear` in
+  `sspMod.f90` (`c = 1/√((1-R)·n²ₜₒₚ + R·n²_bot)`) exactly. The `c` field still holds sound speeds, so
+  the constructor rule is unchanged, but the `soundspeed` rrule chains through `dc/dv = -½v^(-3/2)`
+  on the way in and `dn²ᵢ/dcᵢ = -2/cᵢ³` on the way out. Both are pinned against ForwardDiff — w.r.t.
+  values *and* knot depths — because a wrong chain here is a wrong number, not an error.
+- **Cubic spline is limited to single-medium profiles, and refuses otherwise.** This package spells a
+  layer interface as two samples one `eps` apart, and one spline through the whole column returns
+  **~1e17** there (measured), not merely an inexact value. KRAKEN splines each medium separately
+  (`CSPLINE` over `ILoc+1 … NPts(Medium)`); doing the same needs a per-medium profile type that does
+  not exist yet, so the constructor throws with that explanation instead.
+- **Reverse mode refuses a spline rather than answering wrongly.** A spline's coefficients solve a
+  system over every knot, so `linear_interp_partials` does not describe its derivative. The rrule
+  throws and names ForwardDiff, which traces `DataInterpolations` straight through (verified for both
+  a value and a knot depth).
+- **Density and attenuation stay linear under every mode.** That matches `cLinear`/`n2Linear`, which
+  interpolate `rho` linearly whatever `c` does — but **not** `cCubic`, which splines density too. Only
+  visible for a spline profile whose density varies inside a medium.
+
+Loose ends for 6.4/6.5:
+
+- **The writer's `DEFAULT_TOPOPT` is still `"CVW"`,** which is now a real choice rather than a
+  limitation: it must follow `env.c.mode` the way column 3 already follows `env.atten_units`.
+- **`DataInterpolations.CubicSpline` is a natural spline; KRAKEN's `CSPLINE` uses `IBCBeg = IBCEnd = 0`,
+  de Boor's not-a-knot end condition.** Expect the two to disagree near the ends of a splined profile —
+  that is a genuine difference to measure in 6.5, not a bug to hunt.
 
 ### 6.4 [ ] Wire options through the `.env` reader and writer
 - **Files:** `test/reference/env_reader.jl`, `test/reference/env_writer.jl`

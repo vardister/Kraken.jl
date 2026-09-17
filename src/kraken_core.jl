@@ -16,6 +16,7 @@ using DocStringExtensions
 # Exports
 export SampledSSP, SampledDensity, SampledAttenuation
 export soundspeed, maxsoundspeed, density, attenuation
+export SSP_INTERPOLATION_CHARS, DEFAULT_SSP_INTERPOLATION
 export attenuation_nepers_per_m, ATTENUATION_UNIT_CHARS, DEFAULT_ATTENUATION_UNITS, is_lossy
 export BoundaryCondition, PressureRelease, RigidBoundary, AcousticHalfspace
 export UnderwaterEnv, AcousticProblemProperties, UnderwaterEnvFORTRAN
@@ -66,33 +67,106 @@ export modal_attenuation, complex_soundspeed, add_attenuation
 abstract type SoundSpeedProfile end
 abstract type SampledSSP <: SoundSpeedProfile end
 
+### SSP interpolation
+#
+# KRAKEN's first top-option character selects how the tabulated sound speeds are interpolated between
+# their sample depths, and the choice is not cosmetic: `C` and `N` give genuinely different
+# eigenvalues for the same table. The three supported here are transcribed from `sspMod.f90`:
+#
+#   * `:c_linear` (`C`) — `c` linear in `z`. The default, and what this package has always done.
+#   * `:n2_linear` (`N`) — `1/c²` linear in `z`, i.e. `c = 1/√((1-R)·n²ₖ + R·n²ₖ₊₁)` across a segment,
+#     which is `n2Linear` in `sspMod.f90` exactly.
+#   * `:cubic_spline` (`S`) — a cubic spline through the samples.
+#
+# Density and attenuation stay linear under every option. That matches `cLinear`/`n2Linear`, which
+# interpolate `rho` linearly whatever the sound speed does, but *not* `cCubic`, which splines density
+# too — a deviation that only shows up for a spline profile whose density varies within a medium.
+
+"""
+The KRAKEN top-option character for each SSP interpolation, as read from a `.env` file's first
+option character. See [`SampledSSP`](@ref) for what each one means.
+"""
+const SSP_INTERPOLATION_CHARS = Dict('C' => :c_linear, 'N' => :n2_linear, 'S' => :cubic_spline)
+
+"""
+The SSP interpolation used when an environment does not name one: `:c_linear`, which is what every
+result in this package predates the option and was computed with.
+"""
+const DEFAULT_SSP_INTERPOLATION = :c_linear
+
+# What gets interpolated, and how the interpolated quantity becomes a sound speed again. For
+# `:n2_linear` the interpolant carries `n² = 1/c²`; the other two carry `c` itself.
+ssp_interp_values(mode::Symbol, c) = mode === :n2_linear ? 1 ./ c .^ 2 : c
+ssp_from_interp(mode::Symbol, v) = mode === :n2_linear ? _c_from_n2(v) : v
+_c_from_n2(v::Number) = 1 / sqrt(v)
+_c_from_n2(v) = 1 ./ sqrt.(v)
+
+ssp_interp_ctor(mode::Symbol) =
+    mode === :cubic_spline ? DataInterpolations.CubicSpline : DataInterpolations.LinearInterpolation
+
 """
 Sound speed profile based on measurements at discrete depths `z` in meters and sound speed `c` in m/s.
+
+`mode` is the interpolation between samples — see [`SampledSSP`](@ref). `f` interpolates whatever that
+mode interpolates, which for `:n2_linear` is `1/c²` rather than `c`; [`soundspeed`](@ref) is the only
+thing that should read it.
 """
 struct SampledSSP1D{T1,T2,T3} <: SampledSSP
     z::Vector{T1}
     c::Vector{T2}
     f::T3
-    function SampledSSP1D(depth, c, f)
-        interp = f(c, depth; extrapolation=ExtrapolationType.Constant)
-        return new{eltype(depth),eltype(c),typeof(interp)}(-depth, c, interp)
+    mode::Symbol
+    function SampledSSP1D(depth, c, f, mode::Symbol)
+        interp = f(ssp_interp_values(mode, c), depth; extrapolation=ExtrapolationType.Constant)
+        return new{eltype(depth),eltype(c),typeof(interp)}(-depth, c, interp, mode)
     end
 end
 
+SampledSSP1D(depth, c, f) = SampledSSP1D(depth, c, f, DEFAULT_SSP_INTERPOLATION)
+
 """
     SampledSSP(depth, c)
-    SampledSSP(depth, c, type::Symbol)
+    SampledSSP(depth, c, mode::Symbol)
 
-Constructor for `SampledSSP1D`.
+Create a sound speed profile from measurements at discrete depths `depth` in meters and sound speeds
+`c` in m/s.
 
-    Create a sound speed profile based on measurements at discrete depths `z` in meters and sound speed `c` in m/s.
-    Two options for interpolation are available: `:linear` and `:smooth`.
+`mode` is one of `:c_linear` (the default — `c` linear in depth), `:n2_linear` (`1/c²` linear in
+depth) or `:cubic_spline`. All three agree at the sample depths and differ between them.
+
+`:cubic_spline` requires strictly increasing depths, so it is limited to a single medium: this package
+spells a layer interface as two samples at (numerically) the same depth, and one spline through the
+whole column would be wildly wrong there rather than merely inexact. KRAKEN splines each medium
+separately; doing the same here needs a per-medium profile this type does not have yet.
 """
 SampledSSP(depth, c) = SampledSSP1D(depth, c, DataInterpolations.LinearInterpolation)
-SampledSSP(depth, c, type::Symbol) = SampledSSP1D(depth, c, type)
+function SampledSSP(depth, c, mode::Symbol)
+    haskey(SSP_INTERPOLATION_VALUES, mode) || throw(
+        ArgumentError(
+            "Unknown SSP interpolation $(repr(mode)); expected one of $(sort(collect(keys(SSP_INTERPOLATION_VALUES))))",
+        ),
+    )
+    if mode === :cubic_spline
+        tol = 100 * eps(float(maximum(abs, depth)))
+        k = findfirst(i -> depth[i + 1] <= depth[i] + tol, eachindex(depth)[1:(end - 1)])
+        k === nothing || throw(
+            ArgumentError(
+                "Cubic-spline interpolation needs strictly increasing depths, but this profile repeats " *
+                "$(depth[k]) m — the layer interface between media. KRAKEN splines each medium separately; " *
+                "Kraken.jl builds one interpolant for the whole column, so :cubic_spline is limited to " *
+                "single-medium profiles.",
+            ),
+        )
+    end
+    return SampledSSP1D(depth, c, ssp_interp_ctor(mode), mode)
+end
+
+# The set of valid modes, as a lookup so the error above and the reader in `test/reference/` cannot
+# drift from what `ssp_interp_values`/`ssp_interp_ctor` actually implement.
+const SSP_INTERPOLATION_VALUES = Dict(v => k for (k, v) in SSP_INTERPOLATION_CHARS)
 
 function Base.show(io::IO, ssp::SampledSSP1D{T1,T2,T3}) where {T1,T2,T3}
-    return print(io, "SampledSSP1D{", T1, ",", T2, ",", ssp.f, "}(", length(ssp.z), " points)")
+    return print(io, "SampledSSP1D{", T1, ",", T2, ",", ssp.f, "}(", length(ssp.z), " points, ", ssp.mode, ")")
 end
 
 ### Density Profile
@@ -414,10 +488,11 @@ function UnderwaterEnv(
     layers,
     sspHS;
     atten_units::Symbol=DEFAULT_ATTENUATION_UNITS,
+    ssp_interp::Symbol=DEFAULT_SSP_INTERPOLATION,
     top_bc::BoundaryCondition=PressureRelease(),
     bottom_bc::BoundaryCondition=AcousticHalfspace(),
 )
-    c = SampledSSP(ssp[:, 1], ssp[:, 2])
+    c = SampledSSP(ssp[:, 1], ssp[:, 2], ssp_interp)
     ρ = SampledDensity(ssp[:, 1], ssp[:, 4])
     α = SampledAttenuation(ssp[:, 1], ssp[:, 5])
     ρb = sspHS[2, 4]
@@ -439,10 +514,11 @@ Constructor for `UnderwaterEnv` using the `UnderwaterEnvFORTRAN` struct.
 function UnderwaterEnv(
     krak_ssp::UnderwaterEnvFORTRAN{T};
     atten_units::Symbol=DEFAULT_ATTENUATION_UNITS,
+    ssp_interp::Symbol=DEFAULT_SSP_INTERPOLATION,
     top_bc::BoundaryCondition=PressureRelease(),
     bottom_bc::BoundaryCondition=AcousticHalfspace(),
 ) where {T}
-    c = SampledSSP(krak_ssp.ssp[:, 1], krak_ssp.ssp[:, 2])
+    c = SampledSSP(krak_ssp.ssp[:, 1], krak_ssp.ssp[:, 2], ssp_interp)
     ρ = SampledDensity(krak_ssp.ssp[:, 1], krak_ssp.ssp[:, 4])
     α = SampledAttenuation(krak_ssp.ssp[:, 1], krak_ssp.ssp[:, 5])
     ρb = krak_ssp.sspHS[2, 4]
@@ -605,7 +681,7 @@ sea surface is the datum and z-axis points upwards.
 """
 function soundspeed end
 
-soundspeed(ssp::SampledSSP, z) = ssp.f(z)
+soundspeed(ssp::SampledSSP1D, z) = ssp_from_interp(ssp.mode, ssp.f(z))
 
 """
     maxsoundspeed(ssp::SoundSpeedProfile)

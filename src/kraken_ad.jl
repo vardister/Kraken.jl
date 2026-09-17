@@ -199,15 +199,41 @@ end
 # ForwardDiff, because getting it backwards is invisible in any environment whose profile is constant
 # within each layer — which is most of them, and is why the gap survived 4.2 and 4.3.
 
+# The SSP interpolation mode (task 6.3) sits on both sides of the linear interpolant, and the rule has
+# to chain through both: for `:n2_linear` the interpolant carries `n² = 1/c²`, so a cotangent passes
+# through `c = v^(-1/2)` on the way in (`dc/dv = -½ v^(-3/2)`) and through `n²ᵢ = 1/cᵢ²` on the way out
+# to the stored sound speeds (`dn²ᵢ/dcᵢ = -2/cᵢ³`). Getting either one wrong is a silently wrong
+# gradient, not an error — the trap this file's knot-term note is already about.
+ssp_interp_cotangent(mode::Symbol, raw, Δ) = mode === :n2_linear ? Δ .* (-0.5 .* raw .^ (-3 / 2)) : Δ
+ssp_value_cotangent(mode::Symbol, c, Δu) = mode === :n2_linear ? Δu .* (-2 ./ c .^ 3) : Δu
+
+# A cubic spline's coefficients solve a tridiagonal system over *all* the knots, so its derivative
+# w.r.t. a value or a knot depth is not the local expression `linear_interp_partials` returns, and
+# there is no rule for it here. Reverse mode refuses rather than returning the linear interpolant's
+# derivative for a spline's value. Forward mode goes straight through `DataInterpolations`.
+function assert_reverse_mode_interp(mode::Symbol)
+    mode === :cubic_spline && throw(
+        ArgumentError(
+            "Reverse-mode AD is not supported for :cubic_spline sound-speed profiles: the spline's " *
+            "coefficients solve a system over every knot and no rrule states that derivative. Use " *
+            ":c_linear or :n2_linear, or differentiate a spline profile with ForwardDiff.",
+        ),
+    )
+    return nothing
+end
+
 function ChainRulesCore.rrule(::typeof(soundspeed), ssp::SampledSSP1D, z)
-    val, parts = profile_partials(ssp, z)
+    assert_reverse_mode_interp(ssp.mode)
+    raw, parts = profile_partials(ssp, z)
+    val = ssp_from_interp(ssp.mode, raw)
     function soundspeed_pullback(Δ)
         Δ = unthunk(Δ)
         # A structural zero short-circuits: `profile_pullback` would otherwise widen its accumulators
         # to `Any` trying to promote against it, and scatter zeros for no reason.
         Δ isa AbstractZero && return (NoTangent(), ZeroTangent(), ZeroTangent())
-        Δu, Δt, Δz = profile_pullback(ssp.f, z, parts, Δ)
-        return (NoTangent(), Tangent{typeof(ssp)}(; z=(-Δt), c=Δu, f=NoTangent()), Δz)
+        Δu, Δt, Δz = profile_pullback(ssp.f, z, parts, ssp_interp_cotangent(ssp.mode, raw, Δ))
+        Δc = ssp_value_cotangent(ssp.mode, ssp.c, Δu)
+        return (NoTangent(), Tangent{typeof(ssp)}(; z=(-Δt), c=Δc, f=NoTangent(), mode=NoTangent()), Δz)
     end
     return val, soundspeed_pullback
 end
@@ -249,6 +275,18 @@ end
 function ChainRulesCore.rrule(::Type{SampledSSP1D}, depth, c, f)
     SampledSSP1D_pullback(Δ) = profile_ctor_pullback(Δ, :c)
     return SampledSSP1D(depth, c, f), SampledSSP1D_pullback
+end
+
+# The four-argument form names the interpolation mode (6.3). It needs its own rule for the same reason
+# the three-argument one does — otherwise Zygote traces the constructor, including the `1 ./ c .^ 2`
+# that `:n2_linear` applies, and builds a pullback nothing uses. The struct's `c` field holds the sound
+# speeds whatever the mode, so the cotangent mapping is unchanged; `mode` is a `Symbol` and carries none.
+function ChainRulesCore.rrule(::Type{SampledSSP1D}, depth, c, f, mode::Symbol)
+    function SampledSSP1D_mode_pullback(Δ)
+        dself, ddepth, dc, df = profile_ctor_pullback(Δ, :c)
+        return (dself, ddepth, dc, df, NoTangent())
+    end
+    return SampledSSP1D(depth, c, f, mode), SampledSSP1D_mode_pullback
 end
 
 function ChainRulesCore.rrule(::Type{SampledDensity1D}, depth, ρ, f)

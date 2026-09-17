@@ -113,6 +113,8 @@ Mooncake.@from_rrule(DefaultCtx, Tuple{typeof(density),SampledDensity1D,Float64}
 Mooncake.@from_rrule(DefaultCtx, Tuple{typeof(density),SampledDensity1D,Vector{Float64}})
 
 Mooncake.@from_rrule(DefaultCtx, Tuple{Type{SampledSSP1D},Vector{Float64},Vector{Float64},Type})
+# The four-argument form carries the SSP interpolation mode (6.3); `Symbol` has no tangent.
+Mooncake.@from_rrule(DefaultCtx, Tuple{Type{SampledSSP1D},Vector{Float64},Vector{Float64},Type,Symbol})
 Mooncake.@from_rrule(DefaultCtx, Tuple{Type{SampledDensity1D},Vector{Float64},Vector{Float64},Type})
 
 # The counterpart of `kraken_ad.jl`'s `@non_differentiable bisection(...)`.

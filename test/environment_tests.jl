@@ -250,6 +250,68 @@ end
     end
 end
 
+@testitem "M6.3: SSP interpolation modes" begin
+    using Kraken, ForwardDiff, Zygote
+
+    z = [0.0, 30.0, 60.0, 100.0]
+    c = [1500.0, 1480.0, 1495.0, 1520.0]
+    profiles = Dict(mode => SampledSSP(z, c, mode) for mode in (:c_linear, :n2_linear, :cubic_spline))
+
+    # Every mode is an interpolation of the same samples, so all three reproduce them exactly ...
+    # (queries are positive depths: the struct keeps `z = -depth` but its interpolant is keyed on depth).
+    for (mode, ssp) in profiles
+        @test ssp.mode === mode
+        @test soundspeed.(Ref(ssp), z) ≈ c
+    end
+
+    # ... and all three disagree between them, which is the point: this is a correctness option, not a
+    # cosmetic one. n²-linear is `1/√((1-R)/c₁² + R/c₂²)`, transcribed from `n2Linear` in sspMod.f90.
+    zq = 45.0
+    R = (45.0 - 30.0) / (60.0 - 30.0)
+    values = Dict(mode => soundspeed(ssp, zq) for (mode, ssp) in profiles)
+    @test values[:c_linear] ≈ (1 - R) * c[2] + R * c[3]
+    @test values[:n2_linear] ≈ 1 / sqrt((1 - R) / c[2]^2 + R / c[3]^2)
+    @test values[:n2_linear] < values[:c_linear]              # n²-linear is the slower of the two
+    @test !isapprox(values[:cubic_spline], values[:c_linear]; rtol=1e-6)
+
+    # The default is unchanged, in identity as well as in value.
+    @test SampledSSP(z, c).mode === DEFAULT_SSP_INTERPOLATION === :c_linear
+    @test soundspeed(SampledSSP(z, c), zq) === values[:c_linear]
+    @test SSP_INTERPOLATION_CHARS['C'] === :c_linear
+    @test occursin("n2_linear", sprint(show, profiles[:n2_linear]))
+    @test_throws ArgumentError SampledSSP(z, c, :quadratic)
+
+    # A spline through a profile that repeats a depth at a layer interface is not merely inexact — it
+    # returns ~1e17 there — so it is refused rather than solved.
+    interfaced = [0.0, 50.0, nextfloat(50.0), 100.0]
+    @test_throws ArgumentError SampledSSP(interfaced, [1500.0, 1500.0, 1600.0, 1650.0], :cubic_spline)
+
+    # The mode reaches the solver through the environment, and moves the wavenumbers it should move.
+    ssp_matrix = hcat(z, c, zero(z), fill(1000.0, 4), zero(z), zero(z))
+    layers = [0.0 0.0 100.0]
+    sspHS = [0.0 343.0 0.0 0.00121 0.0 0.0; 100.0 1600.0 0.0 1500.0 0.0 0.0]
+    krs = Dict(
+        mode => kraken_jl(UnderwaterEnv(ssp_matrix, layers, sspHS; ssp_interp=mode), 100.0).kr for
+        mode in (:c_linear, :n2_linear, :cubic_spline)
+    )
+    @test length(krs[:c_linear]) == length(krs[:n2_linear]) == length(krs[:cubic_spline])
+    @test krs[:c_linear] != krs[:n2_linear] != krs[:cubic_spline]
+    @test maximum(abs.(krs[:c_linear] .- krs[:n2_linear]) ./ krs[:c_linear]) < 1e-4  # same problem, barely
+    @test UnderwaterEnv(ssp_matrix, layers, sspHS).c.mode === :c_linear
+
+    # n²-linear puts a transform on both sides of the interpolant. Reverse mode has to chain through
+    # both, and a wrong chain is a wrong number rather than an error.
+    loss(cvec) = sum(soundspeed(SampledSSP(z, cvec, :n2_linear), [15.0, 45.0, 80.0]))
+    @test Zygote.gradient(loss, c)[1] ≈ ForwardDiff.gradient(loss, c) rtol = 1e-10
+    depth_loss(zvec) = sum(soundspeed(SampledSSP(zvec, c, :n2_linear), [15.0, 45.0, 80.0]))
+    @test Zygote.gradient(depth_loss, z)[1] ≈ ForwardDiff.gradient(depth_loss, z) rtol = 1e-10
+
+    # A spline has no reverse-mode rule, and says so instead of handing back the linear one's answer.
+    spline_loss(cvec) = sum(soundspeed(SampledSSP(z, cvec, :cubic_spline), [45.0]))
+    @test_throws ArgumentError Zygote.gradient(spline_loss, c)
+    @test ForwardDiff.gradient(spline_loss, c)[3] != 0  # forward mode goes straight through
+end
+
 @testitem "UnderwaterEnv Construction" begin
     using Kraken
 
