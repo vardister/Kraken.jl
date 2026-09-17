@@ -891,6 +891,84 @@ const KR = KrakenReference
             end
         end
 
+        # Every boundary-condition pair and interpolation Kraken.jl solves (plan task 6.4), on the
+        # Munk profile: one medium, so a cubic spline is allowed, and curved, so the three
+        # interpolators genuinely differ. `topopt`/`botopt` are the letters `ReadTopOpt` and `TopBot`
+        # have to see.
+        option_cases = [
+            (top=PressureRelease(), bottom=AcousticHalfspace(), interp=:c_linear, topopt="CVW", botopt=('A')),
+            (top=RigidBoundary(), bottom=AcousticHalfspace(), interp=:c_linear, topopt="CRW", botopt=('A')),
+            (top=PressureRelease(), bottom=RigidBoundary(), interp=:c_linear, topopt="CVW", botopt=('R')),
+            (top=PressureRelease(), bottom=PressureRelease(), interp=:c_linear, topopt="CVW", botopt=('V')),
+            (top=RigidBoundary(), bottom=RigidBoundary(), interp=:c_linear, topopt="CRW", botopt=('R')),
+            (top=RigidBoundary(), bottom=PressureRelease(), interp=:n2_linear, topopt="NRW", botopt=('V')),
+            (top=PressureRelease(), bottom=AcousticHalfspace(), interp=:n2_linear, topopt="NVW", botopt=('A')),
+            (top=PressureRelease(), bottom=AcousticHalfspace(), interp=:cubic_spline, topopt="SVW", botopt=('A')),
+        ]
+        option_env(case) = UnderwaterEnv(munk_env()...; ssp_interp=case.interp, top_bc=case.top, bottom_bc=case.bottom)
+
+        @testset "M6.4: the writer declares interpolation and boundary conditions" begin
+            @testset "$(case.topopt) over $(case.botopt)" for case in option_cases
+                env = option_env(case)
+                text = KR.env_file_string(env, 10.0)
+                @test occursin("'$(case.topopt)'", text)
+                @test occursin("'$(case.botopt)' ", text)
+                # Only a half-space has a record of its own, and only a half-space bounds the
+                # trapped spectrum; a perfect bottom traps modes all the way down to kᵣ = 0.
+                @test occursin("! ZB  CPB", text) == (case.botopt == 'A')
+                @test occursin(KR._fmt(KR.PERFECT_BOTTOM_CHIGH), text) == (case.botopt != 'A')
+
+                mktempdir() do dir
+                    back = KR.read_env_file(KR.write_env_file(joinpath(dir, "options"), env, 10.0))
+                    @test back.env.c.mode === case.interp
+                    @test back.env.top_bc == case.top
+                    @test back.env.bottom_bc == case.bottom
+                    @test back.env.c.c ≈ env.c.c
+                    @test -back.env.c.z ≈ -env.c.z
+                    @test back.nmesh == [0]
+                    case.botopt == 'A' && @test back.env.cb ≈ env.cb
+                end
+            end
+
+            # An explicit letter is the caller's choice and survives, in every column.
+            env = option_env(option_cases[end])
+            @test occursin("'NVW'", KR.env_file_string(env, 10.0; topopt="NVW"))
+            @test occursin("'SRQ'", KR.env_file_string(option_env(option_cases[1]), 10.0; topopt="SRQ"))
+            text = KR.env_file_string(option_env(option_cases[3]), 10.0; botopt="A")
+            @test occursin("'A' ", text) && occursin("! ZB  CPB", text)
+
+            # An `UnderwaterEnvFORTRAN` says nothing about either, so the defaults stand.
+            envf = UnderwaterEnvFORTRAN(munk_env()...)
+            text = KR.env_file_string(envf, 10.0)
+            @test occursin("'CVW'", text)
+            @test occursin("'A' ", text)
+        end
+
+        @testset "M6.4: kraken.exe accepts every option the writer emits" begin
+            # The .prt echoes each choice back, which confirms the letter we wrote is the one it
+            # read -- not merely that the file parsed.
+            echo = Dict(
+                :c_linear => "C-Linear approximation",
+                :n2_linear => "N2-Linear approximation",
+                :cubic_spline => "Spline approximation",
+                'A' => "ACOUSTO-ELASTIC half-space",
+                'V' => "VACUUM",
+                'R' => "Perfectly RIGID",
+            )
+            @testset "$(case.topopt) over $(case.botopt)" for case in option_cases
+                ref = KR.run_fortran_kraken(option_env(case), 10.0; keep_files=true)
+                try
+                    @test ref.nmodes > 0
+                    report = read(joinpath(ref.dir, "case.prt"), String)
+                    @test occursin(echo[case.interp], report)
+                    @test occursin(echo[case.botopt], report)
+                    @test occursin(echo[case.topopt[2]], report)
+                finally
+                    rm(ref.dir; recursive=true, force=true)
+                end
+            end
+        end
+
         # --- AD gradients against Fortran (plan task 4.7) ------------------------------------
         #
         # Milestone 4's gradients are already checked against ForwardDiff and FiniteDiff in
@@ -1092,25 +1170,108 @@ const KR = KrakenReference
                 end
             end
 
-            @testset "unsupported features are named, not approximated" begin
-                # ssp2.env declares n²-linear over a varying profile, which is genuinely a different
-                # problem from the C-linear one Kraken.jl solves.
+            @testset "M6.4: interpolation and boundary options are read" begin
+                # ssp2.env declares n²-linear over a varying three-medium profile. Until Milestone 6
+                # that was its refusal; now the interpolation is read, and what still stops it is
+                # physics: its half-space is exactly as fast as its fastest water (1600.33 m/s), so
+                # nothing is trapped.
+                ssp2_path = joinpath(@__DIR__, "standard_envs", "ssp2.env")
                 err = try
-                    KR.read_env_file(joinpath(@__DIR__, "standard_envs", "ssp2.env"))
+                    KR.read_env_file(ssp2_path)
                     nothing
                 catch e
                     e
                 end
                 @test err isa KR.UnsupportedEnvFeature
-                @test err.feature == "SSP interpolation"
-                @test occursin("n²-linear", sprint(showerror, err))
-                # ...but the environment is still recoverable for inspection.
-                @test KR.read_env_file(joinpath(@__DIR__, "standard_envs", "ssp2.env"); strict=false).env isa
-                    UnderwaterEnv
+                @test err.feature == "bottom half-space is not the fastest medium"
+                ssp2 = KR.read_env_file(ssp2_path; strict=false)
+                @test ssp2.env.c.mode === :n2_linear
+                @test ssp2.nmesh == [0, 0, 0]
 
-                # A cubic spline through a two-point medium *is* the straight line, so declaring 'S'
-                # over the checked-in two-point files is not a reason to reject them.
-                @test KR.read_env_file(joinpath(@__DIR__, "standard_envs", "Pekeris_AV.env")).topopt[1] == 'S'
+                # A cubic spline through two-point media *is* the straight line, so the checked-in
+                # files that declare 'S' read as the C-linear problem they describe.
+                pekeris = KR.read_env_file(joinpath(@__DIR__, "standard_envs", "Pekeris_AV.env"))
+                @test pekeris.topopt[1] == 'S'
+                @test pekeris.env.c.mode === :c_linear
+
+                # A minimal deck with a choice of interpolation, top and bottom. `media` is a list of
+                # (bottom depth, [(z, c), ...]) and the half-space record is written only for 'A'.
+                function deck(topopt, botopt; media=[(100.0, [(0.0, 1500.0), (100.0, 1500.0)])], nmesh=0)
+                    io = IOBuffer()
+                    println(io, "'options probe'\n50.0\n$(length(media))\n'$topopt'")
+                    for (bottom, rows) in media
+                        println(io, "$nmesh  0.0  $bottom")
+                        for (z, c) in rows
+                            println(io, "  $z  $c  0.0  1.0  0.0  0.0 /")
+                        end
+                    end
+                    println(io, "'$botopt'  0.0")
+                    botopt == "A" && println(io, "  $(first(last(media)))  1600.0  0.0  1.5  0.0  0.0 /")
+                    println(io, "1400.0  $(botopt == "A" ? 1600.0 : 1.0e7)\n10.0")
+                    return String(take!(io))
+                end
+                read_deck(text) = mktempdir() do dir
+                    path = joinpath(dir, "probe.env")
+                    write(path, text)
+                    KR.read_env_file(path)
+                end
+                refusal(text) =
+                    try
+                        read_deck(text)
+                        nothing
+                    catch e
+                        e
+                    end
+
+                curved = [(100.0, [(0.0, 1500.0), (50.0, 1490.0), (100.0, 1510.0)])]
+                two_curved = [curved[1], (200.0, [(100.0, 1520.0), (150.0, 1530.0), (200.0, 1560.0)])]
+                two_linear = [(100.0, [(0.0, 1500.0), (100.0, 1490.0)]), (200.0, [(100.0, 1520.0), (200.0, 1560.0)])]
+
+                for (char, mode) in (('C', :c_linear), ('N', :n2_linear), ('S', :cubic_spline))
+                    @test read_deck(deck("$(char)VW", "A"; media=curved)).env.c.mode === mode
+                end
+                @test read_deck(deck("SVW", "A"; media=two_linear)).env.c.mode === :c_linear
+                @test read_deck(deck("PVW", "A"; media=two_linear)).env.c.mode === :c_linear
+                @test read_deck(deck("NVW", "A"; media=two_curved)).env.c.mode === :n2_linear
+
+                for (char, bc) in (('V', PressureRelease()), ('R', RigidBoundary()))
+                    @test read_deck(deck("C$(char)W", "A")).env.top_bc == bc
+                end
+                for (char, bc) in (('A', AcousticHalfspace()), ('V', PressureRelease()), ('R', RigidBoundary()))
+                    parsed = read_deck(deck("CVW", string(char)))
+                    @test parsed.env.bottom_bc == bc
+                    @test parsed.chigh == (char == 'A' ? 1600.0 : 1.0e7)
+                    # A perfect bottom has no record, so there is nothing to fill `sspHS` with.
+                    char == 'A' || @test parsed.sspHS[2, 2:end] == zeros(5)
+                end
+                # A perfect bottom traps every mode, so it is not held to "fastest medium".
+                @test read_deck(deck("CRW", "R"; media=curved)).env.bottom_bc == RigidBoundary()
+                @test read_deck(deck("CVW", "A"; media=curved, nmesh=250)).nmesh == [250]
+
+                # What is still refused is named, with the reason.
+                err = refusal(deck("SVW", "A"; media=two_curved))
+                @test err isa KR.UnsupportedEnvFeature
+                @test err.feature == "SSP interpolation"
+                @test occursin("cubic spline over 2 media", sprint(showerror, err))
+                # ...but the environment is still recoverable for inspection, as the linear profile.
+                mktempdir() do dir
+                    path = joinpath(dir, "spline.env")
+                    write(path, deck("SVW", "A"; media=two_curved))
+                    @test KR.read_env_file(path; strict=false).env.c.mode === :c_linear
+                end
+
+                err = refusal(deck("PVW", "A"; media=curved))
+                @test err isa KR.UnsupportedEnvFeature
+                @test occursin("PCHIP", sprint(showerror, err))
+
+                err = refusal(deck("CFW", "A"))
+                @test err isa KR.UnsupportedEnvFeature
+                @test err.feature == "top boundary"
+
+                err = refusal(deck("CVW", "F"))
+                @test err isa KR.UnsupportedEnvFeature
+                @test err.feature == "bottom boundary"
+                @test occursin("reflection-coefficient file", sprint(showerror, err))
             end
 
             @testset "M5.1: attenuation units are read off the top-option string" begin
@@ -1373,6 +1534,69 @@ const KR = KrakenReference
                         @test err isa KR.UnsupportedEnvFeature
                         @test err.feature == "power-law attenuation"
                     end
+                end
+
+                @testset "M6.4: every file that reads writes back to the same problem" begin
+                    # read_env_file -> write_env_file must preserve what the file *means*, and the only
+                    # judge of that is kraken.exe: run it on a copy of the original and on the rewrite,
+                    # and the two must agree on the mode count and on every wavenumber. The rewrite
+                    # keeps the file's NMESH, CLOW/CHIGH and title; the source and receiver depths
+                    # only tabulate the modes and are left at the writer's defaults.
+                    #
+                    # Decks kraken.exe cannot run *as shipped* have no reference to compare with and
+                    # are counted, not failed. They are BELLHOP inputs whose NMESH is far too coarse
+                    # for KRAKEN ("Mesh is too coarse"), or whose trailing records stop it before it
+                    # writes a .mod.
+                    function run_deck(path, freq)
+                        dir = mktempdir()
+                        try
+                            cp(path, joinpath(dir, "case.env"))
+                            cmd = Cmd(`$(KR.kraken_cmd()) case`; dir=dir)
+                            run(pipeline(ignorestatus(cmd); stdout=devnull, stderr=devnull))
+                            prt = joinpath(dir, "case.prt")
+                            report = isfile(prt) ? read(prt, String) : ""
+                            isempty(KR._error_lines(report)) && isfile(joinpath(dir, "case.mod")) || return nothing
+                            modes = KR.read_mod_file(joinpath(dir, "case.mod"); freq=freq)
+                            grp = try
+                                KR.read_grp(prt; freq=freq)
+                            catch
+                                nothing
+                            end
+                            return (; kr=KR._best_fortran_kr((; kᵣ=modes.kᵣ, grp)), α=imag.(modes.kᵣ))
+                        finally
+                            rm(dir; recursive=true, force=true)
+                        end
+                    end
+
+                    # Two decks take minutes in kraken.exe alone (measured 2026-09-16: 72 s and 167 s,
+                    # 626 and 1221 modes) and round-tripped exactly then. `Dickins/Precalc/DickinsK.env`
+                    # is the same rigid-bottom waveguide at 1221 modes in 1.6 s and stays in.
+                    slow_roundtrips = ("Dickins/March/DickinsK_rd.env", "Dickins/Precalc/DickinsK_rd.env")
+
+                    tally = Dict(:compared => 0, :original_fails => 0)
+                    for rel in sort(KR.categorize_env_tree(oalib_tree).supported)
+                        rel in slow_roundtrips && continue
+                        path = joinpath(oalib_tree, rel)
+                        parsed = KR.read_env_file(path)
+                        freq = parsed.freqs[1]
+                        original = run_deck(path, freq)
+                        if original === nothing
+                            tally[:original_fails] += 1
+                            continue
+                        end
+                        rewritten = mktempdir() do dir
+                            kw = (; title=parsed.title, nmesh=parsed.nmesh, rmax=something(parsed.rmax, 10.0))
+                            parsed.clow === nothing || (kw = (; kw..., clow=parsed.clow, chigh=parsed.chigh))
+                            run_deck(KR.write_env_file(joinpath(dir, "rt"), parsed.env, freq; kw...), freq)
+                        end
+                        tally[:compared] += 1
+                        ok = rewritten !== nothing && rewritten.kr == original.kr && rewritten.α == original.α
+                        ok || @info "Round trip changed the problem" rel parsed.topopt parsed.botopt
+                        @test ok
+                    end
+                    @info "OALIB round trip" compared = tally[:compared] original_fails = tally[:original_fails]
+                    # 94 compared, all exact, and 115 unrunnable as shipped (measured 2026-09-16).
+                    @test tally[:compared] > 80
                 end
 
                 @testset "categorized report over the whole tree" begin

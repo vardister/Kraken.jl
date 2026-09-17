@@ -1683,7 +1683,7 @@ Loose ends for 6.4/6.5:
   de Boor's not-a-knot end condition.** Expect the two to disagree near the ends of a splined profile —
   that is a genuine difference to measure in 6.5, not a bug to hunt.
 
-### 6.4 [ ] Wire options through the `.env` reader and writer
+### 6.4 [x] Wire options through the `.env` reader and writer *(completed 2026-09-16)*
 - **Files:** `test/reference/env_reader.jl`, `test/reference/env_writer.jl`
 - **What:** Parse the top-options string into interpolation mode, top boundary condition, and attenuation
   units, and the `BOTOPT` line into the bottom boundary condition; emit them correctly on write. Round-tripping
@@ -1691,6 +1691,53 @@ Loose ends for 6.4/6.5:
 - **Acceptance:** Round-trip test over the OALIB `tests/` tree: every file that reads successfully writes back
   to a file that `kraken.exe` accepts and that yields the same wavenumbers as the original.
 - **Dependencies:** 6.3
+
+**Outcome.** The reader maps `TopOpt(1)` `C`/`N`/`S` onto `env.c.mode`, `TopOpt(2)` `V`/`R` onto
+`env.top_bc` and `BotOpt(1)` `A`/`V`/`R` onto `env.bottom_bc`. It also returns the per-medium `nmesh`.
+The writer fills top-option columns 1–3 and `botopt` from the environment and emits the half-space
+record only for `A`. Also touched `test/fortran_reference_tests.jl` (the acceptance test lives there)
+and `CLAUDE.md`. Measured:
+
+- **OALIB round trip: 94 of 94 comparable decks are bit-identical.** Mode count, every `Re(kᵣ)` from
+  the `.prt` overlay and every `Im(kᵣ)` from the `.mod` compare with `==` between `kraken.exe` on a copy
+  of the original and on `write_env_file(read_env_file(path))`. That covers 15 `N`, 5 `S` (one
+  broadband), 2 rigid-bottom and 1 vacuum-bottom decks. No OALIB KRAKEN deck has a rigid top, so the
+  synthetic `M6.4` testsets cover that. **115 of the 211 readable decks are not comparable**, because
+  `kraken.exe` fails on them *as shipped*. They are BELLHOP inputs whose NMESH is "too coarse" for
+  KRAKEN, or whose trailing records stop it before a `.mod`. The test counts them rather than failing.
+  Two `Dickins/*_rd.env` decks take 72 s and 167 s in `kraken.exe` alone; both were exact on
+  2026-09-16 and are skipped by name.
+- **Coverage (categorize_env_tree): 211 of 402**, up from 167 at 5.1/6.1. The remaining blockers are
+  top boundary 65 (all `A`), fastest-medium 34, volume attenuation 27, profile not starting at the
+  surface 21, elastic 9, roughness 6, bottom boundary 6 (`F`), and 1 each of SSP interpolation, power
+  law and analytic. Recording the before/after in `test/README.md` is left to 6.5.
+- **Verified by a per-file run:** `fortran_reference_tests.jl` 1055/1055.
+
+Decisions worth keeping:
+
+- **A declared `S` or `P` reads as `:c_linear` wherever the two are the same problem**, meaning every
+  medium isovelocity or every medium two points. KRAKEN splines per medium, and a spline through two
+  points is the line. Otherwise a single-medium `S` is `:cubic_spline`, and a multi-medium curved `S`
+  or any curved `P` is refused, named "cubic spline over N media" or "PCHIP". The rewrite of such a
+  file says `C`, and the round trip shows it solves the same problem (`BeamPattern/MunkS.env`,
+  `Pekeris_AV.env`).
+- **Column letters are placeholders, generalizing 5.3's column-3 rule.** A column still holding
+  `DEFAULT_TOPOPT`'s letter is replaced from the environment; any other letter is the caller's and is
+  kept. `UnderwaterEnvFORTRAN` has no mode or boundary conditions, so only column 3 moves for it.
+- **A perfect bottom writes `CHIGH = PERFECT_BOTTOM_CHIGH = 1e7`**, the value the toolbox's own
+  `iso.env` and `head/*.env` use. `kraken.f90` only uses it as `ω²/cHigh²`. The reader leaves `sspHS`'s
+  bottom row zero for `V`/`R`, which is what `TopBot` does, and exempts those bottoms from
+  "fastest medium".
+- **`ssp2.env` is still refused, now for physics:** its half-space equals its fastest water speed
+  (1600.33 m/s). Its `N` is read.
+
+Loose ends for 6.5:
+
+- `compare.jl` still does not append `φ(D) = 0` for a vacuum bottom (6.2's note), so mode-shape
+  correlation there resamples with a clamp at the bottom.
+- `src/kraken_core.jl` and `test/environment_tests.jl` are not JuliaFormatter-v2 clean on `revival`
+  (three reflowed expressions from 6.2/6.3). CI's format check pins v2, so it should be failing already.
+  Left untouched here to keep this commit to 6.4's files.
 
 ### 6.5 [ ] Cross-validate every new option and re-measure OALIB coverage
 - **Files:** `test/fortran_reference_tests.jl`, `test/README.md`

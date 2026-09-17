@@ -139,8 +139,11 @@ Things that will bite you here, all established by running the code and recorded
   attenuation work wants the `.mod`.
 - **The `.prt` group-speed table is subsampled** (`DO mode = 1, M, MAX(1, M/30)`), so `read_grp`
   returns mode indices, not just values.
-- **Generated `.env` files use `'C'` (C-linear), not the `'S'` of the checked-in samples**, because
-  `SampledSSP` interpolates linearly — `'S'` would have the Fortran solve a different problem.
+- **Generated `.env` option letters follow the environment, not a fixed string.** The writer fills
+  `TopOpt(1:3)` from `env.c.mode`, `env.top_bc` and `env.atten_units`, and `BotOpt` from
+  `env.bottom_bc`; a `V`/`R` bottom gets `CHIGH = 1e7`. The reader reads a declared `'S'` over
+  two-point or isovelocity media as `:c_linear`, because Kraken.jl's spline is whole-column and KRAKEN's
+  is per medium — so `Pekeris_AV.env` writes back as `'C'` and still solves the same problem.
 - **`.env` densities are g/cm³; Kraken.jl's are kg/m³.** The writer and reader convert.
 
 The old `fortran_interface_tests.jl` and its `KRAKEN_RUN_FORTRAN_TESTS` switch were deleted in plan

@@ -27,7 +27,15 @@
 
 using Printf
 
-using Kraken: UnderwaterEnv, UnderwaterEnvFORTRAN, ATTENUATION_UNIT_CHARS, DEFAULT_ATTENUATION_UNITS
+using Kraken:
+    UnderwaterEnv,
+    UnderwaterEnvFORTRAN,
+    ATTENUATION_UNIT_CHARS,
+    DEFAULT_ATTENUATION_UNITS,
+    SSP_INTERPOLATION_CHARS,
+    PressureRelease,
+    RigidBoundary,
+    AcousticHalfspace
 
 """
 Densities in a KRAKEN `.env` file are in g/cm³, while Kraken.jl's standard environments carry them
@@ -38,21 +46,51 @@ if your environment is already in g/cm³.
 const DEFAULT_DENSITY_SCALE = 1e-3
 
 """
-Top-option string written by default.
+Top-option string written by default — and, for an [`UnderwaterEnv`](@ref), only a template.
 
-- `C` — C-linear SSP interpolation. **Deliberately not `S`** (cubic spline), which is what the
-  checked-in `.env` files use: `Kraken.jl` interpolates its sound-speed profile linearly
-  (`SampledSSP` wraps `DataInterpolations.LinearInterpolation`), so `C` is the option that makes the
-  Fortran run solve the *same* problem. The two agree for any medium given by two points, which is
-  every standard environment except `munk_env`. Milestone 6 adds the other interpolators.
-- `V` — vacuum (pressure-release) above the top interface, which is the only surface condition the
-  finite-difference scheme currently implements.
-- `W` — attenuation in dB/wavelength. This is only the *fallback*: since Milestone 5 the writer
-  replaces column 3 with whatever `env.atten_units` says, so an environment read from a `.env` that
-  declared nepers/m is written back out as nepers/m rather than being silently reinterpreted. `W` is
-  what an environment that never named its units gets, and it matches `DEFAULT_ATTENUATION_UNITS`.
+Each of its first three columns is a *placeholder* that the writer replaces with what the environment
+says, so the file declares the problem the environment actually describes:
+
+- column 1, `C`, becomes the character for `env.c.mode` (`C`, `N` or `S`). `C` itself is right for
+  the default `:c_linear`, and is deliberately not the `S` of the checked-in `.env` files.
+- column 2, `V`, becomes the character for `env.top_bc` (`V` or `R`).
+- column 3, `W`, becomes the character for `env.atten_units`.
+
+An `UnderwaterEnvFORTRAN` carries no interpolation or boundary condition, so only column 3 is
+rewritten for it, from the `atten_units` keyword. A caller who passes a `topopt` with a *different*
+letter in some column keeps that letter: it is a deliberate choice, used by the writer's own tests to
+check that KRAKEN accepts it.
 """
 const DEFAULT_TOPOPT = "CVW"
+
+"""
+`CHIGH` written for a perfectly reflecting (`V` or `R`) bottom, in m/s.
+
+With a half-space the trapped spectrum ends at the half-space speed. A perfect bottom traps every
+mode down to `kᵣ = 0`, which is the band Kraken.jl searches for one, so `cHigh` has to be effectively
+infinite. `kraken.f90` only uses it as `ω²/cHigh²`, so any large value works. `1e7` is what the
+toolbox's own perfect-bottom KRAKEN decks use (`tests/iso.env`, `tests/head/*.env`).
+"""
+const PERFECT_BOTTOM_CHIGH = 1.0e7
+
+# The KRAKEN option character of each boundary condition. `AcousticHalfspace` is `A` at either end,
+# though the reader refuses it on top.
+_bc_char(::PressureRelease) = 'V'
+_bc_char(::RigidBoundary) = 'R'
+_bc_char(::AcousticHalfspace) = 'A'
+
+"""
+    _ssp_char(mode::Symbol) -> Char
+
+The top-option character for SSP interpolation `mode` — the inverse of
+`Kraken.SSP_INTERPOLATION_CHARS`, searched for the same reason `_atten_char` is.
+"""
+function _ssp_char(mode::Symbol)
+    for (char, sym) in SSP_INTERPOLATION_CHARS
+        sym === mode && return char
+    end
+    return error("No KRAKEN top-option character for SSP interpolation $(repr(mode))")
+end
 
 """
     _atten_char(units::Symbol) -> Char
@@ -70,21 +108,28 @@ function _atten_char(units::Symbol)
 end
 
 """
-    _with_atten_units(topopt, units) -> String
+    _fill_topopt(topopt, chars) -> String
 
-`topopt` with its attenuation-units character (column 3) set from `units`.
+`topopt` with each of its first three columns replaced by `chars[k]`, but only where that column
+still holds `DEFAULT_TOPOPT`'s placeholder and `chars[k]` is not `nothing`.
 
-Leaves an explicitly supplied non-default column 3 alone, so a caller can still force a units letter
-by passing a full `topopt`; only the default string is rewritten. Everything else about the option
-string — the interpolator, the surface condition, the broadband flag — is untouched.
+Leaves an explicitly supplied non-default letter alone, so a caller can still force one by passing a
+full `topopt`. Columns past the third — volume attenuation, the broadband flag — are untouched.
 """
-function _with_atten_units(topopt::AbstractString, units::Symbol)
-    s = rpad(String(topopt), 3)
-    # Only rewrite when the caller left column 3 at the default; an explicit letter is a deliberate
-    # choice (the writer's own tests set one to check that KRAKEN accepts it).
-    s[3] == DEFAULT_TOPOPT[3] || return String(topopt)
-    return String(s[1:2] * _atten_char(units) * s[4:end])
+function _fill_topopt(topopt::AbstractString, chars)
+    s = collect(rpad(String(topopt), 3))
+    for k in 1:3
+        chars[k] === nothing || s[k] != DEFAULT_TOPOPT[k] || (s[k] = chars[k])
+    end
+    return String(s)
 end
+
+# The characters an environment itself determines, in top-option column order.
+_topopt_chars(env::UnderwaterEnv, _) = (_ssp_char(env.c.mode), _bc_char(env.top_bc), _atten_char(env.atten_units))
+_topopt_chars(::UnderwaterEnvFORTRAN, atten_units::Symbol) = (nothing, nothing, _atten_char(atten_units))
+
+_default_botopt(env::UnderwaterEnv) = string(_bc_char(env.bottom_bc))
+_default_botopt(::UnderwaterEnvFORTRAN) = "A"
 
 # ---------------------------------------------------------------------------------------------
 # Number formatting
@@ -295,7 +340,7 @@ function env_file_string(
     freq;
     title::AbstractString="Kraken.jl reference environment",
     topopt::AbstractString=DEFAULT_TOPOPT,
-    botopt::AbstractString="A",
+    botopt=nothing,
     clow=nothing,
     chigh=nothing,
     rmax::Real=10.0,
@@ -325,13 +370,16 @@ function env_file_string(
     nmesh_vec = nmesh isa Integer ? fill(Int(nmesh), nmedia) : Int.(collect(nmesh))
     length(nmesh_vec) == nmedia || error("`nmesh` must be a scalar or one value per medium ($nmedia)")
 
+    botopt_str = botopt === nothing ? _default_botopt(env) : String(botopt)
+    isempty(botopt_str) && error("`botopt` must not be empty")
     cmin = minimum(minimum(@view m[:, 2]) for m in media)
-    cb = Float64(halfspace[2])
+    cb = botopt_str[1] == 'A' ? Float64(halfspace[2]) : PERFECT_BOTTOM_CHIGH
     # `ReadEnvironment` rejects `clow >= chigh`. The defaults bracket the band in which modes are
     # trapped — phase speeds from the slowest sound speed up to the half-space speed — which is the
     # same band `bisection` searches in Kraken.jl (`kr ∈ [ω/(0.9999 cb), max(ω/c)]`). `clow` is
     # nudged 1% below the minimum rather than sitting on it, so a mode grazing the slowest layer is
-    # strictly inside the interval; no mode exists below `cmin`, so the widening costs nothing.
+    # strictly inside the interval; no mode exists below `cmin`, so the widening costs nothing. A
+    # perfect bottom has no half-space speed, and `cb` is `PERFECT_BOTTOM_CHIGH` for it.
     clow_v = clow === nothing ? 0.99 * cmin : Float64(clow)
     chigh_v = chigh === nothing ? cb : Float64(chigh)
     clow_v < chigh_v || error("Need clow < chigh, got clow=$clow_v, chigh=$chigh_v")
@@ -344,9 +392,9 @@ function env_file_string(
     end
 
     broadband = length(freqs) > 1
-    # The attenuation values written below are in the environment's own units, so the option string
-    # has to declare those units or `kraken.exe` reads the same numbers as something else entirely.
-    topopt_str = _with_atten_units(topopt, env isa UnderwaterEnv ? env.atten_units : atten_units)
+    # The option string has to declare the environment's interpolation, surface condition and
+    # attenuation units, or `kraken.exe` solves a different problem from the same numbers.
+    topopt_str = _fill_topopt(topopt, _topopt_chars(env, atten_units))
     if broadband
         # `ReadfreqVec` keys the broadband block off column 6 of the top-option record.
         length(topopt_str) >= 6 &&
@@ -380,8 +428,8 @@ function env_file_string(
         end
     end
 
-    println(io, rpad("'" * String(botopt) * "' " * _fmt(sigma), 40), "! BOTOPT  SIGMA")
-    if String(botopt)[1] == 'A'
+    println(io, rpad("'" * botopt_str * "' " * _fmt(sigma), 40), "! BOTOPT  SIGMA")
+    if botopt_str[1] == 'A'
         hs = join(
             (
                 _fmt(depth),
@@ -417,17 +465,20 @@ vector of them for a broadband run.
 
 # Keywords
 - `title` — the `.env` title record. Truncated to the 72 characters KRAKEN keeps.
-- `topopt` — top-option string, default `$(DEFAULT_TOPOPT)` (see [`DEFAULT_TOPOPT`](@ref) for why it
-  is C-linear rather than the spline the checked-in files use).
-- `botopt` — bottom-option string, default `"A"` (acousto-elastic half-space).
+- `topopt` — top-option string, default `$(DEFAULT_TOPOPT)`. For an `UnderwaterEnv` its first three
+  columns are filled in from the environment's interpolation, surface condition and attenuation units;
+  see [`DEFAULT_TOPOPT`](@ref).
+- `botopt` — bottom-option string. Defaults to the character for `env.bottom_bc` (`A`, `V` or `R`),
+  or `"A"` for an `UnderwaterEnvFORTRAN`. The half-space record is written only for `A`.
 - `clow`, `chigh` — phase-speed limits in m/s. Default to `0.99 * min(c)` and the half-space speed,
-  which is the band in which modes are trapped.
+  which is the band in which modes are trapped, or [`PERFECT_BOTTOM_CHIGH`](@ref) for a `V` or `R`
+  bottom.
 - `rmax` — maximum range in km, default `10.0`.
 - `sd`, `rd` — source and receiver depths in m. Their union is the depth grid on which `kraken.exe`
   tabulates mode shapes in the `.mod` file, so `rd` controls the resolution of the modes you get
   back; it defaults to a uniform grid over the whole water column at ~20 points per wavelength.
 - `nmesh` — finite-difference mesh points, scalar or one per medium. `0` (the default) asks KRAKEN
-  to size its own mesh.
+  to size its own mesh. Pass `read_env_file(path).nmesh` to write a file back on the mesh it had.
 - `sigma` — interfacial RMS roughness in m, default `0.0`. Roughness is out of scope for the solver.
 - `freq0` — nominal frequency for the `FREQ` record, defaulting to the first entry of `freq`. KRAKEN
   sizes its automatic mesh at `freq0` and rescales it per frequency, so this only matters for a

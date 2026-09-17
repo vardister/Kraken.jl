@@ -17,7 +17,8 @@
 # See `ReadEnvironment`/`ReadTopOpt`/`TopBot` in `misc/ReadEnvironmentMod.f90` and `ReadSSP` in
 # `misc/sspMod.f90`.
 
-using Kraken: UnderwaterEnv, ATTENUATION_UNIT_CHARS
+using Kraken:
+    UnderwaterEnv, ATTENUATION_UNIT_CHARS, SSP_INTERPOLATION_CHARS, PressureRelease, RigidBoundary, AcousticHalfspace
 
 """
     UnsupportedEnvFeature
@@ -26,8 +27,9 @@ Raised by [`read_env_file`](@ref) when a `.env` file is valid KRAKEN but uses so
 does not model. `feature` is a short category (suitable for grouping) and `detail` says what was
 actually found.
 
-The categories are the backlog: attenuation is Milestone 5, boundary conditions and SSP
-interpolation are Milestone 6, elastic layers are explicitly out of scope.
+The categories are the backlog. Milestones 5 and 6 cleared attenuation, rigid and vacuum boundaries,
+and the n²-linear and cubic-spline interpolators; what remains is either out of scope (elastic layers,
+roughness, a top half-space, reflection-coefficient files) or named here so it can be picked up later.
 """
 struct UnsupportedEnvFeature <: Exception
     path::String
@@ -184,6 +186,40 @@ const _BC_NAMES = Dict(
 
 _describe(table, c) = get(table, c, "'$c'")
 
+# The boundary conditions Kraken.jl solves, by option character. A top 'A' is deliberately absent
+# (plan task 6.1). 'F', 'W' and 'P' are reflection-coefficient files, which `kraken.f90` rejects.
+const _TOP_BCS = Dict('V' => PressureRelease(), 'R' => RigidBoundary())
+const _BOTTOM_BCS = Dict('A' => AcousticHalfspace(), 'V' => PressureRelease(), 'R' => RigidBoundary())
+
+"""
+    _ssp_interpolation(ssp, medium_ranges, ssp_type) -> Union{Symbol,Nothing}
+
+The `SampledSSP` interpolation that solves the same problem as KRAKEN's `ssp_type` over this profile,
+or `nothing` if there is none.
+
+`C` and `N` map straight across. `S` and `P` are only available as a single whole-column spline, so:
+
+  * where every medium is isovelocity, or every medium is two points, any of KRAKEN's per-medium
+    interpolants *is* the straight line, and C-linear is exact;
+  * otherwise a single-medium `S` is a spline (up to the end condition, see plan task 6.3), and
+    anything else has no equivalent.
+
+Checked in that order, so a two-point single-medium `S` becomes `:c_linear` rather than a spline
+through two knots.
+"""
+function _ssp_interpolation(ssp::AbstractMatrix, medium_ranges, ssp_type::Char)
+    ssp_type in ('S', 'P') || return get(SSP_INTERPOLATION_CHARS, ssp_type, nothing)
+    two_point = all(length(r) == 2 for r in medium_ranges)
+    isovelocity = all(allequal(@view ssp[r, 2]) for r in medium_ranges)
+    (two_point || isovelocity) && return :c_linear
+    return ssp_type == 'S' && length(medium_ranges) == 1 ? :cubic_spline : nothing
+end
+
+function _interpolation_refusal(ssp_type::Char, nmedia::Int)
+    ssp_type == 'S' && return "cubic spline over $nmedia media; Kraken.jl splines single-medium profiles only"
+    return "$(_describe(_SSP_TYPE_NAMES, ssp_type)) over a varying profile; Kraken.jl has no such interpolator"
+end
+
 # ---------------------------------------------------------------------------------------------
 # The reader
 # ---------------------------------------------------------------------------------------------
@@ -193,9 +229,11 @@ _describe(table, c) = get(table, c, "'$c'")
 
 Parse a KRAKEN `.env` file.
 
-Returns `(; env, ssp, layers, sspHS, freqs, title, topopt, botopt, clow, chigh, rmax, sd, rd)`,
-where `env` is an [`UnderwaterEnv`](@ref) ready for `kraken_jl` and `freqs` is the frequency vector
-(one entry unless the file declares a broadband run).
+Returns `(; env, ssp, layers, sspHS, freqs, title, topopt, botopt, clow, chigh, rmax, sigmas, nmesh,
+atten_units)`, where `env` is an [`UnderwaterEnv`](@ref) ready for `kraken_jl` and `freqs` is the
+frequency vector (one entry unless the file declares a broadband run). `nmesh` is the per-medium
+`NMESH` record, `0` meaning "let KRAKEN choose"; it does not affect Kraken.jl, but writing a file back
+with a different mesh makes `kraken.exe` solve on a different grid.
 
 Throws [`UnsupportedEnvFeature`](@ref) when the file is valid KRAKEN but uses something the solver
 does not model, and [`MalformedEnvFile`](@ref) when it is not a KRAKEN environment at all. Pass
@@ -204,15 +242,35 @@ for inspecting a case, not for cross-validating one.
 
 What `strict` requires, and when each requirement lifts:
 
-| requirement | why | lifted by |
+| requirement | why |
+|---|---|
+| `TopOpt(1:1)` is `C`, `N` or `S` (`S` over one medium, see below) | the interpolators `SampledSSP` implements |
+| `TopOpt(2:2)` is `V` or `R` | a top half-space is out of scope (plan task 6.1) |
+| `TopOpt(4:4)` blank | no THORP / Francois-Garrison / biological volume attenuation |
+| `BotOpt(1:1)` is `A`, `V` or `R` | `F` is a reflection-coefficient file, which `kraken.f90` itself refuses |
+| `cs == 0` everywhere | the scheme is a scalar pressure equation, not a 4-field elastic one |
+| `αs == 0` | shear attenuation needs an elastic layer to live in |
+| `sigma == 0` | no interfacial roughness |
+
+The option characters map onto the environment as
+
+| column | character | becomes |
 |---|---|---|
-| `TopOpt(1:1) == 'C'` | `SampledSSP` interpolates linearly | Milestone 6 |
-| `TopOpt(2:2) == 'V'` | the scheme assumes a pressure-release surface | Milestone 6 |
-| `TopOpt(4:4)` blank | no THORP / Francois-Garrison / biological volume attenuation | Milestone 5 |
-| `BotOpt(1:1) == 'A'` | the bottom is a fluid half-space | Milestone 6 |
-| `cs == 0` everywhere | the scheme is a scalar pressure equation, not a 4-field elastic one | out of scope |
-| `αs == 0` | shear attenuation needs an elastic layer to live in | out of scope |
-| `sigma == 0` | no interfacial roughness | out of scope |
+| `TopOpt(1:1)` | `C` / `N` / `S` | `env.c.mode` = `:c_linear` / `:n2_linear` / `:cubic_spline` |
+| `TopOpt(2:2)` | `V` / `R` | `env.top_bc` = `PressureRelease()` / `RigidBoundary()` |
+| `TopOpt(3:3)` | see `ATTENUATION_UNIT_CHARS` | `env.atten_units` |
+| `BotOpt(1:1)` | `A` / `V` / `R` | `env.bottom_bc` = `AcousticHalfspace()` / `PressureRelease()` / `RigidBoundary()` |
+
+A perfect (`V` or `R`) bottom has no half-space record, so `sspHS`'s bottom row is zeros, which is
+what `TopBot` leaves in `HSBot` too.
+
+**Cubic spline is read as C-linear where the two are the same problem.** `SampledSSP` builds one
+spline through the whole column and so refuses a profile with a layer interface in it. KRAKEN splines
+each medium separately. Where every medium is isovelocity, or given by exactly two points, KRAKEN's
+spline *is* the straight line, and the file is read as `:c_linear`. `Pekeris_AV.env` is such a file:
+it declares `S` and matches the C-linear file this repo generates to all ten printed digits. A
+single-medium profile is read as `:cubic_spline`. A multi-medium profile that genuinely curves inside
+a medium is refused. PCHIP (`P`) gets the same equivalence and is otherwise refused.
 
 Compressional attenuation (`αp`, SSP column 5) is **read and used** — Milestone 5 lifted that
 restriction. `TopOpt(3:3)` selects the units it is read in and is parsed even when `strict` is off,
@@ -264,12 +322,13 @@ function read_env_file(path::AbstractString; strict::Bool=true)
         # walks into the bottom-option record looking for SSP rows.
         ssp_type == 'A' && unsupported("analytic SSP", "the profile is generated by ANALYT, not tabulated")
         # The interpolation check needs the SSP itself and so happens after the media are read.
-        topopt[2] == 'V' || unsupported("top boundary", _describe(_BC_NAMES, topopt[2]))
+        haskey(_TOP_BCS, topopt[2]) || unsupported("top boundary", _describe(_BC_NAMES, topopt[2]))
         topopt[4] in (' ', '\0') || unsupported("added volume attenuation", "top option 4 = '$(topopt[4])'")
     end
     # An acoustic halfspace above the first medium adds a record here that we would otherwise
     # mis-read as a mesh line, so this check is not optional even when `strict` is off.
     topopt[2] == 'A' && unsupported("top boundary", "acousto-elastic halfspace above the surface")
+    top_bc = get(_TOP_BCS, topopt[2], PressureRelease())
 
     # Per-medium: the mesh line, then SSP rows until the depth matches Z(NSSP).
     # `alphaR, betaR, rhoR, alphaI, betaI` start at KRAKEN's own defaults and carry forward.
@@ -278,9 +337,12 @@ function read_env_file(path::AbstractString; strict::Bool=true)
     layer_depths = Float64[]
     sigmas = Float64[]
     medium_ranges = UnitRange{Int}[]
+    nmesh = Int[]
     for medium in 1:nmedia
         mesh = _read_values!(cur, 3)
         (mesh === nothing || length(mesh) < 3) && malformed("truncated mesh record for medium $medium")
+        isinteger(mesh[1]) || malformed("NMESH for medium $medium is not an integer ($(mesh[1]))")
+        push!(nmesh, Int(mesh[1]))
         push!(sigmas, mesh[2])
         bottom = mesh[3]
         push!(layer_depths, bottom)
@@ -328,6 +390,7 @@ function read_env_file(path::AbstractString; strict::Bool=true)
     push!(sigmas, bot_sigma)
 
     halfspace = zeros(6)
+    bottom_bc = get(_BOTTOM_BCS, botopt[1], AcousticHalfspace())
     if botopt[1] == 'A'
         values = _read_values!(cur, 6)
         # Only the depth is required: `TopBot` reads into the same carried-forward variables as the
@@ -338,28 +401,17 @@ function read_env_file(path::AbstractString; strict::Bool=true)
             length(values) >= k + 1 && (carried[k] = values[k + 1])
         end
         halfspace[2:6] = carried
-    elseif strict
+    elseif strict && !haskey(_BOTTOM_BCS, botopt[1])
         unsupported("bottom boundary", _describe(_BC_NAMES, botopt[1]))
     end
 
     ssp = reduce(vcat, permutedims.(rows))
-    if strict && ssp_type != 'C'
-        # A declared interpolator other than C-linear does not automatically make a case
-        # incomparable — it only matters where the two actually differ inside a medium:
-        #   * a cubic spline through two points *is* the straight line, so 'S' over two-point media
-        #     is exactly C-linear (checked: `Pekeris_AV.env` declares 'S' and reproduces the
-        #     wavenumbers of the C-linear file this repo generates to all ten printed digits),
-        #   * any interpolator through an isovelocity medium is that constant, so 'N'/'P'/'S' agree
-        #     with C-linear there too.
-        # Accepting these costs nothing in fidelity and unlocks the toolbox cases that only
-        # *declare* a different interpolator. Milestone 6 removes the restriction properly.
-        two_point = all(length(r) == 2 for r in medium_ranges)
-        isovelocity = all(allequal(@view ssp[r, 2]) for r in medium_ranges)
-        equivalent = isovelocity || (ssp_type in ('S', 'P') && two_point)
-        equivalent || unsupported(
-            "SSP interpolation",
-            "$(_describe(_SSP_TYPE_NAMES, ssp_type)) over a varying profile; Kraken.jl is C-linear",
-        )
+    ssp_interp = _ssp_interpolation(ssp, medium_ranges, ssp_type)
+    if ssp_interp === nothing
+        strict && unsupported("SSP interpolation", _interpolation_refusal(ssp_type, nmedia))
+        # Not strict: build *something* inspectable. The linear profile through the same samples is
+        # the nearest thing Kraken.jl can represent.
+        ssp_interp = :c_linear
     end
     if strict
         maximum(@view ssp[:, 3]) > 0 && unsupported("elastic layer", "shear speed cs > 0 in the water column")
@@ -379,11 +431,14 @@ function read_env_file(path::AbstractString; strict::Bool=true)
         # toolbox's arctic and surface-duct cases, where the energy is ducted near the surface and
         # the interesting modes are leaky ones. Milestone 5's stretch task (krakenc parity) is what
         # would make these comparable.
+        # A perfect bottom has no speed of its own and traps every mode, so it is exempt.
         fastest = maximum(@view ssp[:, 2])
-        halfspace[2] > fastest || unsupported(
-            "bottom half-space is not the fastest medium",
-            "cb = $(halfspace[2]) m/s vs max water speed $fastest m/s; no trapped modes",
-        )
+        bottom_bc isa AcousticHalfspace &&
+            halfspace[2] <= fastest &&
+            unsupported(
+                "bottom half-space is not the fastest medium",
+                "cb = $(halfspace[2]) m/s vs max water speed $fastest m/s; no trapped modes",
+            )
 
         # `get_thickness` measures every layer from the surface, so the profile has to start there.
         abs(ssp[1, 1]) > 1e-6 &&
@@ -423,8 +478,8 @@ function read_env_file(path::AbstractString; strict::Bool=true)
     ]
     ssp[end, 1] = layer_depths[end]
 
-    env = UnderwaterEnv(ssp, layers, sspHS; atten_units=atten_units)
-    return (; env, ssp, layers, sspHS, freqs, title, topopt, botopt, clow, chigh, rmax, sigmas, atten_units)
+    env = UnderwaterEnv(ssp, layers, sspHS; atten_units, ssp_interp, top_bc, bottom_bc)
+    return (; env, ssp, layers, sspHS, freqs, title, topopt, botopt, clow, chigh, rmax, sigmas, nmesh, atten_units)
 end
 
 """
