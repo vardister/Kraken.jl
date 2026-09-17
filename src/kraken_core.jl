@@ -101,8 +101,9 @@ ssp_from_interp(mode::Symbol, v) = mode === :n2_linear ? _c_from_n2(v) : v
 _c_from_n2(v::Number) = 1 / sqrt(v)
 _c_from_n2(v) = 1 ./ sqrt.(v)
 
-ssp_interp_ctor(mode::Symbol) =
-    mode === :cubic_spline ? DataInterpolations.CubicSpline : DataInterpolations.LinearInterpolation
+function ssp_interp_ctor(mode::Symbol)
+    return mode === :cubic_spline ? DataInterpolations.CubicSpline : DataInterpolations.LinearInterpolation
+end
 
 """
 Sound speed profile based on measurements at discrete depths `z` in meters and sound speed `c` in m/s.
@@ -743,8 +744,8 @@ function get_Nz_vec(env::UnderwaterEnv, freq; n_per_wavelength=20, factor=1)
     # less one for a vacuum bottom (not one). See the boundary notes above `top_extra_points`.
     last_layer = length(n_intervals)
     Nz_vec = [
-        n + (i == 1 ? top_extra_points(env.top_bc) : 0) + (i == last_layer ? bottom_extra_points(env.bottom_bc) : 0)
-        for (i, n) in enumerate(n_intervals)
+        n + (i == 1 ? top_extra_points(env.top_bc) : 0) + (i == last_layer ? bottom_extra_points(env.bottom_bc) : 0) for
+        (i, n) in enumerate(n_intervals)
     ]
     return Nz_vec, Δz_vec
 end
@@ -1206,8 +1207,8 @@ function medium_mode(ψ, env::UnderwaterEnv, props::AcousticProblemProperties)
     ranges = layer_ranges(props)
     n = length(ranges)
     return [
-        close_medium(i, n, env, i == 1 ? zero(eltype(ψ)) : ψ[first(ranges[i]) - 1], zero(eltype(ψ)), ψ[ranges[i]])
-        for i in eachindex(ranges)
+        close_medium(i, n, env, i == 1 ? zero(eltype(ψ)) : ψ[first(ranges[i]) - 1], zero(eltype(ψ)), ψ[ranges[i]]) for
+        i in eachindex(ranges)
     ]
 end
 
@@ -1295,29 +1296,45 @@ exactly as it was found.
 function mode_eigenvector(
     kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; reltol=0.01
 )
-    local kr_new, w0, w1
     N = sum(props.Nz_vec)
-    # Initialization
-    w0 = initial_mode_guess(env.top_bc, env.bottom_bc, eltype(kr), N)
-    w1 = similar(w0)
-    # Create the finite-difference matrix
-    kr_try = kr - 1e3 * eps(kr)
-    create_finite_diff_matrix!(kr_try, env, props, cache) # Generate the tridigonal finite-diff matrix with the new kr
-    # Inversete iteration
-    for ii in 1:50 # We typically don't need more than 50 iterations
-        w1 .= cache.A \ w0
-        m = argmax(abs.(w1))
-        kr_new = w0[m] / w1[m] + kr_try
-        normalize!(w1)
-        if relative_error(w0, w1) < reltol # Default is 1% relative tolerance
-            w0 .= w1
-            break # If the relative error is small enough, we're done with inverse iteration
-        end
-        w0 .= w1
+    kr_new, w0 = try
+        iterate_eigenvector(kr - 1e3 * eps(kr), env, props, cache, N, reltol)
+    catch err
+        err isa SingularException || rethrow()
+        # The shift above is sized to `kr`, not to the matrix. `kr²` reaches the diagonal scaled by
+        # `λ_scaling` (~Δz²), so for a small `kr` — a mode near cutoff over a perfect bottom — the
+        # shift lands below the diagonal's roundoff, and at an unlucky `kr` the last pivot comes out
+        # exactly zero (measured: rigid-bottom Pekeris at 183.5 Hz, kr = 0.057). Retry with a shift
+        # that moves the diagonal by 1e3·eps of its own size. Only this path changes: every mode that
+        # factorized before still takes the branch above and is bit-identical.
+        δ = 1e3 * eps(Float64) * maximum(abs, cache.a_vec) / minimum(cache.λ_scaling)
+        iterate_eigenvector(sqrt(kr^2 > δ ? kr^2 - δ : kr^2 + δ), env, props, cache, N, reltol)
     end
-    # Inverse iteration complete
     w0 = ifelse(w0[1] < 0, w0 .* -1, w0) # Ensure the first element is positive for consistency between modes
-    return_finite_diff_matrix!(kr_try, env, props, cache) # Reset the cache
+    return kr_new, w0
+end
+
+# Inverse iteration at shift `kr_try`. Leaves the cache as it found it, including when the solve throws.
+function iterate_eigenvector(kr_try, env, props, cache, N, reltol)
+    local kr_new
+    w0 = initial_mode_guess(env.top_bc, env.bottom_bc, typeof(kr_try), N)
+    w1 = similar(w0)
+    create_finite_diff_matrix!(kr_try, env, props, cache) # Generate the tridigonal finite-diff matrix with the new kr
+    try
+        for ii in 1:50 # We typically don't need more than 50 iterations
+            w1 .= cache.A \ w0
+            m = argmax(abs.(w1))
+            kr_new = w0[m] / w1[m] + kr_try
+            normalize!(w1)
+            if relative_error(w0, w1) < reltol # Default is 1% relative tolerance
+                w0 .= w1
+                break # If the relative error is small enough, we're done with inverse iteration
+            end
+            w0 .= w1
+        end
+    finally
+        return_finite_diff_matrix!(kr_try, env, props, cache) # Reset the cache
+    end
     return kr_new, w0
 end
 
@@ -1502,12 +1519,36 @@ seam and writing rows into a preallocated matrix is exactly the mutation reverse
 h_extrap_matrix(hs) = hs .^ permutedims(0:2:(2 * length(hs) - 2))
 
 function richard_extrap(h_meshes, krs_meshes)
+    return sqrt(richard_extrap_squared(h_meshes, krs_meshes))
+end
+
+# The extrapolated `kr²` itself, before the square root — which a mode at cutoff can take below zero.
+function richard_extrap_squared(h_meshes, krs_meshes)
     # Mesh spacings and wavenumbers do not have to carry the same parameters — differentiating with
     # respect to `cb` alone makes `h_meshes` a plain `Float64` matrix and `krs_meshes` a `Dual`
     # vector — so promote explicitly rather than handing a mixed-precision system to `LinearSolve`.
     T = promote_type(eltype(h_meshes), eltype(krs_meshes))
     sol = solve(LinearProblem(T.(h_meshes), T.(krs_meshes))).u
-    return sqrt(sol[1])
+    return sol[1]
+end
+
+"""
+    propagating_count(kr2, env, freq) -> Int
+
+How many of the extrapolated `kr²` (in the solver's descending order) belong to propagating modes.
+
+Over a vacuum or rigid bottom the search runs down to `kr = 0`, and at a mode's cutoff frequency that
+mode's `kr` shrinks with the mesh spacing, converging on zero. Its extrapolated `kr²` is then roundoff
+— measured ±2e-14 on a 100 m Pekeris column at 75 Hz — and `sqrt` throws when the sign comes out
+negative. KRAKEN keeps only `kr² > ω²/cHigh²` (`kraken.f90`). This keeps `kr²` above a floor of
+`√eps · max(ω/c)²`, which is roundoff for a trapped mode and far below any half-space cutoff, so a
+half-space solve never reaches it. A mode below the floor has no horizontal propagation to speak of,
+and every mode after it has a smaller `kr`, so the count stops at the first one.
+"""
+function propagating_count(kr2, env, freq)
+    floor_kr2 = sqrt(eps(Float64)) * maximum(2π * freq ./ env.c.c)^2
+    first_evanescent = findfirst(x -> !(x > floor_kr2), kr2)
+    return first_evanescent === nothing ? length(kr2) : first_evanescent - 1
 end
 
 """
@@ -1605,12 +1646,18 @@ function kraken_jl(env, freq; n_meshes=5, rmax=10_000, method=ITP(), dont_break=
         h_list = vcat(h_list, [props_new.Δz_vec[1]])
         krs_all = vcat(krs_all, [krs_new .^ 2])
         h_meshes = h_extrap_matrix(h_list)
-        rich_krs = map(mm -> richard_extrap(h_meshes, map(ii -> krs_all[ii][mm], 1:i_power)), 1:M)
+        rich_kr2 = map(mm -> richard_extrap_squared(h_meshes, map(ii -> krs_all[ii][mm], 1:i_power)), 1:M)
+        # A mode converging on `kr = 0` is not a mode (see `propagating_count`). Which modes exist is a
+        # discrete choice, like the mesh schedule below, so it builds no tape.
+        M = ignore_derivatives(() -> propagating_count(rich_kr2, env, freq))
+        rich_krs = sqrt.(rich_kr2[1:M])
         # Whether to refine again is a *discrete* decision — it selects a mesh schedule, it is not a
         # quantity anything downstream depends on smoothly. Under `ignore_derivatives` it builds no
         # tape, so the gradient is the one conditional on the schedule this run selected. See the
         # note in the docstring.
         stop = ignore_derivatives() do
+            # Nothing left to converge: every mode was at cutoff.
+            M == 0 && return true
             # Check if the difference is less than the tolerance
             errs = abs.(rich_krs[1:M] - krs_old[1:M])
             err = errs[round(Int, 2 * M / 3)] # apparently this is used in KRAKEN to check for convergence

@@ -177,9 +177,7 @@ end
     @test rigid.top_bc === RigidBoundary()
     @test rigid.bottom_bc === PressureRelease()
     @test occursin("top: RigidBoundary()", sprint(show, rigid))
-    envf = UnderwaterEnv(
-        UnderwaterEnvFORTRAN(ssp, layers, sspHS); top_bc=RigidBoundary(), bottom_bc=PressureRelease()
-    )
+    envf = UnderwaterEnv(UnderwaterEnvFORTRAN(ssp, layers, sspHS); top_bc=RigidBoundary(), bottom_bc=PressureRelease())
     @test envf.top_bc === rigid.top_bc
     @test envf.bottom_bc === rigid.bottom_bc
 
@@ -247,6 +245,34 @@ end
     for (top, bottom) in first.(cases)
         sol = kraken_jl(UnderwaterEnv(lossy_ssp, lossy_layers, lossy_sspHS; top_bc=top, bottom_bc=bottom), freq)
         @test all(m -> isapprox(imag(sol.kr[m]^2), expected; rtol=1e-8), eachindex(sol.kr))
+    end
+end
+
+@testitem "M6.7: a perfect bottom at a mode cutoff" begin
+    using Kraken
+
+    # At a cutoff frequency a mode's kz equals k exactly, so its kr is zero in the continuum and shrinks
+    # with the mesh spacing in the solve. That used to throw: a DomainError when the extrapolated kr²
+    # came out as negative roundoff, or a SingularException when inverse iteration's shift for a small
+    # kr fell below the matrix's roundoff. The mode is not propagating and is dropped, as KRAKEN drops
+    # it, so the count is every mode *strictly* below cutoff. For D = 100 m and c = 1500 m/s the cutoffs
+    # are the multiples of 7.5 Hz (vacuum bottom) and the odd multiples of 3.75 Hz (rigid bottom).
+    c0, D = 1500.0, 100.0
+    ssp, layers, sspHS = pekeris_env(; c0=c0, depth=D)
+    cases = [
+        (PressureRelease(), m -> m * π / D, [75.0, 90.0, 120.0, 150.0]),
+        (RigidBoundary(), m -> (m - 0.5) * π / D, [93.75, 168.75, 183.5, 183.75, 198.75]),
+    ]
+    for (bottom, kz_of, freqs) in cases, freq in freqs
+        env = UnderwaterEnv(ssp, layers, sspHS; bottom_bc=bottom)
+        k = 2π * freq / c0
+        sol = kraken_jl(env, freq)
+        @test length(sol.kr) == count(m -> kz_of(m) < k * (1 - 1e-12), 1:100)
+        kr_exact = sqrt.(k^2 .- kz_of.(eachindex(sol.kr)) .^ 2)
+        # The last surviving mode is the one nearest cutoff and the least accurate in relative terms.
+        @test maximum(abs.(sol.kr .- kr_exact) ./ kr_exact) < 1e-4
+        @test size(sol.modes, 2) == length(sol.kr)
+        @test all(isfinite, sol.modes)
     end
 end
 

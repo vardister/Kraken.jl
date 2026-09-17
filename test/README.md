@@ -383,12 +383,12 @@ not the interpolator**: the same decks forced to C-linear on both sides give the
 `ω/c = 0.105`). `MunkK1525` and `gulf_rd` narrow CHIGH to 1525 m/s, so Fortran reports only their
 slow modes while Kraken.jl finds every trapped one; the leading modes are what is compared.
 
-#### Two defects this found, pinned as `@test_broken`
+#### Two defects this found
 
-Both are in `src/`, outside a test task's reach, and are plan tasks 6.7 and 6.8. Each is a
-`@test_broken` that reports "Unexpected Pass" the moment it is fixed.
+Both were in `src/`, outside a test task's reach, and became plan tasks 6.7 and 6.8. A defect still
+open is a `@test_broken` that reports "Unexpected Pass" the moment it is fixed.
 
-- **A perfect bottom can crash the solve when a mode sits at `kᵣ = 0`.** `richard_extrap` takes the
+- **Fixed in 6.7 — a perfect bottom could crash the solve when a mode sat at `kᵣ = 0`.** `richard_extrap` takes the
   square root of an extrapolated `kᵣ²` that has crossed zero (`DomainError`); KRAKEN discards such a
   mode (`kraken.f90` keeps only `kᵣ² > ω²/cHigh²`). For the 100 m Pekeris column the cutoffs are the
   multiples of `c/2D = 7.5 Hz` with a vacuum bottom and the odd multiples of 3.75 Hz with a rigid one.
@@ -397,6 +397,17 @@ Both are in `src/`, outside a test task's reach, and are plan tasks 6.7 and 6.8.
   `SingularException` in inverse iteration's LU at 183.25–183.75 Hz, next to the 183.75 Hz cutoff).
   Every failure is at or beside a cutoff, and round frequencies are the likely ones to be asked for. `Dickins/Precalc/DickinsK.env` (rigid, 230 Hz)
   and `Bellhop3DTests/DoubleSeamount/DoubleSeamount3D_ray.env` hit it in the toolbox tree.
+
+  After 6.7 the same sweep has **no failures** for either bottom, and at all 14 former failure
+  frequencies Kraken.jl and `kraken.exe` agree on the mode count exactly and on `kᵣ` to ≤ 3.6e-9. A
+  mode whose extrapolated `kᵣ²` is below `√eps · max(ω/c)²` is dropped, as KRAKEN drops
+  `kᵣ² ≤ ω²/cHigh²`. The singular LU was a shift sized to `kᵣ` rather than to the scaled diagonal; the
+  retry that replaces it runs only when the LU fails, and 44 pre-change solutions (every standard
+  environment lossless and lossy, every boundary pair, both new interpolators) are bit-identical.
+  `DickinsK.env` now solves (1226 Julia modes; `kraken.exe` reports 1212 because the deck's
+  `CHIGH = 10000` cuts off `kᵣ < 0.1445`). Its modes 1–264, trapped above the sediment, agree to
+  3e-8; beyond, they reach into 1000 m of 0.5 dB/λ sediment and drift to 1.6e-3 in `kᵣ`. That is the
+  lossy-medium limit of 5.3/5.5, not this: with the attenuation zeroed, all 1212 agree to 2.6e-6.
 - **`:cubic_spline` is a different spline from KRAKEN's.** Kraken.jl uses DataInterpolations'
   *natural* spline; `cCubic` calls `CSPLINE` with `IBCBEG = IBCEND = 0`, which `misc/splinec.f90`
   documents as *not-a-knot*. On the duct that is the whole 3.1e-4. Sampling each end condition's

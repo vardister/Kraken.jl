@@ -1790,7 +1790,7 @@ Found, and not fixable in a test task:
 - **Dependencies:** 6.5, 6.7, 6.8 — both change code on the differentiable path (the Richardson
   extrapolation and the spline coefficients), so gradients checked before them would be re-checked after.
 
-### 6.7 [ ] Stop perfect-bottom solves from crashing at mode cutoffs
+### 6.7 [x] Stop perfect-bottom solves from crashing at mode cutoffs *(completed 2026-09-16)*
 - **Files:** `src/kraken_core.jl`, `test/fortran_reference_tests.jl`, `test/integration_tests.jl`
 - **What:** With a vacuum or rigid bottom, a mode whose `kᵣ` sits at or near zero can have its
   extrapolated `kᵣ²` cross zero, and `richard_extrap` then throws a `DomainError` from `sqrt`. KRAKEN
@@ -1805,6 +1805,47 @@ Found, and not fixable in a test task:
   at each former failure frequency the mode count matches `kraken.exe`. `Dickins/Precalc/DickinsK.env`
   solves. Every existing result is bit-identical (the 6.2 baseline check).
 - **Dependencies:** 6.5
+
+**Outcome.** Two separate mechanisms, both fixed in `src/kraken_core.jl`. The new test item went into
+`test/environment_tests.jl` beside 6.2's analytic item, whose closed forms it reuses, rather than
+`integration_tests.jl`. Measured:
+
+- **The Pekeris sweep (20–200 Hz, 0.25 Hz steps) has 0 failures for vacuum and for rigid**, down from
+  10 and 6. At all 14 former failure frequencies the mode count equals `kraken.exe`'s and `kᵣ` agrees to
+  ≤ 3.6e-9.
+- **44 pre-change solutions are bit-identical** (`kr` and `modes` compared with `==`). The set is every
+  standard environment at 50 and 100 Hz, lossless and with `αb = 0.5`; every top × bottom pair at 50,
+  100 and 137 Hz; and n²-linear and spline Munk over all three bottoms. It was serialized before the
+  first edit, since 6.2's baseline no longer exists.
+- **`Dickins/Precalc/DickinsK.env` solves** (45 s, 1226 modes). See the note below on its agreement.
+- **Verified by per-file runs:** reverse AD 359, forward AD 48, numerical methods 96, Fortran reference
+  1140 + 2 broken (the spline, 6.8).
+
+What each failure was:
+
+- **`DomainError`: a mode converging on `kᵣ = 0`.** At a cutoff its `kᵣ` halves with the mesh spacing
+  (0.028, 0.014, 0.0071, …) and the extrapolated `kᵣ²` is roundoff, ±2e-14, and `sqrt` throws on the
+  negative ones. `kraken_jl` now extrapolates `kᵣ²` (`richard_extrap_squared`), drops trailing modes at
+  or below `√eps · max(ω/c)²` (`propagating_count`, under `ignore_derivatives` like the mesh schedule),
+  and takes the square root after. A half-space mode is never within reach of that floor, so every
+  half-space result is untouched. `M == 0` stops the refinement instead of indexing `errs[0]`.
+- **`SingularException`: a shift below the diagonal's roundoff.** `mode_eigenvector` shifts by
+  `kr − 1e3·eps(kr)`, which moves the diagonal by ~`2e3·eps·kr²·λ` — for `kᵣ = 0.057` on the coarse mesh
+  (a mode that exists only there, at 183.5 Hz), 1.6e-19 against entries of 5e-3. The last pivot came out
+  exactly zero. The first attempt is unchanged; only on `SingularException` does it retry with
+  `δ = 1e3·eps·max|a| / min(λ)` in `kᵣ²`. A first version sized `δ` without the `/ min(λ)` and landed on
+  1e-15, which is itself a singular shift for this matrix; that is why the division is there.
+  `iterate_eigenvector` restores the cache in a `finally`, so a failed attempt cannot leave it shifted.
+
+Not caused by this, but surfaced by `DickinsK.env` solving at all:
+
+- **Lossy sediment degrades the modes that reach it.** Modes 1–264 (trapped above the 1550 m/s sediment)
+  agree with Fortran to 3e-8 and correlation 1.0. Modes 265+ reach into 1000 m of 0.5 dB/λ sediment and
+  drift to 1.6e-3 in `kᵣ`, with mode-shape correlation down to 0.19 around 265–300. With the attenuation
+  zeroed, all 1212 modes agree to 2.6e-6 (correlation ≥ 0.992), so it is the lossy-medium limit 5.3/5.5
+  already documented, at a scale those cases did not reach. Worth its own look if lossy sediments matter.
+- **Mode counts differ on decks that narrow `CHIGH`.** `DickinsK.env` sets 10000 m/s, so `kraken.exe`
+  drops `kᵣ < ω/cHigh` = 0.1445 (1212 modes) where Kraken.jl keeps all 1226. The leading modes match.
 
 ### 6.8 [ ] Match KRAKEN's not-a-knot cubic spline
 - **Files:** `src/kraken_core.jl`, `src/kraken_ad.jl` (if the spline type changes), `test/fortran_reference_tests.jl`

@@ -1020,9 +1020,9 @@ const KR = KrakenReference
                 catch
                     false
                 end
-            @test_broken solves(UnderwaterEnv(pekeris_env()...; bottom_bc=PressureRelease()), 75.0)
-            @test_broken solves(UnderwaterEnv(pekeris_env()...; bottom_bc=RigidBoundary()), 93.75)
-            @test_broken solves(UnderwaterEnv(pekeris_env()...; bottom_bc=RigidBoundary()), 183.5)
+            @test solves(UnderwaterEnv(pekeris_env()...; bottom_bc=PressureRelease()), 75.0)
+            @test solves(UnderwaterEnv(pekeris_env()...; bottom_bc=RigidBoundary()), 93.75)
+            @test solves(UnderwaterEnv(pekeris_env()...; bottom_bc=RigidBoundary()), 183.5)
         end
 
         @testset "M6.5: every SSP interpolation against kraken.exe" begin
