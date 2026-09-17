@@ -415,3 +415,140 @@ end
     @test size(sol.modes, 1) > 50  # Should have reasonable mesh resolution
     @test all(sol.modes[1, :] .> 0)  # First element positive by convention
 end
+
+@testitem "M7.1: tabulated_modes restores the boundary samples the mesh omits" begin
+    using Kraken
+
+    env = UnderwaterEnv(pekeris_env()...)
+    sol = kraken_jl(env, 100.0)
+    zt, Φ = Kraken.tabulated_modes(sol)
+
+    # Pressure-release surface over an acoustic half-space: the mesh has no `z = 0` sample and does
+    # have one at `z = D`, so exactly one row is prepended.
+    @test env.top_bc isa PressureRelease
+    @test env.bottom_bc isa AcousticHalfspace
+    @test length(zt) == size(sol.modes, 1) + 1
+    @test size(Φ) == (size(sol.modes, 1) + 1, size(sol.modes, 2))
+    @test zt[1] == 0.0
+    @test zt[end] == env.depth
+    @test all(iszero, Φ[1, :])
+    @test Φ[2:end, :] == sol.modes
+    @test issorted(zt)
+end
+
+@testitem "M7.1: mode_amplitudes interpolates and rides the half-space tail" begin
+    using Kraken
+
+    env = UnderwaterEnv(pekeris_env()...)
+    sol = kraken_jl(env, 100.0)
+    zt, Φ = Kraken.tabulated_modes(sol)
+    M = length(sol.kr)
+
+    # Exact at the tabulation depths.
+    @test mode_amplitudes(sol, zt) ≈ Φ
+    # A scalar depth still comes back as a 1 × M matrix.
+    @test size(mode_amplitudes(sol, 50.0)) == (1, M)
+    # Midway between two samples, linear interpolation is the average.
+    zmid = (zt[10] + zt[11]) / 2
+    @test vec(mode_amplitudes(sol, zmid)) ≈ (Φ[10, :] .+ Φ[11, :]) ./ 2
+
+    # Below the bottom the mode decays as φ(D)·exp(-γ(z - D)) with γ = √(kᵣ² - (ω/c_b)²).
+    γ = [sqrt(sol.kr[m]^2 - (2π * 100.0 / env.cb)^2) for m in 1:M]
+    @test all(γ .> 0)
+    below = vec(mode_amplitudes(sol, env.depth + 7.0))
+    @test below ≈ Φ[end, :] .* exp.(-γ .* 7.0)
+    @test all(abs.(below) .< abs.(Φ[end, :]))
+
+    # `nmodes` truncates from the first mode.
+    @test size(mode_amplitudes(sol, 50.0; nmodes=2)) == (1, 2)
+    @test mode_amplitudes(sol, 50.0; nmodes=2) ≈ mode_amplitudes(sol, 50.0)[:, 1:2]
+
+    @test_throws ArgumentError mode_amplitudes(sol, -1.0)
+end
+
+@testitem "M7.1: transmission loss on a Pekeris waveguide is physically sensible" begin
+    using Kraken
+
+    env = UnderwaterEnv(pekeris_env()...)
+    sol = kraken_jl(env, 100.0)
+    ranges = collect(1_000.0:100.0:20_000.0)
+    zr = collect(1.0:1.0:99.0)
+    zs = 36.0
+
+    tl = transmission_loss(sol, ranges, zs, zr)
+    @test size(tl) == (length(zr), length(ranges))
+    @test all(isfinite, tl)
+    # 100 Hz, 1–20 km: deep enough to be past the near field, shallow enough not to be silent.
+    @test all(40 .< tl .< 120)
+
+    # Decay with range. Individual depths ring with interference, so average over depth first —
+    # cylindrical spreading acts on the depth-averaged intensity, not on any one null.
+    mean_tl = [sum(view(tl, :, j)) / size(tl, 1) for j in axes(tl, 2)]
+    @test mean_tl[end] > mean_tl[1]
+    # Binned into five range bands, the average loss grows monotonically.
+    edges = range(1, length(ranges) + 1; length=6)
+    bands = [
+        sum(mean_tl[floor(Int, edges[b]):(floor(Int, edges[b + 1]) - 1)]) /
+        (floor(Int, edges[b + 1]) - floor(Int, edges[b])) for b in 1:5
+    ]
+    @test issorted(bands)
+
+    # Interference structure in depth: a coherent sum has nulls, so the depth profile at a fixed
+    # range is not monotone and swings by tens of dB.
+    profile = tl[:, findfirst(==(5_000.0), ranges)]
+    @test maximum(profile) - minimum(profile) > 10
+    @test count(i -> profile[i] > profile[i - 1] && profile[i] > profile[i + 1], 2:(length(profile) - 1)) >= 2
+
+    # A single range and depth still comes back as a 1 × 1 matrix, with the same value.
+    one = transmission_loss(sol, 5_000.0, zs, zr[50])
+    @test size(one) == (1, 1)
+    @test one[1] ≈ tl[50, findfirst(==(5_000.0), ranges)]
+
+    # TL is `-20log10|p|` of the field, exactly.
+    @test tl ≈ -20 .* log10.(abs.(acoustic_field(sol, ranges, zs, zr)))
+end
+
+@testitem "M7.1: the field matches the analytic Pekeris solution up to the 1 m reference" begin
+    using Kraken
+
+    env = UnderwaterEnv(pekeris_env()...)
+    freq = 100.0
+    sol = kraken_jl(env, freq)
+
+    # Same waveguide, solved the other way: closed-form dispersion relation instead of the
+    # finite-difference/Sturm machinery.
+    penv = PekerisUnderwaterEnv(1500.0, 1600.0, 1000.0, 1500.0, 100.0)
+    krs = find_kr(penv, freq)
+    @test length(krs) == length(sol.kr)
+    @test krs ≈ sol.kr rtol = 1e-6
+
+    zs, zr, r = 36.0, 50.0, 5_000.0
+    # `pressure_f`'s `t0` is subtracted from `r / min(c1, cb)`, so this cancels its time shift.
+    p_analytic = pressure_f(penv, krs, freq, r, zs, zr; t0=r / 1500.0)
+    p_field = acoustic_field(sol, r, zs, zr)[1]
+
+    # The two prefactors differ by exactly `-4πi`: `acoustic_field` follows `field.exe` and is
+    # normalized to a point source at 1 m (the 4π), and carries `i·e^{iπ/4}` where `pressure_f`
+    # carries `-i·e^{-iπ/4}`. Nothing else is allowed to differ — same modes, same phase convention.
+    @test p_field / p_analytic ≈ -4π * im rtol = 1e-3
+    @test abs(p_field) ≈ 4π * abs(p_analytic) rtol = 1e-3
+end
+
+@testitem "M7.1: the field API rejects what it cannot compute" begin
+    using Kraken
+
+    env = UnderwaterEnv(pekeris_env()...)
+    sol = kraken_jl(env, 100.0)
+
+    @test_throws ArgumentError acoustic_field(sol, 0.0, 36.0, 50.0)
+    @test_throws ArgumentError acoustic_field(sol, [1_000.0, -5.0], 36.0, 50.0)
+    # The three summation conventions are task 7.2; the keyword exists now so the signature does not
+    # change under callers later.
+    @test_throws ArgumentError acoustic_field(sol, 1_000.0, 36.0, 50.0; mode=:incoherent)
+    @test_throws ArgumentError transmission_loss(sol, 1_000.0, 36.0, 50.0; mode=:semicoherent)
+
+    # No trapped modes: an empty solution gives an all-zero field rather than an error.
+    empty_sol = kraken_jl(env, 1.0)
+    @test isempty(empty_sol.kr)
+    @test acoustic_field(empty_sol, [1_000.0, 2_000.0], 36.0, [10.0, 50.0]) == zeros(ComplexF64, 2, 2)
+end

@@ -12,7 +12,7 @@
 # produces a screenful of bogus ParseError warnings.
 using JuliaFormatter
 
-const PATHS = ["src", "ext", "test", "dev", "docs", "examples", "benchmark"]
+const PATHS = ["src", "ext", "test", "docs", "examples", "benchmark"]
 
 targets = filter(isdir, PATHS)
 append!(targets, filter(f -> endswith(f, ".jl"), readdir(".")))

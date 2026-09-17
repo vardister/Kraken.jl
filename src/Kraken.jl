@@ -4,6 +4,7 @@ module Kraken
 include("kraken_core.jl")
 include("kraken_ad.jl")
 include("kraken_pekeris.jl")
+include("kraken_field.jl")
 
 include("kraken_standard_environments.jl")
 

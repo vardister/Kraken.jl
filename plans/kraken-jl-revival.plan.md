@@ -1967,7 +1967,7 @@ and not the other. Validation is against `field.exe` (also shipped by `Acoustics
 | `broadband_field(env, freqs, ...)` | `env`, `freqs`, geometry | `nmodes` | Per-frequency field for pulse synthesis |
 | `write_flp_file` / `run_fortran_field` | — | — | Test-only, extends `test/reference/` |
 
-### 7.1 [ ] Promote the field code into the package with a clean API
+### 7.1 [x] Promote the field code into the package with a clean API *(completed 2026-09-17)*
 - **Files:** create `src/kraken_field.jl`, delete `dev/kraken_broadband.jl`, edit `src/Kraken.jl`, `Project.toml`
 - **What:** Rework the staged broadband code into `acoustic_field` and `transmission_loss` with the signatures
   above. Fix the defects carried over from the staged version: replace the `TL::Bool` flag with two separate
@@ -1978,6 +1978,50 @@ and not the other. Validation is against `field.exe` (also shipped by `Acoustics
 - **Acceptance:** `transmission_loss` runs on a Pekeris solution and produces a physically sensible TL field
   (monotone decay with range, interference structure in depth).
 - **Dependencies:** 6.6
+
+**Outcome.** `src/kraken_field.jl` exports `acoustic_field`, `transmission_loss` and `mode_amplitudes`;
+`dev/` is gone, and with it the last piece of code that lived outside the package. No new dependency —
+`NamedArrays` stays dropped and `DataInterpolations` is not used here either. Every convention in the
+new file is transcribed from the Acoustics Toolbox rather than from a textbook, because 7.4 validates
+against `field.exe`:
+
+- **The phase and amplitude come from `Evaluate` in `KrakenField/EvaluateMod.f90`**, whose factor is
+  `i·√(2π)·e^{iπ/4}` and which divides by `√r` for a point source. That is the conjugate of Jensen et
+  al. (5.13) times 4π, and the 4π is deliberate — `Evaluate`'s header says "Normalized to pressure of
+  point source at 1 meter", so `-20log10|p|` is TL with nothing further subtracted. The staged code had
+  *both* conventions, one per method (`i·e^{-iπ/4}/(ρ√(8πr))` for the scalar method, the 4π form for the
+  TL branch), which is why it could not be checked against anything.
+- **`1/ρ(zₛ)` is restored.** `Evaluate` has no density factor because KRAKEN carries ρ in g/cm³, where
+  water is 1; Kraken.jl carries kg/m³ and normalizes `∫φ²/ρ dz = 1` in those units, so its modes are
+  √1000 larger. Dividing by ρ(zₛ) in kg/m³ cancels both factors exactly, reproducing `field.exe` for a
+  water-column source while staying correct for a source in a sediment, where KRAKEN's omission is not.
+- **The depth vector question had a third answer.** Neither staged method was right: one prepended `0.0`
+  to `zn` without prepending a mode value (a length mismatch), the other omitted it and extrapolated
+  across the surface. `tabulated_modes` puts back the boundary samples the *mesh* omits — `φ(0) = 0`
+  under a pressure-release surface, `φ(D) = 0` under a vacuum bottom — because those are the points the
+  finite-difference system has no unknown for, not points that do not exist.
+- **Interpolation is linear, not quadratic**, and a receiver below the last mesh point rides
+  `φ(D)·exp(-γ(z-D))`. That is `ReadOneMode` in `KrakenField/ReadModes.f90`: `Weight` returns linear
+  weights, and the half-space tail is its own branch. The staged `QuadraticInterpolation` was defensible
+  but unverifiable.
+- **Verified against the analytic Pekeris path**, which is an independent solve: at 100 Hz, 5 km, the
+  new field over `pekeris_env()` equals `pressure_f`'s times `-4πi` to 0.06% in magnitude and 0.03° in
+  phase — exactly the ratio the two prefactors predict, so both the 4π and the density bookkeeping are
+  pinned, not merely plausible.
+- **Fixed defects carried over:** `nmodes` defaults to all modes rather than 41, the `TL::Bool` flag is
+  two functions, the return is a plain `length(zr) × length(ranges)` matrix rather than a `NamedArray`,
+  and the `exp(2iπf·t₀)` time shift is gone from the single-frequency field — it belongs to 7.3's
+  synthesis, not to a field at one frequency.
+- **`mode` exists but only accepts `:coherent`.** The keyword is in the signature now so 7.2 does not
+  change it under callers; the other two raise an `ArgumentError` naming the task.
+
+Five new `@testitem`s in `test/integration_tests.jl` (boundary samples, interpolation and the
+half-space tail, a physically sensible TL field, the analytic cross-check, and the rejections). Full
+`Pkg.test()` green: 2484 passing, 0 failures, 0 errors. Format check clean; docs build green, with the
+three new exports in the API reference. `dev` dropped from `.github/format_check.jl`'s path list.
+
+Note: the docs environment's manifest was stale (`KeyError: Zygote` on precompile) and needed
+`Pkg.instantiate()` — pre-existing, unrelated to this task, and the same failure mode as the test env.
 
 ### 7.2 [ ] Implement coherent, incoherent, and semicoherent summation
 - **Files:** `src/kraken_field.jl`

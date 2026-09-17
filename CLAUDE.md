@@ -157,20 +157,22 @@ dependency or reference it from the test harness.
 
 ## Architecture
 
-`src/Kraken.jl` is the module entry point and `include`s three files, in dependency order:
+`src/Kraken.jl` is the module entry point and `include`s five files, in dependency order:
 
 ```julia
 include("kraken_core.jl")                  # main FD solver — most work happens here
+include("kraken_ad.jl")                    # reverse-mode rules for the differentiable seam
 include("kraken_pekeris.jl")               # closed-form Pekeris (2-layer) analytic model
+include("kraken_field.jl")                 # pressure field and transmission loss from the modes
 include("kraken_standard_environments.jl") # canned test environments (pekeris_env, one_layer_env, munk_env, ...)
 ```
 
-`src/` now contains exactly the files `Kraken.jl` includes, and nothing else. Code that is not part
-of the package lives outside it: **`dev/kraken_broadband.jl`** is a standalone script you
-`include(...)` by hand (broadband pulse synthesis from mode sums). It is in `dev/` rather than
-`src/` so its "not part of the package" status is structural instead of a comment — Milestone 7
-promotes it properly, which means moving it back into `src/`, adding the `include` to `Kraken.jl`,
-and adding its deps to `Project.toml`.
+`src/` contains exactly the files `Kraken.jl` includes, and nothing else. The `dev/` directory is
+gone: plan task 7.1 promoted `dev/kraken_broadband.jl` into `src/kraken_field.jl` with a real API
+(`acoustic_field`, `transmission_loss`, `mode_amplitudes`), so there is no longer a staged script to
+`include(...)` by hand. It needed no new dependencies — the interpolation is a dozen lines of linear
+weights rather than a `DataInterpolations` object, which is both what Fortran `field.exe` does and
+one less thing for Milestone 7's reverse-mode work to trip over.
 
 Plotting lives in **`ext/KrakenMakieExt.jl`**, a package extension triggered by `Makie` (a
 `[weakdeps]` entry, so it costs nothing unless you ask for it). `using CairoMakie` or `using GLMakie`
