@@ -1780,7 +1780,7 @@ Found, and not fixable in a test task:
   the receiver grid at 2001 points (`_default_nrd`). `MunkS_500Hz.env` and `DoubleSeamount` read ~0 on
   both branches. Not a solver issue, and nothing asserts on those decks. Noted rather than tasked.
 
-### 6.6 [ ] Confirm AD still holds across the new options
+### 6.6 [x] Confirm AD still holds across the new options *(completed 2026-09-17)*
 - **Files:** `test/reverse_ad_tests.jl`
 - **What:** Each new boundary condition changes the matrix rows the rrules differentiate through, and each
   interpolation mode changes the parameter-to-coefficient map. Extend the AD suite to cover at least one
@@ -1789,6 +1789,56 @@ Found, and not fixable in a test task:
 - **Acceptance:** Zygote matches ForwardDiff for every boundary condition and interpolation mode.
 - **Dependencies:** 6.5, 6.7, 6.8 — both change code on the differentiable path (the Richardson
   extrapolation and the spline coefficients), so gradients checked before them would be re-checked after.
+
+**Outcome.** It found one real break, now fixed: **a rigid top over a rigid bottom gave an all-NaN reverse
+gradient.** It also found that ForwardDiff cannot be the reference under a rigid top. The new section
+`"Reverse-mode AD across boundary conditions and SSP interpolation"` at the end of
+`test/reverse_ad_tests.jl` runs a single-medium environment with four sound-speed knots,
+`θ = [c₁, c₂, c₃, c₄, z₂, cb, ρb, depth]`, at 50 Hz, over every top × bottom pair and all three
+interpolation modes. The loss is `solution_loss`, so wavenumbers, mode shapes and Richardson
+extrapolation are all on the path. Also touched `src/kraken_ad.jl`. Measured:
+
+- **Zygote matches central differences in all 12 linear configurations**, at 1.6e-8 to 3.2e-7 over
+  the parameters a difference can measure (the four speeds, the knot depth `z₂`, and `ρb`). `cb` and
+  `depth` move the mesh count and are left out, as in the backend table. Over a rigid or vacuum
+  bottom, `∂/∂cb` and `∂/∂ρb` are exactly zero.
+- **Pressure-release tops: Zygote matches ForwardDiff to ≤ 5e-12** for every bottom and for both
+  `:c_linear` and `:n2_linear`.
+- **Mooncake matches Zygote to < 1e-11** on one configuration per new option (rigid top, rigid
+  bottom, vacuum bottom, n²-linear).
+- **`:cubic_spline`: reverse mode throws `ArgumentError`, as 6.3 decided, and ForwardDiff goes
+  through.** On all six boundary pairs it matches central differences to ≤ 6.3e-7 under a
+  pressure-release top and ≤ 5.7e-5 under a rigid one. So for splines, "Zygote matches ForwardDiff"
+  means "reverse mode refuses and forward mode is right".
+- **Verified by a full `Pkg.test()`** through kaimon's `run_tests`: 2446 pass, 0 fail, 21.8 min.
+  Format clean with JuliaFormatter 2.13.
+
+The NaN, and its fix:
+
+- **The eigenvector pullback factored an exactly singular matrix.** The rule does
+  `lu(shifted_matrix(kr, …); check=false)` at the converged root. At the tests' 1e-10 root tolerance,
+  the lowest of seven modes on the rigid/rigid guide (`kᵣ = 0.0905`) has a last pivot of exactly
+  `0.0`, where its neighbours' are ~1e-18. The solve returned NaN, the NaN reached every entry through
+  `sum(abs2, modes)`, and nothing raised. This is the pullback's version of the zero pivot 6.7 fixed
+  in the primal, whose retry the rule never got. It depends on the tolerance: at the default the same
+  gradient is finite. Wavenumber gradients were never affected.
+- **The fix:** when `!issuccess(F)`, refactor with the diagonal moved by `1e3·eps·max|d|`. Both solves
+  are already projected onto the complement of `v`, the only direction the shift changes materially.
+  Afterwards rigid/rigid matches central differences to 2.8e-7, like its neighbours. Any
+  factorization that succeeded before takes the old path unchanged.
+
+Loose end, not fixed:
+
+- **ForwardDiff is unreliable under a rigid top, and forward-mode users get no warning.** It
+  differentiates the ITP solver's last iterate rather than the root (4.2's mechanism). Under a
+  pressure-release top that costs ~1e-12. Under a rigid top the error varies with configuration and
+  frequency: 3e-13 over a half-space at 50 Hz but 6e-4 at 100 Hz, 3e-6 over a rigid bottom, 1.4e-3
+  over a vacuum. On a single refinement mesh (100 Hz, rigid over half-space, `∂kᵣ/∂c₁`), Zygote
+  matches central differences on every mode, while ForwardDiff is 0.3% out on some modes. Tightening
+  the tolerance to 1e-13 fixes some modes and worsens others. The rigid-top tests therefore use
+  central differences as the arbiter and hold ForwardDiff to a gross-break bound of 1e-2. A real fix
+  is a `Dual` method for `solve_for_kr` that applies the implicit function theorem, the forward twin
+  of the existing rrule. That is its own task.
 
 ### 6.7 [x] Stop perfect-bottom solves from crashing at mode cutoffs *(completed 2026-09-16)*
 - **Files:** `src/kraken_core.jl`, `test/fortran_reference_tests.jl`, `test/integration_tests.jl`

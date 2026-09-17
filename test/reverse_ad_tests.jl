@@ -830,3 +830,115 @@ const RRULE_FDM = central_fdm(5, 1; max_range=1e-6)
     # (`DomainError`). The direct check on this rule is the hand-stepped "eigenvector adjoint
     # content" testset above, which covers every partial family entry by entry.
 end
+
+### Milestone 6: every boundary condition and every interpolation mode ----------------------------
+#
+# Each boundary condition rewrites the first or last rows of the tridiagonal system both rules
+# differentiate through, and each interpolation mode changes the map from profile parameters to those
+# rows. Everything above runs on the default pair (pressure-release over a half-space, c-linear), so
+# without this section a non-default configuration could lose its gradient silently. One already had:
+# a rigid top over a rigid bottom returned an all-NaN gradient until the eigenvector pullback learned
+# to survive an exactly-zero pivot (6.6).
+
+"""
+One medium over `θ = [c₁, c₂, c₃, c₄, z₂, cb, ρb, depth]`: sound-speed knots at `0`, `z₂`,
+`0.7·depth` and `depth`, so the profile varies inside the water column and one knot depth is a
+parameter. A single medium is what a `:cubic_spline` profile needs (6.3), so all three interpolation
+modes run on the same environment.
+"""
+function m6env(θ; top_bc=PressureRelease(), bottom_bc=AcousticHalfspace(), ssp_interp=:c_linear)
+    c1, c2, c3, c4, z2, cb, ρb, depth = θ
+    ssp = [
+        0.0 c1 0.0 1000.0 0.0 0.0
+        z2 c2 0.0 1000.0 0.0 0.0
+        0.7*depth c3 0.0 1000.0 0.0 0.0
+        depth c4 0.0 1000.0 0.0 0.0
+    ]
+    sspHS = [0.0 343.0 0.0 0.00121 0.0 0.0; depth cb 0.0 ρb 0.0 0.0]
+    return UnderwaterEnv(ssp, [0.0 0.0 depth], sspHS; top_bc, bottom_bc, ssp_interp)
+end
+
+θ6 = [1500.0, 1490.0, 1510.0, 1520.0, 40.0, 1700.0, 1800.0, 100.0]
+
+# What a central difference can measure: the four sound speeds, the interior knot depth and the
+# half-space density. `cb` and `depth` set the mesh point count (see the comment on `ENVIRONMENTS`).
+const M6_DIFFERENCEABLE = [1, 2, 3, 4, 5, 7]
+
+# 50 Hz: 3 to 7 modes depending on the boundaries, none of them near a cutoff.
+m6loss(θ; kws...) = solution_loss(θ_ -> m6env(θ_; kws...), θ; freq=50.0)
+
+function central_gradient(f, θ, idx; h=1e-6)
+    return map(idx) do i
+        step = [j == i ? h * abs(θ[i]) : 0.0 for j in eachindex(θ)]
+        return (f(θ .+ step) - f(θ .- step)) / (2 * step[i])
+    end
+end
+
+# One configuration per new option also goes through Mooncake, which reaches the same rules through
+# `ext/KrakenMooncakeExt.jl`. Every configuration would recompile Mooncake's rules a dozen times.
+const M6_MOONCAKE = [
+    (RigidBoundary(), AcousticHalfspace(), :c_linear),
+    (PressureRelease(), RigidBoundary(), :c_linear),
+    (PressureRelease(), PressureRelease(), :c_linear),
+    (PressureRelease(), AcousticHalfspace(), :n2_linear),
+]
+
+@testset "Reverse-mode AD across boundary conditions and SSP interpolation" begin
+    @testset "$top over $bottom, $interp" for top in (PressureRelease(), RigidBoundary()),
+        bottom in (AcousticHalfspace(), RigidBoundary(), PressureRelease()),
+        interp in (:c_linear, :n2_linear)
+
+        f = θ_ -> m6loss(θ_; top_bc=top, bottom_bc=bottom, ssp_interp=interp)
+        @test !isempty(kraken_jl(m6env(θ6; top_bc=top, bottom_bc=bottom, ssp_interp=interp), 50.0).kr)
+
+        g_zygote = Zygote.gradient(f, θ6)[1]
+        g_forward = ForwardDiff.gradient(f, θ6)
+        @test all(isfinite, g_zygote)
+
+        # Central differences share no code with either AD system, so they are the arbiter. Measured
+        # 1.6e-8 to 3.2e-7 across all twelve configurations.
+        @test relerr_norm(g_zygote[M6_DIFFERENCEABLE], central_gradient(f, θ6, M6_DIFFERENCEABLE)) < 1e-6
+
+        # Only a half-space bottom has a `g` term; over any other `cb` and `ρb` reach nothing.
+        if !(bottom isa AcousticHalfspace)
+            @test g_zygote[6] == 0 && g_zygote[7] == 0
+        end
+
+        if top isa PressureRelease
+            # Measured ≤ 5e-12.
+            @test relerr_norm(g_zygote, g_forward) < 1e-8
+        else
+            # Under a rigid top ForwardDiff stops being a reference. It differentiates the root
+            # solver's last iterate rather than the root (4.2), and under a rigid top that error is
+            # erratic rather than ~1e-12: 3e-13 over a half-space at 50 Hz but 6e-4 at 100 Hz, 3e-6
+            # over a rigid bottom, 1.4e-3 over a vacuum. Per mode on a refinement mesh, the rule matches central
+            # differences to every printed digit while ForwardDiff is 0.3% out on some modes, and a
+            # tighter solver tolerance moves that error without removing it. The rule is right, as
+            # the central-difference check above says; this bound only catches a gross break.
+            @test relerr_norm(g_zygote, g_forward) < 1e-2
+        end
+
+        if (top, bottom, interp) in M6_MOONCAKE
+            g_mooncake = DifferentiationInterface.gradient(f, AutoMooncake(), θ6)
+            @test relerr_norm(g_mooncake, g_zygote) < 1e-11
+        end
+    end
+
+    @testset "a cubic spline: reverse mode refuses, ForwardDiff goes through — $top over $bottom" for top in (
+            PressureRelease(), RigidBoundary()
+        ),
+        bottom in (AcousticHalfspace(), RigidBoundary(), PressureRelease())
+
+        # 6.3 left reverse mode without a rule for a spline's coefficients, so it throws rather than
+        # returning the linear interpolant's derivative. ForwardDiff is the way it names, so that is
+        # what gets checked, against central differences. The rigid-top bound is looser for the
+        # reason given above; measured ≤ 6.3e-7 under a pressure-release top and ≤ 5.7e-5 under a
+        # rigid one.
+        f = θ_ -> m6loss(θ_; top_bc=top, bottom_bc=bottom, ssp_interp=:cubic_spline)
+        @test_throws ArgumentError Zygote.gradient(f, θ6)
+        g_forward = ForwardDiff.gradient(f, θ6)
+        @test all(isfinite, g_forward)
+        @test relerr_norm(g_forward[M6_DIFFERENCEABLE], central_gradient(f, θ6, M6_DIFFERENCEABLE)) <
+            (top isa PressureRelease ? 1e-5 : 1e-3)
+    end
+end

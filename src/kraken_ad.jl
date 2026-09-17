@@ -639,6 +639,16 @@ function ChainRulesCore.rrule(::typeof(mode_eigenvector), kr, env, props, cache;
         N = length(v)
         M = shifted_matrix(kr, env, props, cache)
         F = lu(M; check=false)
+        # A converged root can make `M`'s last pivot exactly zero, as 6.7 found for the primal's own
+        # shift: on a rigid-over-rigid guide at a 1e-10 root tolerance, measured, the lowest mode's
+        # pivot is 0.0 where its neighbours' are ~1e-18, and the solve below returns NaN. Factor
+        # instead with the diagonal moved by 1e3·eps of its own size. Both solves are projected onto
+        # the complement of `v`, the only direction that shift changes materially, so the cotangent
+        # moves by roundoff. Every factorization that succeeded before is untouched.
+        if !issuccess(F)
+            δ = 1e3 * eps(real(eltype(M))) * maximum(abs, M.d)
+            F = lu(Tridiagonal(M.dl, M.d .- δ, M.du))
+        end
         P(u) = u .- dot(v, u) .* v          # projection onto the complement of `v`
         y = P(F \ P(Δv))
         y = P(y .+ (F \ P(Δv .- M * y)))    # one step of iterative refinement, in the complement
