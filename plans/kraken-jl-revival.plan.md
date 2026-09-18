@@ -1963,7 +1963,7 @@ and not the other. Validation is against `field.exe` (also shipped by `Acoustics
 |---|---|---|---|
 | `acoustic_field(sol, ranges, zs, zr)` | `sol::NormalModeSolution`, `ranges`, `zs`, `zr` | `nmodes`, `mode=:coherent` | Complex pressure field |
 | `transmission_loss(sol, ranges, zs, zr)` | same | `nmodes`, `mode` | TL in dB |
-| `mode` values | — | `:coherent`, `:incoherent`, `:semicoherent` | Matches `field.exe` task codes C / I / S |
+| `mode` values | — | `:coherent`, `:incoherent` | Matches `field.exe` task codes C (or blank) / I. **Corrected in 7.2:** there is no S — see that task's outcome |
 | `broadband_field(env, freqs, ...)` | `env`, `freqs`, geometry | `nmodes` | Per-frequency field for pulse synthesis |
 | `write_flp_file` / `run_fortran_field` | — | — | Test-only, extends `test/reference/` |
 
@@ -2023,7 +2023,7 @@ three new exports in the API reference. `dev` dropped from `.github/format_check
 Note: the docs environment's manifest was stale (`KeyError: Zygote` on precompile) and needed
 `Pkg.instantiate()` — pre-existing, unrelated to this task, and the same failure mode as the test env.
 
-### 7.2 [ ] Implement coherent, incoherent, and semicoherent summation
+### 7.2 [x] Implement coherent, incoherent, and semicoherent summation *(completed 2026-09-17)*
 - **Files:** `src/kraken_field.jl`
 - **What:** Implement the three mode-summation conventions matching `field.exe`'s task codes. Note the phase
   convention: KRAKEN uses `exp(-i·kr·R)`, which is why `AcousticsToolbox.jl` conjugates its field results —
@@ -2032,6 +2032,48 @@ Note: the docs environment's manifest was stale (`KeyError: Zygote` on precompil
 - **Acceptance:** Incoherent TL is smooth where coherent TL shows interference nulls; all three modes run on
   all standard environments.
 - **Dependencies:** 7.1
+
+**Outcome.** Two conventions, not three — `mode` takes `:coherent` and `:incoherent`, and
+`:semicoherent` raises an `ArgumentError` that explains itself. The plan's Deliverable Spec said the
+three matched `field.exe`'s task codes C / I / S; the third does not exist, and this is the same kind
+of drift as the units table, caught the same way — by reading the Fortran instead of trusting the
+table. Evidence, all in `~/programs/AcousticsToolboxOALIB`:
+
+- **`KrakenField/field.f90` accepts exactly two.** Its `SELECT CASE ( Opt( 4 : 4 ) )` has `CASE ('C', ' ')`
+  and `CASE ('I')`, and a `CASE DEFAULT` that calls `ERROUT` with *"Unknown option for coherent vs.
+  incoherent mode addition"*. Asking `field.exe` for an S run is a fatal error, not a third result.
+- **The Matlab port agrees.** `Matlab/Kraken/evalri.m` branches on `Opt(4:4) ~= 'I'` and nothing else.
+- **Semi-coherent is BELLHOP's.** `Bellhop/influence.f90` and `bellhop.f90` weight an incoherent TL by
+  the Lloyd-mirror source pattern `√2·sin(ω·zₛ·sinθ/c)`, indexed by *ray take-off angle*. The toolbox's
+  own `tests/Munk/runtestsM.m` runs its semi-coherent cases through `bellhopM`, never through `field`;
+  `MunkK.flp`'s `OPT` is `'RA'`, whose fourth character is blank, i.e. coherent.
+- **And it has no mode-sum meaning.** Translating the weight to modes gives `√2·sin(γ_m·zₛ)` with `γ_m`
+  the vertical wavenumber at the source — but `φ_m(zₛ)` already contains the surface image, so applying
+  it again double-counts. Inventing it would have produced a curve that looked plausible and matched
+  nothing, which is precisely what this task's own note warns about.
+
+The incoherent sum is `|Q|·√(Σ_m |term_m|²)/√r`. `Evaluate` writes it as `SQRT(SUM((Cmat*Hank)**2))`
+after forcing `ik = REAL(ik)` — which strips the oscillation and keeps the attenuation decay — and so
+carries `1/√k`'s phase into the square; `evalri.m`, and `Evaluate`'s own commented-out line directly
+above it, take `ABS` of the whole term. The two agree exactly for a lossless solve and differ by a
+phase for a lossy one. We follow the `ABS` form, the one that is actually a magnitude. **7.4 should
+expect that difference** if it compares a lossy incoherent case against the Fortran.
+
+Measured on `pekeris_env()` at 100 Hz, 1–20 km:
+
+- **Incoherent is ~12000× smoother along range** by mean absolute second difference (5.3e-4 vs 6.2 dB),
+  and its dynamic range is 49–82 dB against the coherent field's 44–116 dB — the deep nulls are the
+  whole difference.
+- **Incoherent TL is exactly cylindrical spreading.** Lossless means every `|exp(-i kᵣ r)|` is 1, so the
+  only range dependence left is the `1/√r`: measured `TL(17 km) - TL(3 km) = 10log₁₀(17/3)` to 3.6e-15 dB.
+  That is an identity rather than a tolerance, and it pins the whole incoherent path.
+- **The incoherent field is exactly real and positive**, and **with one mode the two conventions agree
+  bit for bit** — there is nothing to interfere with.
+- **Both modes run on all five standard environments** (pekeris, one_layer, one_layer_slope,
+  two_layer_slope, munk at 50 Hz), all finite and inside 20–150 dB.
+
+Four new `@testitem`s in `test/integration_tests.jl`. The 7.1 rejection test was updated: `:incoherent`
+no longer throws, so it now checks `:semicoherent` and a misspelling instead.
 
 ### 7.3 [ ] Broadband synthesis
 - **Files:** `src/kraken_field.jl`
@@ -2049,7 +2091,8 @@ Note: the docs environment's manifest was stale (`KeyError: Zygote` on precompil
   `AcousticsToolbox_jll`), then read the resulting `.shd` binary. Compare TL fields over a range-depth grid,
   reporting maximum and RMS dB difference. Expect and account for the phase-convention difference noted in 7.2.
 - **Acceptance:** TL matches `field.exe` to within 0.5 dB RMS on the Pekeris and one-layer environments;
-  the comparison covers all three summation modes.
+  the comparison covers both summation modes (`C` and `I`). *Was "all three" — 7.2 established that
+  `field.exe` has no third task code, so there is no S run to compare against.*
 - **Dependencies:** 7.3
 
 ### 7.5 [ ] Make the field differentiable end to end

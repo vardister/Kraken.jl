@@ -542,13 +542,123 @@ end
 
     @test_throws ArgumentError acoustic_field(sol, 0.0, 36.0, 50.0)
     @test_throws ArgumentError acoustic_field(sol, [1_000.0, -5.0], 36.0, 50.0)
-    # The three summation conventions are task 7.2; the keyword exists now so the signature does not
-    # change under callers later.
-    @test_throws ArgumentError acoustic_field(sol, 1_000.0, 36.0, 50.0; mode=:incoherent)
-    @test_throws ArgumentError transmission_loss(sol, 1_000.0, 36.0, 50.0; mode=:semicoherent)
+    # Summation modes get their own tests in M7.2; here we only check that an unknown one is refused
+    # rather than quietly treated as coherent.
+    @test_throws ArgumentError acoustic_field(sol, 1_000.0, 36.0, 50.0; mode=:semicoherent)
+    @test_throws ArgumentError transmission_loss(sol, 1_000.0, 36.0, 50.0; mode=:coherant)
 
     # No trapped modes: an empty solution gives an all-zero field rather than an error.
     empty_sol = kraken_jl(env, 1.0)
     @test isempty(empty_sol.kr)
     @test acoustic_field(empty_sol, [1_000.0, 2_000.0], 36.0, [10.0, 50.0]) == zeros(ComplexF64, 2, 2)
+end
+
+@testitem "M7.2: incoherent summation is smooth where coherent rings" begin
+    using Kraken
+
+    env = UnderwaterEnv(pekeris_env()...)
+    sol = kraken_jl(env, 100.0)
+    ranges = collect(1_000.0:50.0:20_000.0)
+    zr = collect(1.0:1.0:99.0)
+    zs = 36.0
+
+    tlc = transmission_loss(sol, ranges, zs, zr)
+    tli = transmission_loss(sol, ranges, zs, zr; mode=:incoherent)
+    @test size(tli) == size(tlc)
+    @test all(isfinite, tli)
+
+    # Mean absolute second difference along range: the interference pattern is exactly what this
+    # measures, and the incoherent sum has none of it.
+    roughness(v) = sum(abs, v[3:end] .- 2 .* v[2:(end - 1)] .+ v[1:(end - 2)]) / (length(v) - 2)
+    @test roughness(tli[50, :]) < roughness(tlc[50, :]) / 100
+
+    # In depth the story is different, and worth being explicit about: incoherent summation removes
+    # the *inter-mode phase*, so it flattens the range interference — but the depth structure comes
+    # from the mode shapes φ_m(z_r) themselves and survives. Both profiles still oscillate; what the
+    # incoherent one loses is the deep nulls, and with them most of the dynamic range.
+    profile_c = tlc[:, 100]
+    profile_i = tli[:, 100]
+    @test maximum(profile_c) - minimum(profile_c) > 30
+    @test maximum(profile_i) - minimum(profile_i) < 25
+    @test maximum(profile_c) > maximum(profile_i) + 10
+    @test count(i -> profile_i[i] > profile_i[i - 1] && profile_i[i] > profile_i[i + 1], 2:98) >= 2
+    @test maximum(tlc) > maximum(tli) + 20    # coherent reaches much deeper nulls
+end
+
+@testitem "M7.2: the incoherent field is a magnitude obeying cylindrical spreading" begin
+    using Kraken
+
+    env = UnderwaterEnv(pekeris_env()...)
+    sol = kraken_jl(env, 100.0)
+    zs, zr = 36.0, 55.0
+
+    # Phase is discarded by construction, so what comes back is real and non-negative.
+    p = acoustic_field(sol, [3_000.0, 17_000.0], zs, zr; mode=:incoherent)
+    @test all(iszero, imag.(p))
+    @test all(real.(p) .> 0)
+
+    # In a lossless waveguide every |exp(-i·kᵣ·r)| is 1, so the only range dependence left in
+    # `√(Σ|term|²)/√r` is the `1/√r`. The incoherent TL is therefore exactly cylindrical spreading —
+    # an identity, not an approximation, and one the coherent field comes nowhere near.
+    @test !is_lossy(env)
+    a = transmission_loss(sol, 3_000.0, zs, zr; mode=:incoherent)[1]
+    b = transmission_loss(sol, 17_000.0, zs, zr; mode=:incoherent)[1]
+    @test b - a ≈ 10 * log10(17_000.0 / 3_000.0) atol = 1e-10
+
+    # With one mode there is nothing to interfere with, so the two conventions coincide exactly.
+    @test transmission_loss(sol, 5_000.0, zs, zr; nmodes=1)[1] ==
+        transmission_loss(sol, 5_000.0, zs, zr; nmodes=1, mode=:incoherent)[1]
+end
+
+@testitem "M7.2: both summation modes run on every standard environment" begin
+    using Kraken
+
+    cases = [
+        ("pekeris", pekeris_env(), 100.0),
+        ("one_layer", one_layer_env(), 100.0),
+        ("one_layer_slope", one_layer_slope_env(), 100.0),
+        ("two_layer_slope", two_layer_slope_env(), 100.0),
+        ("munk", munk_env(), 50.0),
+    ]
+
+    for (name, matrices, freq) in cases
+        env = UnderwaterEnv(matrices...)
+        sol = kraken_jl(env, freq)
+        @test !isempty(sol.kr)
+        D = env.depth
+        zr = collect(range(0.05 * D, 0.95 * D, 7))
+        for mode in Kraken.SUMMATION_MODES
+            tl = transmission_loss(sol, [2_000.0, 8_000.0], 0.3 * D, zr; mode=mode)
+            @test size(tl) == (7, 2)
+            @test all(isfinite, tl)
+            @test all(20 .< tl .< 150)
+        end
+    end
+end
+
+@testitem "M7.2: semicoherent is refused with a reason" begin
+    using Kraken
+
+    env = UnderwaterEnv(pekeris_env()...)
+    sol = kraken_jl(env, 100.0)
+
+    @test Kraken.SUMMATION_MODES == (:coherent, :incoherent)
+    @test Kraken.summation_mode(:coherent) === Val(:coherent)
+    @test Kraken.summation_mode(:incoherent) === Val(:incoherent)
+
+    # `field.exe` accepts only C/blank and I; semi-coherent is a BELLHOP run type whose Lloyd-mirror
+    # weight is indexed by ray take-off angle, which a mode sum does not have. The error says so
+    # rather than silently doing something plausible.
+    err = try
+        acoustic_field(sol, 1_000.0, 36.0, 50.0; mode=:semicoherent)
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError
+    @test occursin("BELLHOP", err.msg)
+    @test occursin(":coherent or :incoherent", err.msg)
+
+    @test_throws ArgumentError acoustic_field(sol, 1_000.0, 36.0, 50.0; mode=:nonsense)
+    @test_throws ArgumentError transmission_loss(sol, 1_000.0, 36.0, 50.0; mode=:semicoherent)
 end

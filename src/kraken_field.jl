@@ -32,6 +32,24 @@
 # returns linear weights, and a receiver past `DepthB` gets `Phi(NTot)·exp(-γ_B(z - DepthB))`.
 # Quadratic interpolation would be a defensible choice on its own, but not one that can be checked
 # against anything.
+#
+# **Summation conventions: there are two, not three.** `field.exe` reads its task code from
+# `Opt(4:4)` of the `.flp` file and accepts `'C'`, a blank, or `'I'`; anything else is a fatal
+# `'Unknown option for coherent vs. incoherent mode addition'` (`KrakenField/field.f90`). The Matlab
+# port agrees — `Matlab/Kraken/evalri.m` branches on `Opt(4:4) ~= 'I'` and nothing else.
+# *Semi-coherent* is a BELLHOP run type, not a KRAKEN one: it multiplies an incoherent TL by the
+# Lloyd-mirror source pattern `√2·sin(ω·zₛ·sinθ/c)` indexed by ray take-off angle
+# (`Bellhop/influence.f90`), and a mode sum has no take-off angle — the surface image is already
+# inside `φ_m(zₛ)`, so weighting by it again would double-count. So `mode` takes `:coherent` and
+# `:incoherent`, and `:semicoherent` raises rather than inventing a convention nothing can check.
+#
+# The incoherent sum is `√(Σ_m |term_m|²)` — magnitudes, no phase. `Evaluate` writes it as
+# `SQRT(SUM((Cmat*Hank)**2))` after forcing `ik = REAL(ik)` (which strips the oscillation and keeps
+# the attenuation decay), and carries `1/√k`'s phase into the square; `evalri.m`, and `Evaluate`'s
+# own commented-out line right above, take `ABS` of the whole term instead. The two agree exactly for
+# a lossless solve and differ only in a phase for a lossy one, so we follow the `ABS` form, which is
+# the one that is actually a magnitude. The result has no phase left to speak of, so the prefactor
+# enters as `|Q|`.
 
 export acoustic_field, transmission_loss, mode_amplitudes
 
@@ -128,6 +146,34 @@ as_vector(x::Real) = [x]
 as_vector(x) = collect(x)
 
 """
+    SUMMATION_MODES
+
+The mode-summation conventions [`acoustic_field`](@ref) accepts: `:coherent` and `:incoherent`,
+matching `field.exe`'s `.flp` task codes `C` (or blank) and `I`. There is no third one — see the
+note at the top of `kraken_field.jl` for why `:semicoherent` is not among them.
+"""
+const SUMMATION_MODES = (:coherent, :incoherent)
+
+# Resolved once per call, outside the field loop, so the summation stays type stable.
+function summation_mode(mode::Symbol)
+    mode in SUMMATION_MODES && return Val(mode)
+    mode === :semicoherent && throw(
+        ArgumentError(
+            "`mode = :semicoherent` has no normal-mode definition. It is a BELLHOP run type: an " *
+            "incoherent TL weighted by the Lloyd-mirror source pattern, which is indexed by ray " *
+            "take-off angle. A mode sum has no take-off angle, and the surface image is already " *
+            "inside φ(zₛ), so the weight would double-count. `field.exe` has no such option " *
+            "either — it accepts only C/blank and I. Use :coherent or :incoherent.",
+        ),
+    )
+    return throw(ArgumentError("`mode = :$mode` is not a summation mode; expected one of $SUMMATION_MODES"))
+end
+
+# The mode sum proper. `terms` is a generator of the per-mode contributions, consumed once.
+mode_sum(::Val{:coherent}, Q, terms) = Q * sum(terms)
+mode_sum(::Val{:incoherent}, Q, terms) = complex(abs(Q) * sqrt(sum(abs2, terms)))
+
+"""
     acoustic_field(sol, ranges, zs, zr; nmodes=length(sol.kr), mode=:coherent)
 
 The complex acoustic pressure field of the normal-mode solution `sol` for a point source at depth
@@ -140,8 +186,12 @@ dB.
 # Keyword arguments
 - `nmodes`: how many modes to sum, from the first (largest `kᵣ`). Defaults to all of them; the
   solution has already discarded everything that is not propagating.
-- `mode`: `:coherent`, `:incoherent` or `:semicoherent`, matching `field.exe`'s task codes `C`, `I`
-  and `S`. Only `:coherent` is implemented so far.
+- `mode`: `:coherent` or `:incoherent`, matching `field.exe`'s `.flp` task codes `C` (or blank) and
+  `I`. A coherent sum adds the modes as complex amplitudes and so shows the interference structure —
+  the nulls a real receiver sees at one frequency. An incoherent sum adds their intensities,
+  `√(Σ|term|²)`, which discards the phase and leaves the smooth mean level: what you want when the
+  interference pattern is unresolved, unknown, or about to be averaged away anyway. `:semicoherent`
+  is deliberately absent; ask for it and the error says why.
 
 # Conventions
 
@@ -149,6 +199,10 @@ The phase convention is KRAKEN's `exp(i(ωt - kᵣr))`, and the amplitude is nor
 of a point source at 1 m, so `field.exe`'s output can be compared without rescaling. Take `conj` for
 the `exp(-iωt)` convention used in Jensen et al. See the comments at the top of `kraken_field.jl` for
 where each factor comes from.
+
+An incoherent field has thrown its phase away by construction, so what comes back is a magnitude
+carried in a complex number for a uniform return type — real, non-negative, and not a pressure you
+can interfere with anything. Only `:coherent` returns a genuine complex pressure.
 
 The field is the far-field mode sum, which is singular at `r = 0` and inaccurate within a wavelength
 or so of the source; zero and negative ranges are rejected rather than returned as `Inf`.
@@ -160,12 +214,7 @@ p = acoustic_field(sol, 1_000:100:10_000, 25.0, 0:5:100)
 ```
 """
 function acoustic_field(sol::NormalModeSolution, ranges, zs, zr; nmodes=length(sol.kr), mode=:coherent)
-    mode === :coherent || throw(
-        ArgumentError(
-            "`mode = :$mode` is not implemented yet; only `:coherent` is. `:incoherent` and " *
-            "`:semicoherent` arrive with plan task 7.2.",
-        ),
-    )
+    conv = summation_mode(mode)
     r = as_vector(ranges)
     zrv = as_vector(zr)
     any(<=(0), r) && throw(ArgumentError("ranges must be positive; the mode sum is singular at r = 0"))
@@ -181,7 +230,7 @@ function acoustic_field(sol::NormalModeSolution, ranges, zs, zr; nmodes=length(s
     Q = im * sqrt(2π) * exp(im * π / 4) / density(sol.env.ρ, zs)
 
     return [
-        T(Q * sum(ϕs[m] * ϕr[i, m] * exp(-im * krs[m] * r[j]) / sqrt(krs[m]) for m in 1:M) / sqrt(r[j])) for
+        T(mode_sum(conv, Q, (ϕs[m] * ϕr[i, m] * exp(-im * krs[m] * r[j]) / sqrt(krs[m]) for m in 1:M)) / sqrt(r[j])) for
         i in eachindex(zrv), j in eachindex(r)
     ]
 end
@@ -200,6 +249,7 @@ here. Larger numbers mean a weaker signal.
 ```julia
 sol = kraken_jl(UnderwaterEnv(pekeris_env()...), 100.0)
 tl = transmission_loss(sol, 1_000:100:10_000, 25.0, 50.0)
+smooth = transmission_loss(sol, 1_000:100:10_000, 25.0, 50.0; mode=:incoherent)
 ```
 """
 function transmission_loss(sol::NormalModeSolution, ranges, zs, zr; kwargs...)
