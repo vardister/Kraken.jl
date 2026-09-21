@@ -50,6 +50,13 @@ julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'
 # Include performance benchmarks (skipped by default, can be slow)
 KRAKEN_RUN_PERFORMANCE_TESTS=true julia --project=. -e 'using Pkg; Pkg.test()'
 
+# Skip named suites while iterating. The full suite is ~17 min and `reverse_ad_tests.jl` is ~700 s
+# of that (68%) — Mooncake and Zygote compiling rules, not Kraken computing anything. The Fortran
+# cross-validation, the obvious suspect, is only 178 s. Skipping the AD file gets you to ~5.5 min;
+# skipping both gets you to ~2.5 min. Every skip prints a warning, the default is to skip nothing,
+# and CI never sets it. Run it unset before pushing.
+KRAKEN_SKIP_TESTS=reverse_ad_tests.jl julia --project=. -e 'using Pkg; Pkg.test()'
+
 # Cross-validate against a local Acoustics Toolbox build instead of the AcousticsToolbox_jll
 # binaries, and enable the test cases built from the toolbox's own .env files. Both optional —
 # without them the suite uses the jll and skips the toolbox cases (which is the CI path).

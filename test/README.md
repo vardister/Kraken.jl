@@ -98,6 +98,41 @@ of dependency precompilation on the first run after a `Manifest.toml` change.
 |------|--------------|-------------|
 | `performance_tests.jl` | `KRAKEN_RUN_PERFORMANCE_TESTS=true` | Benchmarks, memory usage, scaling |
 
+### Making the suite fast enough to iterate on
+
+The full suite is about 17 minutes, and it is worth knowing where that goes before trying to shorten
+it. Measured on a clean run (1036.6 s), each file timed on its own:
+
+| File | Time | Share |
+|------|------|-------|
+| `reverse_ad_tests.jl` | ~700 s | **68%** |
+| `fortran_reference_tests.jl` | 178 s | 17% |
+| `automatic_differentiation_tests.jl` | 104 s | 10% |
+| `environment_tests.jl` | 27 s | |
+| `integration_tests.jl` | 13 s | |
+| `numerical_methods_tests.jl` | 10 s | |
+
+The Fortran cross-validation is the obvious suspect and is **not** the problem. Two thirds of the
+wall time is Mooncake and Zygote compiling AD rules, which is compilation, not computation.
+
+`KRAKEN_SKIP_TESTS` takes a comma-separated list of those file names and leaves them out:
+
+```bash
+# ~5.5 min instead of ~17
+KRAKEN_SKIP_TESTS=reverse_ad_tests.jl julia --project=. -e 'using Pkg; Pkg.test()'
+
+# ~2.5 min — measured at 2m40s for 1003 tests
+KRAKEN_SKIP_TESTS=reverse_ad_tests.jl,fortran_reference_tests.jl \
+  julia --project=. -e 'using Pkg; Pkg.test()'
+```
+
+It defaults to skipping nothing, CI never sets it, an unrecognized file name is a hard error rather
+than a silent no-op, and each skip prints a warning saying the run does not show the suite is green.
+**Run it unset before pushing.**
+
+For a tighter loop still, run one TestItems file directly — `integration_tests.jl` on its own is 13
+seconds. See the single-file invocations in `CLAUDE.md`.
+
 Every timing in `performance_tests.jl` is measured after a warm-up call, so compilation is excluded.
 Thresholds are set several times above the measured value so they catch order-of-magnitude
 regressions without flaking on slower CI runners. The frequency- and depth-scaling ratios are
