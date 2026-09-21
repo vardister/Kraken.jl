@@ -255,3 +255,138 @@ smooth = transmission_loss(sol, 1_000:100:10_000, 25.0, 50.0; mode=:incoherent)
 function transmission_loss(sol::NormalModeSolution, ranges, zs, zr; kwargs...)
     return -20 .* log10.(abs.(acoustic_field(sol, ranges, zs, zr; kwargs...)))
 end
+
+### Broadband synthesis
+#
+# A pulse is the inverse Fourier transform of the field over frequency. Two things decide how this
+# is written.
+#
+# **No FFT dependency.** The transform is the Riemann sum of the continuous inverse transform over
+# the positive frequencies. In KRAKEN's `exp(i(ωt - kᵣr))` convention a mode carries `e^{+i2πft}` in
+# time, and for a real signal the negative frequencies are the conjugates of the positive ones, so
+#
+#     p(t) = 2 Δf Re[ Σ_k S(f_k) P(f_k) e^{i2πf_k t} ]
+#
+# is the whole of it. That costs `O(N_f · N_t)` against an FFT's `O(N log N)`, which would matter if
+# it were the expensive part — but every one of those `N_f` coefficients costs a full `kraken_jl`
+# eigen-solve to produce, and that dominates by orders of magnitude. Writing the sum out buys
+# freedom from FFTW (a binary artifact this package pruned in 0.3.0 and would now be re-adding for
+# one line), a transform that is differentiable with no extra rules for task 7.5, and a formula that
+# states its own phase convention instead of inheriting one from a library.
+#
+# **The reduction time is the caller's.** The staged `dev/` code folded `exp(2πif·t₀)` with
+# `t₀ = r/c_max - t0_offset` into the field itself. That is a windowing convenience — it slides the
+# arrival to a known place in the time axis so a short window can hold it — not physics, and baking
+# it into the field is what made the staged code's two methods disagree about what they returned. It
+# lives here as `t_reduce` on the synthesis, where it is visible.
+
+export broadband_field, synthesize_pulse
+
+"""
+    broadband_field(env, freqs, ranges, zs, zr; nmodes=typemax(Int), mode=:coherent, kwargs...)
+
+Solve `env` at every frequency in `freqs` and evaluate the field at each, for pulse synthesis.
+
+Returns a `length(freqs) × length(zr) × length(ranges)` array of complex pressure — frequency down
+the first axis, then the same depth × range layout [`acoustic_field`](@ref) returns. Extra `kwargs`
+go to [`kraken_jl`](@ref).
+
+A frequency that supports no trapped modes contributes zeros rather than an error, and `f = 0` is
+zero by definition; both are normal at the low end of a band, and both are what the transform wants
+there anyway.
+
+Each frequency is an independent solve, which is the whole reason this is worth having as its own
+function: the loop below is a `map` over `freqs` precisely so that turning it into a threaded map is
+the entire change needed to parallelize it. That is deliberately not done yet — a parallel version
+of a wrong answer is still wrong, and task 7.4 is what confirms the serial one.
+
+# Example
+```julia
+env = UnderwaterEnv(pekeris_env()...)
+P = broadband_field(env, 10.0:1.0:200.0, 5_000.0, 36.0, 55.0)   # 191 × 1 × 1
+```
+"""
+function broadband_field(env::UnderwaterEnv, freqs, ranges, zs, zr; nmodes=typemax(Int), mode=:coherent, kwargs...)
+    r = as_vector(ranges)
+    zrv = as_vector(zr)
+    conv = summation_mode(mode)   # reject a bad `mode` once, not once per frequency
+
+    # `map`, not a preallocated buffer written in a loop: the point of this function is that the
+    # frequencies are independent, and `map` is the form that says so (and that `ThreadsX.map` or an
+    # `@threads` fill can replace wholesale when 7.4 has signed off on the serial answer).
+    planes = map(freqs) do f
+        f <= 0 && return zeros(ComplexF64, length(zrv), length(r))
+        sol = kraken_jl(env, f; kwargs...)
+        isempty(sol.kr) && return zeros(ComplexF64, length(zrv), length(r))
+        return ComplexF64.(acoustic_field(sol, r, zs, zrv; nmodes=nmodes, mode=conv_symbol(conv)))
+    end
+
+    P = Array{ComplexF64,3}(undef, length(planes), length(zrv), length(r))
+    for (k, plane) in enumerate(planes)
+        P[k, :, :] = plane
+    end
+    return P
+end
+
+conv_symbol(::Val{S}) where {S} = S
+
+"""
+    synthesize_pulse(P, freqs, times; spectrum=nothing, t_reduce=0)
+
+Transform a complex spectrum `P` sampled at `freqs` into a real time series at `times`.
+
+`P` is indexed by frequency along its first axis — a vector for one receiver, or the array
+[`broadband_field`](@ref) returns — and the result replaces that axis with one of length
+`length(times)`. `freqs` must be evenly spaced; the spacing is the `Δf` of the transform.
+
+# Keyword arguments
+- `spectrum`: the source spectrum, as a vector over `freqs` or a function of frequency. The default
+  is flat, which makes the result the band-limited impulse response of the waveguide.
+- `t_reduce`: subtracted from the travel time, so `times` are measured from `t_reduce` rather than
+  from the source instant. Passing `r / maximum(env.c.c)` puts the earliest possible arrival at
+  `t = 0` and lets a short window hold a pulse that travelled a long way.
+
+The phase convention is KRAKEN's, the same one [`acoustic_field`](@ref) documents: a mode carries
+`e^{i(ωt - kᵣr)}`, so this sums `e^{+i2πft}` and takes twice the real part, the positive-frequency
+half of a real signal's inverse transform.
+
+# Example
+```julia
+env = UnderwaterEnv(pekeris_env()...)
+freqs = 2.0:2.0:300.0
+P = broadband_field(env, freqs, 10_000.0, 36.0, 55.0)
+t = 0:0.002:2.0
+p = synthesize_pulse(P[:, 1, 1], freqs, t; t_reduce=10_000.0 / maximum(env.c.c))
+```
+"""
+function synthesize_pulse(P::AbstractVector, freqs, times; spectrum=nothing, t_reduce=0)
+    f = as_vector(freqs)
+    length(f) == length(P) ||
+        throw(DimensionMismatch("`P` has $(length(P)) frequency samples but `freqs` has $(length(f))"))
+    length(f) >= 2 || throw(ArgumentError("need at least two frequencies to set the transform's Δf"))
+    Δf = f[2] - f[1]
+    all(k -> isapprox(f[k + 1] - f[k], Δf; rtol=1e-8), 1:(length(f) - 1)) ||
+        throw(ArgumentError("`freqs` must be evenly spaced; the spacing is the transform's Δf"))
+
+    S = source_spectrum(spectrum, f)
+    return [2 * Δf * real(sum(S[k] * P[k] * cis(2π * f[k] * (t + t_reduce)) for k in eachindex(f))) for t in times]
+end
+
+function synthesize_pulse(P::AbstractArray{<:Any,3}, freqs, times; kwargs...)
+    nt = length(as_vector(times))
+    out = Array{Float64,3}(undef, nt, size(P, 2), size(P, 3))
+    for j in axes(P, 3), i in axes(P, 2)
+        out[:, i, j] = synthesize_pulse(view(P, :, i, j), freqs, times; kwargs...)
+    end
+    return out
+end
+
+source_spectrum(::Nothing, f) = ones(length(f))
+function source_spectrum(s::AbstractVector, f)
+    return if length(s) == length(f)
+        s
+    else
+        throw(DimensionMismatch("`spectrum` has $(length(s)) entries but `freqs` has $(length(f))"))
+    end
+end
+source_spectrum(s, f) = [s(fk) for fk in f]

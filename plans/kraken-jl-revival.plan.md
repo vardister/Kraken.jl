@@ -2075,7 +2075,7 @@ Measured on `pekeris_env()` at 100 Hz, 1–20 km:
 Four new `@testitem`s in `test/integration_tests.jl`. The 7.1 rejection test was updated: `:incoherent`
 no longer throws, so it now checks `:semicoherent` and a misspelling instead.
 
-### 7.3 [ ] Broadband synthesis
+### 7.3 [x] Broadband synthesis *(completed 2026-09-21)*
 - **Files:** `src/kraken_field.jl`
 - **What:** Implement per-frequency field computation across a frequency vector with time-domain synthesis,
   including the time-alignment offset the staged code applies. Solving independently per frequency is
@@ -2084,6 +2084,47 @@ no longer throws, so it now checks `:semicoherent` and a misspelling instead.
 - **Acceptance:** A synthesized pulse for a Pekeris waveguide shows the expected modal dispersion (higher
   modes arriving later), verified against the analytic Pekeris path in `kraken_pekeris.jl`.
 - **Dependencies:** 7.2
+
+**Outcome.** `broadband_field(env, freqs, ranges, zs, zr)` returns a `nf × nzr × nr` array of complex
+pressure, and `synthesize_pulse(P, freqs, times)` turns a spectrum into a real time series. Two
+decisions worth recording:
+
+- **No FFT dependency.** The transform is written as the Riemann sum of the continuous inverse
+  transform over the positive frequencies, `p(t) = 2Δf·Re[Σ S(f_k) P(f_k) e^{i2πf_k t}]`, which is
+  four lines and states KRAKEN's `e^{i(ωt-kᵣr)}` convention out loud instead of inheriting one from a
+  library. It is `O(N_f·N_t)` rather than `O(N log N)`, and that is irrelevant: every one of those
+  `N_f` coefficients costs a full `kraken_jl` eigen-solve to produce, which dominates by orders of
+  magnitude. It buys freedom from FFTW — a binary artifact 0.3.0 deliberately pruned — and a
+  transform 7.5 can differentiate with no new rules. `Project.toml` is unchanged.
+- **The reduction time is the caller's.** The staged `dev/` code folded `exp(2πif·t₀)` with
+  `t₀ = r/c_max - t0_offset` into the field itself. That is windowing, not physics, and baking it in
+  is part of what made the staged code's two methods disagree about what they returned. It is now
+  `t_reduce` on the synthesis, where it is visible and optional.
+
+`broadband_field` is a `map` over frequencies rather than a loop filling a buffer, precisely so that
+swapping in a threaded map is the *entire* change needed to parallelize it — deliberately not done,
+per the task. Frequencies with no trapped modes, and `f = 0`, contribute zeros instead of erroring;
+both are normal at the bottom of a band.
+
+Measured on `pekeris_env()` at 10 km, 2–300 Hz in 2 Hz steps (150 solves in 0.78 s):
+
+- **The dispersion is textbook.** Group speeds at 150 Hz, by central difference of ω against kᵣ, fall
+  monotonically with mode number: 1498.6, 1494.2, 1486.8, 1476.2, 1462.5, 1446.0, 1430.6 m/s. Reduced
+  arrival times `r/v_g - r/c_max` are 0.0064 … 0.3236 s, so higher modes do arrive later, and the
+  synthesized pulse's largest excursion sits at 0.006 s — mode 1, where its group speed says it
+  should be.
+- **Verified against the analytic Pekeris path**, which is an independent solve. Scaling
+  `pressure_f`'s spectrum by the `-4πi` prefactor ratio established in 7.1 and synthesizing both
+  waveforms over the same grid: relative L2 difference **1.1%**, max pointwise **0.53%** of peak,
+  correlation **0.99994**.
+- **The two solvers disagree at exactly 3 of 136 frequencies**, all at mode cutoffs — two are an
+  outright mode-count mismatch (54 Hz: 3 vs 2; 248 Hz: 12 vs 11), one (112 Hz) is a marginally
+  trapped mode whose kᵣ differs. Away from cutoffs the per-frequency ratio is `-4πi` to ~0.3%. Those
+  isolated bins barely move the waveform, which is why the time-domain comparison is the honest test
+  and the spectral one is not.
+
+Three new `@testitem`s. `synthesize_pulse` is checked against an exact closed form (one nonzero bin
+must come back as one cosine), not just for plausibility.
 
 ### 7.4 [ ] Cross-validate the field against `field.exe`
 - **Files:** `test/reference/flp_writer.jl`, `test/reference/runner.jl`, `test/fortran_reference_tests.jl`

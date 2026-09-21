@@ -662,3 +662,130 @@ end
     @test_throws ArgumentError acoustic_field(sol, 1_000.0, 36.0, 50.0; mode=:nonsense)
     @test_throws ArgumentError transmission_loss(sol, 1_000.0, 36.0, 50.0; mode=:semicoherent)
 end
+
+@testitem "M7.3: broadband_field solves each frequency on its own" begin
+    using Kraken
+
+    env = UnderwaterEnv(pekeris_env()...)
+    freqs = collect(20.0:20.0:200.0)
+    ranges = [3_000.0, 7_000.0]
+    zr = [30.0, 60.0]
+    zs = 36.0
+
+    P = broadband_field(env, freqs, ranges, zs, zr)
+    @test size(P) == (length(freqs), length(zr), length(ranges))
+    @test eltype(P) == ComplexF64
+
+    # Each frequency plane is exactly what the single-frequency path gives for that solve.
+    for (k, f) in enumerate(freqs)
+        @test P[k, :, :] ≈ acoustic_field(kraken_jl(env, f), ranges, zs, zr)
+    end
+
+    # Frequencies with nothing to propagate contribute zeros rather than blowing up: `f = 0` by
+    # definition, and anything below the first mode's cutoff because the waveguide traps nothing.
+    quiet = broadband_field(env, [0.0, 1.0], ranges, zs, zr)
+    @test all(iszero, quiet)
+    @test isempty(kraken_jl(env, 1.0).kr)
+
+    # `nmodes` and `mode` are forwarded, and a bad `mode` is rejected before any solving happens.
+    @test broadband_field(env, freqs, ranges, zs, zr; nmodes=2) ≈ reduce(
+        (a, b) -> cat(a, b; dims=1),
+        [reshape(acoustic_field(kraken_jl(env, f), ranges, zs, zr; nmodes=2), 1, 2, 2) for f in freqs],
+    )
+    inc = broadband_field(env, freqs, ranges, zs, zr; mode=:incoherent)
+    @test all(iszero, imag.(inc))
+    @test_throws ArgumentError broadband_field(env, freqs, ranges, zs, zr; mode=:semicoherent)
+end
+
+@testitem "M7.3: synthesize_pulse is the inverse transform it claims to be" begin
+    using Kraken
+
+    freqs = collect(10.0:10.0:100.0)
+    Δf = 10.0
+    times = collect(0.0:0.001:0.2)
+
+    # One nonzero bin must come back as one cosine, exactly: p(t) = 2Δf·Re[A·e^{i2πf t}].
+    A = 3.0 - 1.5im
+    P = zeros(ComplexF64, length(freqs))
+    P[4] = A
+    p = synthesize_pulse(P, freqs, times)
+    @test p ≈ [2 * Δf * real(A * cis(2π * freqs[4] * t)) for t in times]
+    @test eltype(p) == Float64
+
+    # `t_reduce` shifts the time origin, so evaluating at `t` with a reduction equals evaluating at
+    # `t + t_reduce` without one.
+    @test synthesize_pulse(P, freqs, times; t_reduce=0.05) ≈ synthesize_pulse(P, freqs, times .+ 0.05)
+
+    # A source spectrum may be a vector over `freqs` or a function of frequency; they must agree.
+    weights = [exp(-((f - 50.0) / 20.0)^2) for f in freqs]
+    @test synthesize_pulse(P, freqs, times; spectrum=weights) ≈
+        synthesize_pulse(P, freqs, times; spectrum=f -> exp(-((f - 50.0) / 20.0)^2))
+    @test synthesize_pulse(P, freqs, times; spectrum=weights) ≈ weights[4] .* p
+
+    # The transform needs an evenly spaced grid to have a Δf at all, and the shapes must line up.
+    @test_throws ArgumentError synthesize_pulse(P, [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0, 512.0], times)
+    @test_throws ArgumentError synthesize_pulse([1.0 + 0im], [10.0], times)
+    @test_throws DimensionMismatch synthesize_pulse(P, freqs[1:5], times)
+    @test_throws DimensionMismatch synthesize_pulse(P, freqs, times; spectrum=weights[1:3])
+
+    # The array method is the vector method applied down each receiver/range column.
+    P3 = reshape(repeat(P, 2), length(freqs), 2, 1)
+    out = synthesize_pulse(P3, freqs, times)
+    @test size(out) == (length(times), 2, 1)
+    @test out[:, 1, 1] ≈ p
+end
+
+@testitem "M7.3: a Pekeris pulse disperses, and matches the analytic waveguide" begin
+    using Kraken
+
+    env = UnderwaterEnv(pekeris_env()...)
+    freqs = collect(2.0:2.0:300.0)
+    r, zs, zr = 10_000.0, 36.0, 55.0
+    c_max = maximum(env.c.c)
+
+    P = broadband_field(env, freqs, r, zs, zr)
+    @test size(P) == (length(freqs), 1, 1)
+
+    # Modal dispersion: group speed is dω/dkᵣ, and in a Pekeris guide it falls with mode number, so
+    # higher modes arrive later. Central difference in frequency rather than AD — this is a test of
+    # the pulse, not of the derivative machinery.
+    f0, df = 150.0, 0.5
+    lo, hi = kraken_jl(env, f0 - df), kraken_jl(env, f0 + df)
+    M = min(length(lo.kr), length(hi.kr))
+    @test M >= 5
+    vg = [(2π * 2df) / (hi.kr[m] - lo.kr[m]) for m in 1:M]
+    @test issorted(vg; rev=true)              # higher mode ⇒ slower ⇒ later
+    @test all(1_400 .< vg .< 1_510)
+    arrivals = r ./ vg .- r / c_max
+    @test issorted(arrivals)
+    @test arrivals[1] < arrivals[end] / 5     # the spread is the dispersion
+
+    # The pulse itself, in time reduced by the earliest possible arrival r/c_max.
+    times = collect(0.0:0.001:0.6)
+    p = synthesize_pulse(P[:, 1, 1], freqs, times; t_reduce=r / c_max)
+    @test length(p) == length(times)
+    @test all(isfinite, p)
+    # Its largest excursion is the first mode landing where the group speed says it should.
+    @test times[argmax(abs.(p))] ≈ arrivals[1] atol = 0.01
+
+    # Verified against the analytic Pekeris path, which is an independent solve of the same guide.
+    # `pressure_f` carries `-i·e^{-iπ/4}` where `acoustic_field` carries `i·√(2π)·e^{iπ/4}` and the
+    # 1 m reference, a ratio of exactly `-4πi` (see M7.1) — so scale, then compare waveforms.
+    penv = PekerisUnderwaterEnv(1500.0, 1600.0, 1000.0, 1500.0, 100.0)
+    rows = map(freqs) do f
+        krs = find_kr(penv, f)
+        spectrum = isempty(krs) ? 0.0im : (-4π * im) * pressure_f(penv, krs, f, r, zs, zr; t0=r / 1500.0)
+        return (spectrum, length(krs) == length(kraken_jl(env, f).kr))
+    end
+    Pan = first.(rows)
+    matching = count(last, rows)
+    # The two solvers disagree on mode count only where a mode sits on its cutoff.
+    @test matching >= length(freqs) - 4
+
+    p_analytic = synthesize_pulse(Pan, freqs, times; t_reduce=r / c_max)
+    l2 = sqrt(sum(abs2, p .- p_analytic) / sum(abs2, p_analytic))
+    @test l2 < 0.05
+    @test maximum(abs, p .- p_analytic) < 0.02 * maximum(abs, p_analytic)
+    # Isolated cutoff bins barely move the waveform; the two pulses are the same signal.
+    @test sum(p .* p_analytic) / sqrt(sum(abs2, p) * sum(abs2, p_analytic)) > 0.999
+end
