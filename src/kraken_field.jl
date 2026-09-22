@@ -318,14 +318,21 @@ function broadband_field(env::UnderwaterEnv, freqs, ranges, zs, zr; nmodes=typem
         f <= 0 && return zeros(ComplexF64, length(zrv), length(r))
         sol = kraken_jl(env, f; kwargs...)
         isempty(sol.kr) && return zeros(ComplexF64, length(zrv), length(r))
-        return ComplexF64.(acoustic_field(sol, r, zs, zrv; nmodes=nmodes, mode=conv_symbol(conv)))
+        return acoustic_field(sol, r, zs, zrv; nmodes=nmodes, mode=conv_symbol(conv))
     end
 
-    P = Array{ComplexF64,3}(undef, length(planes), length(zrv), length(r))
-    for (k, plane) in enumerate(planes)
-        P[k, :, :] = plane
-    end
-    return P
+    # Stacked by comprehension rather than written plane by plane into an
+    # `Array{ComplexF64,3}(undef, ...)`, which is task 7.5's doing. That buffer was two separate
+    # obstructions to differentiating a pulse: reverse mode refuses the write itself ("Mutating
+    # arrays is not supported -- called setindex!"), and the `ComplexF64` element type cannot hold a
+    # `Dual`, so forward mode never got that far either. `T` is the join over the frequencies, which
+    # is what lets a dead frequency's plain-`ComplexF64` zero plane and a live frequency's tracked
+    # one land in the same array.
+    # `init` is not decoration: `reduce` over an empty `freqs` has nothing to fold, and
+    # `acoustic_field`'s own `promote_type(..., ComplexF64)` means every live plane is complex
+    # anyway, so `ComplexF64` is both the identity here and the answer for no frequencies at all.
+    T = reduce(promote_type, map(eltype, planes); init=ComplexF64)
+    return [T(planes[k][i, j]) for k in eachindex(planes), i in eachindex(zrv), j in eachindex(r)]
 end
 
 conv_symbol(::Val{S}) where {S} = S
@@ -374,11 +381,11 @@ end
 
 function synthesize_pulse(P::AbstractArray{<:Any,3}, freqs, times; kwargs...)
     nt = length(as_vector(times))
-    out = Array{Float64,3}(undef, nt, size(P, 2), size(P, 3))
-    for j in axes(P, 3), i in axes(P, 2)
-        out[:, i, j] = synthesize_pulse(view(P, :, i, j), freqs, times; kwargs...)
-    end
-    return out
+    # Same comprehension-instead-of-buffer treatment as `broadband_field`, and for the same reason:
+    # an `Array{Float64,3}` written trace by trace is both a mutation reverse mode refuses and an
+    # element type a `Dual` does not fit into.
+    traces = [synthesize_pulse(P[:, i, j], freqs, times; kwargs...) for i in axes(P, 2), j in axes(P, 3)]
+    return [traces[i, j][k] for k in 1:nt, i in axes(P, 2), j in axes(P, 3)]
 end
 
 source_spectrum(::Nothing, f) = ones(length(f))

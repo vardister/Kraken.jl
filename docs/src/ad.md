@@ -217,6 +217,131 @@ difference between an inversion you run and one you describe.
     ``10^{-3}`` m/s. Real inversions handle this with a decent prior, multiple restarts, or a global
     search on top — all of which are still cheaper with reverse-mode gradients driving them.
 
+## Worked example: a seabed sound speed from transmission loss
+
+The inversion above fits *wavenumbers*, and no hydrophone measures a wavenumber. This one fits
+transmission loss, which is what a hydrophone does measure, and solves for the quantity a survey
+usually wants out of it: the sound speed of the seabed. Everything the field adds on top of the
+solver — the mode sum and the depth interpolation — is differentiated here, and none of it needed a
+rule of its own to be.
+
+The water column is taken as known and the seabed sound speed is the unknown:
+
+```@example ad
+# The same environment as above, with the seabed sound speed opened up.
+function seabed_env(cb, cvec, z)
+    n = length(z)
+    ssp = hcat(z, cvec, zero(cvec), fill(1000.0, n), zero(cvec), zero(cvec))
+    sspHS = [
+        0.0 343.0 0.0 0.00121 0.0 0.0
+        depth cb 0.0 1800.0 0.0 0.0
+    ]
+    return UnderwaterEnv(ssp, [0.0 0.0 depth], sspHS)
+end
+nothing # hide
+```
+
+The data are transmission loss on a 1–8 km track, at two receiver depths and two frequencies:
+
+```@example ad
+tl_ranges = collect(1_000.0:250.0:8_000.0)
+tl_depths = [30.0, 70.0]
+tl_freqs = (75.0, 150.0)
+tl_nmodes = (2, 5)
+cb_true = 1650.0
+
+function tl_of(cb, freq, nmodes)
+    sol = kraken_jl(seabed_env(cb, c_true, z_inv), freq; abstol=1e-10, reltol=1e-10)
+    return transmission_loss(sol, tl_ranges, 25.0, tl_depths; nmodes, mode=:incoherent)
+end
+
+tl_data = [tl_of(cb_true, f, n) for (f, n) in zip(tl_freqs, tl_nmodes)]
+tl_misfit(cb) = sum(sum(abs2, tl_of(cb, f, n) .- d) for (f, n, d) in zip(tl_freqs, tl_nmodes, tl_data))
+nothing # hide
+```
+
+Two choices in there are the difference between an inversion and a random walk, and both are about
+keeping the misfit a function a gradient can descend.
+
+!!! note "Fit incoherent TL, not coherent"
+    A coherent mode sum has the interference nulls in it, and a null moves in range as `cb` changes,
+    so the squared residual between two coherent TL curves is violently multimodal: scanned at 5 m/s
+    over 1560–1760 m/s it shows eight local minima, 15 to 35 m/s apart, and its value at 1600 m/s
+    (1205) is *lower* than at 1605 (1347) even though 1605 is closer to the truth. Gradient descent on that
+    lands wherever it started. The incoherent sum has thrown the phase away, so what is left is the
+    smooth mean level, and the misfit falls monotonically to zero from both sides. This is the
+    same reason real matched-field work smooths or averages before it optimizes — it is not a
+    limitation of the gradients.
+
+!!! note "Fix `nmodes`, for the same reason the mesh schedule is fixed"
+    The *number* of trapped modes is an integer function of `cb`: over the same span the 150 Hz solve
+    goes from 5 modes to 10, one at a time. Each new mode arrives with a finite amount of energy, so
+    a misfit summed over "however many modes there were" is a step function — it jumps by a factor of
+    four at 1600→1605 m/s and again at 1675→1680. Summing a *fixed* number of modes is the
+    derivative that is well defined, and it is the same integer-valued discontinuity already
+    documented for the mesh schedule under [Caveats](@ref).
+
+With those settled, the misfit is a smooth bowl with its minimum at the truth:
+
+```@example ad
+@printf("%10s %14s\n", "cb (m/s)", "misfit")
+for cb in 1560.0:25.0:1760.0
+    @printf("%10.0f %14.4f\n", cb, tl_misfit(cb))
+end
+```
+
+The optimizer is the same Adam, driven by the same one line of Kraken.jl:
+
+```@example ad
+function invert_cb(cb0; iters=200, α=3.0, decay=0.995)
+    cb = cb0
+    m = 0.0
+    v = 0.0
+    history = NTuple{3,Float64}[]
+    for t in 1:iters
+        g = Zygote.gradient(tl_misfit, cb)[1]    # <- the whole of the Kraken.jl side
+        m = 0.9 * m + 0.1 * g
+        v = 0.9 * v + 0.1 * g^2                  # β₂ = 0.9, not 0.999 — see below
+        cb -= (α * decay^t) * (m / (1 - 0.9^t)) / (sqrt(v / (1 - 0.9^t)) + 1e-12)
+        iszero(t % 50) && push!(history, (t, tl_misfit(cb), cb))
+    end
+    return cb, history
+end
+
+cb_hat, tl_history = invert_cb(1560.0)
+
+@printf("%12s %14s %14s\n", "iteration", "misfit", "cb (m/s)")
+@printf("%12d %14.3e %14.2f\n", 0, tl_misfit(1560.0), 1560.0)
+for (t, L, cb) in tl_history
+    @printf("%12d %14.3e %14.2f\n", t, L, cb)
+end
+@printf("\ntruth %.1f m/s, recovered %.2f m/s, error %.2f m/s\n", cb_true, cb_hat, cb_hat - cb_true)
+```
+
+Ninety m/s of error in the starting guess comes back as a fraction of one. Starting from the other
+side converges harder still — 1750 m/s reaches 1650.0001 m/s, with the misfit down at ``10^{-11}``.
+
+!!! tip "Adam's β₂ has to be shortened here"
+    The textbook ``\beta_2 = 0.999`` does not work on this misfit, and the failure is quiet rather
+    than loud. The gradient falls by about four orders of magnitude between the starting point and
+    the minimum, and a second-moment memory a thousand steps long keeps the large early gradients in
+    `v` long after they are gone — so `m / √v` collapses to a small fraction of 1 and the step size
+    collapses with it. The search still descends monotonically, it just crawls: the same 200
+    iterations reach 1622 m/s instead of 1650. ``\beta_2 = 0.9`` forgets fast enough to follow the
+    gradient's own scale. Worth knowing generally, because any misfit built from a solver output
+    spans decades like this one.
+
+!!! warning "Transmission loss does not determine the whole environment"
+    Open the water-column profile up as an unknown alongside `cb` — nine parameters instead of one,
+    on the same data — and the optimizer drives the misfit from 143 down to ``1.6\times10^{-8}``,
+    a fit ten orders of magnitude better than anything above, while landing on `cb = 1593` m/s and a
+    profile whose RMS error is *worse* than the prior it started from (12.0 m/s against 5.3). It has
+    not failed; it has found a genuinely different environment that reproduces the data to
+    round-off. Adding a nine-depth vertical array and four frequencies narrows it but does not close
+    it. That is non-uniqueness in the physics, and no amount of gradient accuracy touches it — it is
+    what priors, regularization and joint inversion of independent data are for. The gradients make
+    each attempt cheap; they do not make the problem well posed.
+
 ## What actually carries the derivatives
 
 The solver is not traced. Reverse mode enters through explicit rules attached at four seams, which is
@@ -229,6 +354,7 @@ refinement — never had to change:
 | [`inverse_iteration`](@ref) | Eigenvector adjoint, a bordered tridiagonal solve that projects out the ``\psi`` direction. Linear in the mesh size, so a mode-shape gradient costs about what a wavenumber gradient costs |
 | [`soundspeed`](@ref), [`density`](@ref) | Linear-interpolant adjoint over the values, the **knots**, and the query depth |
 | [`bisection`](@ref) | Non-differentiable: mode counting is integer-valued and piecewise constant, so it correctly contributes zero |
+| [`acoustic_field`](@ref), [`transmission_loss`](@ref), [`broadband_field`](@ref) | **No rule.** The field is arithmetic over the wavenumbers and mode shapes, so it is traced, and the cotangent reaches the rules above unchanged. Its depth interpolation is a dozen lines of linear weights rather than an interpolant object, which is what makes tracing it viable |
 
 One consequence of the implicit-function rule is worth knowing because it is a genuine improvement
 over forward mode, not just parity: **the reverse-mode wavenumber derivative does not depend on how
@@ -249,6 +375,12 @@ declares each one a Mooncake primitive.
   such a point measure the jump rather than the slope — if you see AD and finite differences disagree
   on a thickness or a bottom speed, check whether the mesh moved. `dont_break=true` fixes the
   schedule by construction.
+* **A field summed over "all" modes is a step function of the parameters.** The number of trapped
+  modes is an integer that changes as a parameter crosses a cutoff, and the mode arriving at that
+  cutoff carries a finite amount of energy — so the field jumps, exactly as the mesh schedule does.
+  Pass an explicit `nmodes` when you differentiate a field, low enough that the solve returns at
+  least that many everywhere the search goes. The worked example above measures the size of the jump
+  it avoids.
 * **Only the wavenumbers are Richardson-extrapolated**; mode shapes come from the coarsest mesh. So a
   mode-shape gradient from `kraken_jl` is the level-1 solve's.
 * **Tighten the solver tolerance for top-level gradients.** `kraken_jl`'s default

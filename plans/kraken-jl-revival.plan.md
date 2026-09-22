@@ -700,6 +700,59 @@ These are facts established by running the code, not assumptions. Tasks below re
   is what catches this, and it exists precisely because developing on 1.12 while claiming 1.10 is how
   the bound rotted in the first place.
 
+- **The field needed no rule of its own, and the reason was already in the code** (established during
+  7.5). The plan predicted mode-shape interpolation would obstruct reverse mode, because
+  `DataInterpolations` constructors are not reverse-mode friendly. It does not, because 7.1 wrote the
+  field's depth interpolation as a dozen lines of linear weights rather than a `DataInterpolations`
+  object — a choice made to match `field.exe`'s `Weight` routine, not for AD. `acoustic_field`,
+  `transmission_loss` and `mode_amplitudes` all traced on the first attempt, agreeing with
+  ForwardDiff to 1e-12 across coherent, incoherent, half-space-receiver and lossy cases. The
+  `searchsortedlast` that picks an interpolation bracket is admissible for the same reason
+  `bisection` is: integer-valued, so it carries no cotangent.
+
+- **Preallocated output buffers are the thing that actually breaks differentiability** (established
+  during 7.5). `broadband_field` assembled its result by writing planes into an
+  `Array{ComplexF64,3}(undef, …)` and the three-argument `synthesize_pulse` did the same into an
+  `Array{Float64,3}`. Each is two independent obstructions at once: reverse mode refuses the write
+  (`Mutating arrays is not supported -- called setindex!`) and the concrete element type cannot hold
+  a `Dual`, so forward mode fails earlier still with `MethodError: no method matching
+  Float64(::ForwardDiff.Dual)`. Both now stack by comprehension, with the element type joined across
+  the frequencies rather than pinned. The primal is bit-identical and `eltype(P) == ComplexF64` still
+  holds for ordinary input. Worth generalizing: everywhere else in this package the differentiable
+  seam was a *rule*, but here it was just a buffer.
+
+- **A differentiable field has to fix `nmodes`, for the same reason the gradient fixes the mesh
+  schedule** (established during 7.5). The number of trapped modes is an integer function of the
+  parameters, and the mode arriving at a cutoff carries finite energy — so a field summed over
+  "however many modes there were" is a step function. Measured on the 7.5 inversion: the misfit jumps
+  by a factor of four as `cb` crosses 1600→1605 m/s and again at 1675→1680, purely from the 150 Hz
+  solve gaining a mode. With `nmodes` fixed the same misfit is smooth and unimodal over the whole
+  span.
+
+- **Transmission loss does not determine the environment, and this is where that stops being
+  theoretical** (established during 7.5). Inverting for the seabed sound speed alone recovers
+  1650 m/s to 0.08 m/s from a 90 m/s error in the prior. Open the water-column profile up alongside
+  it — nine parameters, same data — and the optimizer reaches a misfit of 1.6e-8, ten orders of
+  magnitude better, at `cb = 1593` m/s with a profile whose RMS error is *worse* than the prior's
+  (12.0 against 5.3 m/s). A nine-element vertical array at four frequencies narrows it without
+  closing it. The gradients are correct in every one of those runs; the problem is non-unique. Any
+  future inversion milestone needs regularization or independent data, not better AD.
+
+- **Coherent TL is not a misfit you can descend** (established during 7.5). A coherent mode sum
+  carries the interference nulls, and a null moves in range as the parameter moves, so the squared
+  residual between two coherent TL curves is multimodal at roughly the null spacing — over
+  1560–1760 m/s its value at 1600 is *lower* than at 1605 although 1605 is nearer the truth.
+  Incoherent TL has discarded the phase and is monotone to the minimum from both sides. This is a
+  property of the data, not the gradient, and it is why the worked example fits incoherent TL.
+
+- **Adam's `β₂ = 0.999` is wrong for solver-derived misfits** (established during 7.5). The TL
+  misfit's gradient falls about four orders of magnitude between the prior and the minimum, and a
+  thousand-step second-moment memory holds the large early gradients in `v` long after they are gone,
+  so `m/√v` collapses and the search crawls — 200 iterations reach 1622 m/s instead of 1650, still
+  descending monotonically, which is why the failure looks like a converged answer rather than a bug.
+  `β₂ = 0.9` tracks the gradient's own scale and converges to 1649.92. Expect this on any misfit built
+  from a solver output.
+
 ## Diagrams
 
 Where the reference oracle attaches:
@@ -2174,7 +2227,7 @@ the same `KRAKEN_FORTRAN_BIN` override as the others and gates on its own `field
 
 The Fortran reference file is 1250 assertions, up from 1141, and still 2m42s.
 
-### 7.5 [ ] Make the field differentiable end to end
+### 7.5 [x] Make the field differentiable end to end *(completed 2026-09-22)*
 - **Files:** `src/kraken_field.jl`, `test/reverse_ad_tests.jl`, `docs/src/ad.md`
 - **What:** The field computation sits on top of the M4 rules, so it should be differentiable without new
   rules — verify that, and fix whatever obstructs it (mode-shape interpolation is the likely culprit, since

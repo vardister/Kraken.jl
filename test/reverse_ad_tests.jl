@@ -942,3 +942,197 @@ const M6_MOONCAKE = [
             (top isa PressureRelease ? 1e-5 : 1e-3)
     end
 end
+
+### Milestone 7: differentiating the pressure field ------------------------------------------------
+#
+# The field introduces no solver of its own. `acoustic_field` is arithmetic over `sol.kr` and
+# `sol.modes`, and both of those already carry rules, so 7.5's question is not *which rule does the
+# field need* but *does anything in `src/kraken_field.jl` break the tape*. Three things could have:
+# the `[f(i, j) for i in …, j in …]` comprehensions, the generator `mode_sum` consumes, and the
+# `searchsortedlast` that picks an interpolation bracket out of knots that are themselves parameters.
+#
+# None of them do, and that is worth recording because the plan predicted otherwise. 7.5 named
+# mode-shape interpolation as the likely obstruction, on the grounds that `DataInterpolations`
+# constructors are not reverse-mode friendly. Task 7.1 had already written that interpolation as a
+# dozen lines of linear weights instead of a `DataInterpolations` object — chosen to match
+# `field.exe`'s `Weight`, not for AD — and that is the whole reason there was nothing to fix. The
+# `searchsortedlast` is admissible for the same reason `bisection` is: it returns an integer, so it
+# carries no cotangent, and the bracket it picks is locally constant in the parameters.
+#
+# Broadband synthesis was a different story and did need fixing: `broadband_field` assembled its
+# output by writing planes into an `Array{ComplexF64,3}(undef, …)`, which reverse mode refuses
+# outright and which strips a `Dual` before forward mode ever sees it. Both it and the three-argument
+# `synthesize_pulse` now stack by comprehension, and the last testset here is what says so.
+
+"""
+`θ = [c₁ … c₁₀, cb]` — a ten-point sound-speed profile over a half-space whose sound speed is the
+eleventh parameter. This is 7.5's acceptance criterion verbatim, and the pairing is deliberate: the
+profile reaches the field only through the wavenumbers and mode shapes, while `cb` also enters
+[`Kraken.halfspace_decay`](@ref) and the half-space term of the normalization directly, so a field
+gradient that was silently dropping one of the two routes would still look plausible on the other.
+
+The knot depths are a comprehension rather than a `range`, for the reason `munk` above gives.
+"""
+function field_env(θ; depth=100.0)
+    n = length(θ) - 1
+    cvec = θ[1:n]
+    z = [depth * (k - 1) / (n - 1) for k in 1:n]
+    ssp = hcat(z, cvec, zero(cvec), fill(1000.0, n), zero(cvec), zero(cvec))
+    sspHS = [0.0 343.0 0.0 0.00121 0.0 0.0; depth θ[end] 0.0 1500.0 0.0 0.0]
+    return UnderwaterEnv(ssp, [0.0 0.0 depth], sspHS)
+end
+
+"""
+`field_env`'s parameterization with a water-column attenuation spliced in ahead of `cb`:
+`θ = [c₁ … c₁₀, α₀, cb]`, over a seabed that is lossy at a fixed 0.3 dB/λ.
+
+A separate builder rather than a keyword on `field_env`, because the parameter *vector* is a
+different length — and a named function rather than a closure in the testset, because the version
+written inline formatted into a `(a=…; b=…)` block whose parse is worth not having to think about.
+"""
+function lossy_field_env(θ; depth=100.0)
+    n = length(θ) - 2
+    cvec = θ[1:n]
+    z = [depth * (k - 1) / (n - 1) for k in 1:n]
+    ssp = hcat(z, cvec, zero(cvec), fill(1000.0, n), fill(θ[end - 1], n), zero(cvec))
+    sspHS = [0.0 343.0 0.0 0.00121 0.0 0.0; depth θ[end] 0.0 1500.0 0.3 0.0]
+    return UnderwaterEnv(ssp, [0.0 0.0 depth], sspHS)
+end
+
+function lossy_field_loss(θ; freq=100.0)
+    sol = kraken_jl(lossy_field_env(θ), freq; TOL...)
+    return sum(abs2, transmission_loss(sol, FIELD_RANGES, FIELD_ZS, 50.0; nmodes=3))
+end
+
+# A downward-refracting profile with structure in it, not a constant: over an isovelocity column the
+# mode shapes are sinusoids whose sensitivity to each knot is nearly the same number, and a gradient
+# that mixed the knots up would still pass.
+θ7 = [[1500.0 + 20.0 * (k - 1) / 9 - 6.0 * sinpi(2 * (k - 1) / 9) for k in 1:10]; 1600.0]
+
+# The field geometry every target below shares. Five ranges rather than one so the gradient has to
+# travel the range axis, and a receiver both in the water column and below the bottom so the
+# half-space tail of `mode_amplitude` is on the tape too.
+const FIELD_RANGES = collect(2_000.0:1_000.0:6_000.0)
+const FIELD_ZS = 25.0
+const FIELD_ZR = [50.0, 120.0]
+
+# `nmodes = 3` and not "all of them", because the mode *count* is a step function of θ — the same
+# integer-valued discontinuity documented for the mesh schedule on `ENVIRONMENTS` above. Summing a
+# fixed number of modes is the derivative that is well defined; summing however many the solve
+# returned is not. At θ7 and 100 Hz the solve finds 5, so 3 is comfortably inside.
+field_solution(θ; freq=100.0) = kraken_jl(field_env(θ), freq; TOL...)
+
+const FIELD_TARGETS = [
+    ("mode amplitudes", θ -> sum(abs2, mode_amplitudes(field_solution(θ), FIELD_ZR; nmodes=3))),
+    ("pressure", θ -> sum(abs2, acoustic_field(field_solution(θ), FIELD_RANGES, FIELD_ZS, FIELD_ZR; nmodes=3))),
+    (
+        "transmission loss",
+        θ -> sum(abs2, transmission_loss(field_solution(θ), FIELD_RANGES, FIELD_ZS, FIELD_ZR; nmodes=3)),
+    ),
+    (
+        "incoherent TL",
+        θ -> sum(
+            abs2, transmission_loss(field_solution(θ), FIELD_RANGES, FIELD_ZS, FIELD_ZR; nmodes=3, mode=:incoherent)
+        ),
+    ),
+]
+
+@testset "Reverse-mode AD through the pressure field" begin
+    @testset "the environment supports the field the targets ask for" begin
+        # If this fails every comparison below is measuring a degenerate case rather than a field.
+        sol = field_solution(θ7)
+        @test length(sol.kr) >= 3
+        @test sol.env.bottom_bc isa AcousticHalfspace     # …so FIELD_ZR's 120 m is admissible
+        @test all(isfinite, transmission_loss(sol, FIELD_RANGES, FIELD_ZS, FIELD_ZR; nmodes=3))
+    end
+
+    @testset "$name — Zygote vs ForwardDiff" for (name, target) in FIELD_TARGETS
+        g_forward = ForwardDiff.gradient(target, θ7)
+        g_zygote = Zygote.gradient(target, θ7)[1]
+
+        @test length(g_zygote) == length(θ7)
+        @test all(isfinite, g_zygote)
+        # 7.5's acceptance criterion is 1e-6; measured 1e-12 and below on all four targets.
+        @test relerr_norm(g_zygote, g_forward) < 1e-6
+
+        # Both routes into the field have to be live. A field gradient that reached the mode shapes
+        # but not the half-space would leave the last entry at exactly zero, and vice versa.
+        @test all(!iszero, g_zygote[1:10])
+        @test !iszero(g_zygote[11])
+    end
+
+    @testset "against central differences, which use no AD at all" begin
+        # Only the profile entries: `cb` sets `Δz = cb / (20f)` and so the mesh point count, which
+        # makes the primal a step function of it — see the comment on `ENVIRONMENTS`. Differencing
+        # the ten sound speeds is a real independent check; differencing `cb` would measure the mesh.
+        target = FIELD_TARGETS[3][2]     # transmission loss, the criterion's own quantity
+        g_forward = ForwardDiff.gradient(target, θ7)
+        @test relerr_norm(central_gradient(target, θ7, 1:10), g_forward[1:10]) < 1e-5
+    end
+
+    @testset "Mooncake reaches the same field gradient" begin
+        # Zygote and Mooncake read the same rules by different routes (see the backend table above),
+        # and the field is new ground for that route: it is the first place the cotangent flows
+        # through comprehensions and a generator sum before it reaches a rule.
+        target = FIELD_TARGETS[3][2]
+        g_zygote = Zygote.gradient(target, θ7)[1]
+        g_mooncake = DifferentiationInterface.gradient(target, AutoMooncake(), θ7)
+        @test relerr_norm(g_mooncake, g_zygote) < 1e-11
+    end
+
+    @testset "a receiver below the bottom differentiates through the half-space tail" begin
+        # `mode_amplitude`'s `Φ[end, m] * exp(-γ(z - D))` branch is the only place `cb` reaches a
+        # *receiver*, and it is reached only for a depth past the last mesh point. Comparing a
+        # deep-receiver target against a water-column one isolates it: the deep one must be strictly
+        # more sensitive to `cb`, or the exponential tail is not on the tape.
+        shallow = θ -> sum(abs2, transmission_loss(field_solution(θ), FIELD_RANGES, FIELD_ZS, 50.0; nmodes=3))
+        deep = θ -> sum(abs2, transmission_loss(field_solution(θ), FIELD_RANGES, FIELD_ZS, 150.0; nmodes=3))
+
+        g_shallow = Zygote.gradient(shallow, θ7)[1]
+        g_deep = Zygote.gradient(deep, θ7)[1]
+        @test relerr_norm(g_deep, ForwardDiff.gradient(deep, θ7)) < 1e-6
+        @test abs(g_deep[11]) > abs(g_shallow[11])
+    end
+
+    @testset "a lossy field, where the pressure is genuinely complex" begin
+        # Attenuation makes `kr` complex, so `exp(-i kr r)` acquires a decay and the field's own
+        # arithmetic goes complex on a path the lossless targets never exercise. The convention is
+        # the one M5 documents — real parameters in, real loss out — and `transmission_loss` is real
+        # by construction, so it is admissible without further comment.
+        θ_lossy7 = [θ7[1:10]; 0.1; θ7[11]]
+        target = lossy_field_loss
+
+        @test is_lossy(lossy_field_env(θ_lossy7))
+        g_forward = ForwardDiff.gradient(target, θ_lossy7)
+        g_zygote = Zygote.gradient(target, θ_lossy7)[1]
+        @test all(isfinite, g_zygote)
+        @test relerr_norm(g_zygote, g_forward) < 1e-6
+        # More water-column loss means more TL: the attenuation derivative is positive and real.
+        @test g_forward[11] > 0
+    end
+
+    @testset "broadband synthesis is differentiable too" begin
+        # `broadband_field` used to fill an `Array{ComplexF64,3}(undef, …)` plane by plane, and the
+        # three-argument `synthesize_pulse` a `Array{Float64,3}` trace by trace. Both are mutation,
+        # which Zygote refuses outright, and both pinned an element type that a `Dual` cannot fit
+        # into — so the header's claim that the hand-written transform was "differentiable with no
+        # extra rules for task 7.5" was true of the transform and false of the function in front of
+        # it. Task 7.5 restated both as comprehensions; this is the test that keeps them that way.
+        bfreqs = collect(80.0:20.0:140.0)
+        times = collect(0.0:0.05:0.4)
+        pulse(θ) = sum(
+            abs2,
+            synthesize_pulse(
+                broadband_field(field_env(θ), bfreqs, 5_000.0, FIELD_ZS, 50.0; nmodes=3, abstol=1e-10, reltol=1e-10),
+                bfreqs,
+                times,
+            ),
+        )
+
+        @test pulse(θ7) > 0
+        g_forward = ForwardDiff.gradient(pulse, θ7)
+        g_zygote = Zygote.gradient(pulse, θ7)[1]
+        @test all(isfinite, g_zygote)
+        @test relerr_norm(g_zygote, g_forward) < 1e-6
+    end
+end
