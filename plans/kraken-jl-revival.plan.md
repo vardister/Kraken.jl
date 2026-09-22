@@ -2126,7 +2126,7 @@ Measured on `pekeris_env()` at 10 km, 2–300 Hz in 2 Hz steps (150 solves in 0.
 Three new `@testitem`s. `synthesize_pulse` is checked against an exact closed form (one nonzero bin
 must come back as one cosine), not just for plausibility.
 
-### 7.4 [ ] Cross-validate the field against `field.exe`
+### 7.4 [x] Cross-validate the field against `field.exe` *(completed 2026-09-21)*
 - **Files:** `test/reference/flp_writer.jl`, `test/reference/runner.jl`, `test/fortran_reference_tests.jl`
 - **What:** Extend the reference harness to write `.flp` files and invoke `field.exe` (also in
   `AcousticsToolbox_jll`), then read the resulting `.shd` binary. Compare TL fields over a range-depth grid,
@@ -2135,6 +2135,44 @@ must come back as one cosine), not just for plausibility.
   the comparison covers both summation modes (`C` and `I`). *Was "all three" — 7.2 established that
   `field.exe` has no third task code, so there is no S run to compare against.*
 - **Dependencies:** 7.3
+
+**Outcome.** Comfortably inside the bar, and the phase-convention worry turned out to be nothing.
+Measured RMS |ΔTL| against `field.exe` over a 9-depth × 19-range grid, 1-10 km:
+
+| env | 50 Hz | 100 Hz | 200 Hz |
+|---|---|---|---|
+| pekeris, coherent | 0.0026 | 0.0242 | 0.0156 |
+| pekeris, incoherent | 0.0021 | 0.0136 | 0.0099 |
+| one_layer, coherent | 0.0020 | 0.0346 | 0.0148 |
+| one_layer, incoherent | 0.0018 | 0.0083 | 0.0087 |
+
+The acceptance bound is 0.5 dB RMS; the worst cell is 0.035 dB, an order of magnitude inside it, and
+the worst *pointwise* difference anywhere is 0.42 dB (one_layer, 100 Hz, coherent) sitting on an
+interference null where TL is most sensitive. The tests assert both the plan's 0.5 dB bound and the
+0.05 dB the code actually achieves, so a regression fails rather than shrugs.
+
+- **There is no phase convention to account for.** The task said to "expect and account for the
+  phase-convention difference noted in 7.2". There is none to account for, because 7.1 chose to
+  follow `Evaluate`'s own prefactor and KRAKEN's `e^{i(ωt-kᵣr)}` rather than Jensen's: the **complex**
+  fields coincide directly, magnitude ratio within ±2%, phase within 1.8°, max relative error 0.25%,
+  with no conjugation and no rescaling. That is asserted separately, and it is a stronger statement
+  than the TL comparison — TL would have passed even with a sign error.
+- **`field.exe` writes a blank `PlotType`.** `KrakenField/field.f90` declares
+  `PlotType = '          '` and never assigns it, so every shade file it produces has ten blanks
+  where `field3d` and Scooter write `'rectilin  '`. A reader that required the name would reject all
+  of them; `read_shd_bin.m` handles it in its `otherwise` branch and so do we. This cost the one
+  test failure in the first run and is now asserted explicitly.
+- **`field.exe` overwrites `kraken.exe`'s `.prt`.** Both open `<root>.prt`, so the runner scans and
+  captures KRAKEN's report *before* invoking `field.exe`, then scans the replacement afterwards.
+  Checking only at the end would silently lose every `kraken.exe` diagnostic.
+
+New files `test/reference/flp_writer.jl` and `test/reference/shd_reader.jl`; `run_fortran_field` in
+`runner.jl`, `compare_field_with_fortran` in `compare.jl`. *(The plan listed the `.shd` reader
+nowhere; it went beside `mod_reader.jl`, which is where the other binary reader lives, and the
+comparison went beside `compare_with_fortran` for the same reason.)* `field.exe` resolves through
+the same `KRAKEN_FORTRAN_BIN` override as the others and gates on its own `field_available()`.
+
+The Fortran reference file is 1250 assertions, up from 1141, and still 2m42s.
 
 ### 7.5 [ ] Make the field differentiable end to end
 - **Files:** `src/kraken_field.jl`, `test/reverse_ad_tests.jl`, `docs/src/ad.md`

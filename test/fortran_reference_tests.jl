@@ -1839,5 +1839,110 @@ const KR = KrakenReference
                 end
             end
         end
+
+        # ----------------------------------------------------------------------------------
+        # M7.4: the pressure field against field.exe
+        # ----------------------------------------------------------------------------------
+        #
+        # `field.exe` is a second binary reading the `.mod` kraken.exe wrote plus a `.flp`, so this
+        # needs both to resolve. The measured agreement is recorded in test/README.md.
+
+        if !KR.field_available()
+            @info "field.exe unavailable; skipping the M7.4 field cross-validation"
+            @test_skip KR.field_available()
+        else
+            @testset "M7.4: the .flp writer" begin
+                text = KR.flp_file_string([1_000.0, 2_000.0, 3_000.0], 36.0, [10.0, 20.0, 30.0])
+                lines = split(strip(text), '\n')
+                # Record order is fixed by field.f90: title, Opt, MLimit, then five vectors.
+                @test occursin("'", lines[1])
+                @test occursin("'RA C'", lines[2])
+                @test occursin("9999", lines[3])
+                # Ranges are written in km even though the API takes metres.
+                @test occursin("1.0", text)
+                @test occursin("3.0", text)
+                # Position 4 is the summation code, and only C and I exist.
+                @test occursin("'RA I'", KR.flp_file_string([1_000.0], 36.0, [10.0]; mode=:incoherent))
+                @test_throws ErrorException KR.flp_file_string([1_000.0], 36.0, [10.0]; mode=:semicoherent)
+                # field.exe enforces one range offset per receiver depth; so do we, before it does.
+                @test_throws ErrorException KR.flp_file_string([1_000.0], 36.0, [10.0, 20.0]; tilt=[0.0])
+                @test_throws ErrorException KR.flp_file_string(Float64[], 36.0, [10.0])
+                @test_throws ErrorException KR.flp_file_string([-1.0], 36.0, [10.0])
+                # `nmodes` reaches MLimit.
+                @test occursin("7", KR.flp_file_string([1_000.0], 36.0, [10.0]; nmodes=7))
+            end
+
+            @testset "M7.4: the .shd reader round-trips field.exe's own grid" begin
+                env = UnderwaterEnv(pekeris_env()...)
+                ranges = collect(1_000.0:1_000.0:5_000.0)
+                zr = collect(20.0:20.0:80.0)
+                ref = KR.run_fortran_field(env, 100.0, ranges, 36.0, zr)
+
+                # The grid comes back as it was asked for (field.exe sorts, it does not resample).
+                @test ref.ranges ≈ ranges
+                @test ref.zr ≈ zr
+                @test ref.zs ≈ [36.0]
+                @test size(ref.p) == (length(zr), length(ranges))
+                @test all(isfinite, ref.tl)
+                @test eltype(ref.p) == ComplexF64
+                @test ref.shd.freqs[1] ≈ 100.0
+                # field.exe leaves PlotType as the ten blanks it was initialized to
+                # (field.f90:32) and never writes a name there, so blank is correct and means
+                # rectilinear. Asserted rather than glossed over, because a reader that demanded
+                # "rectilin" would reject every file field.exe writes.
+                @test isempty(ref.shd.plot_type)
+                @test size(ref.p, 1) == length(zr)   # ...and the grid was read as rectilinear
+                @test ref.tl ≈ -20 .* log10.(abs.(ref.p))
+            end
+
+            @testset "M7.4: TL matches field.exe" begin
+                # 0.5 dB RMS is the plan's bar; the measured numbers are one to two orders of
+                # magnitude inside it, so the assertions are tightened to what actually holds and
+                # a regression will show up as a failure rather than as a shrug.
+                field_cases = [
+                    (name="pekeris", build=() -> UnderwaterEnv(pekeris_env()...)),
+                    (name="one_layer", build=() -> UnderwaterEnv(one_layer_env()...)),
+                ]
+                field_ranges = collect(1_000.0:500.0:10_000.0)
+
+                @testset "$(case.name)" for case in field_cases
+                    env = case.build()
+                    zr = collect(range(0.1 * env.depth, 0.9 * env.depth, 9))
+                    zs = 0.36 * env.depth
+                    @testset "$(freq) Hz, :$(mode)" for freq in (50.0, 100.0, 200.0), mode in (:coherent, :incoherent)
+                        c = KR.compare_field_with_fortran(env, freq, field_ranges, zs, zr; mode=mode)
+                        @test c.n_compared == length(field_ranges) * length(zr)
+                        @test c.n_dropped == 0
+                        @test c.rms_db < 0.5          # the plan's acceptance bound
+                        @test c.rms_db < 0.05         # what it actually achieves
+                        @test c.max_db < 0.5
+                        @test all(isfinite, c.tl_julia)
+                        @test all(isfinite, c.tl_fortran)
+                    end
+                end
+            end
+
+            @testset "M7.4: the complex field matches, not just its magnitude" begin
+                # Plan task 7.2 warned to "expect and account for the phase-convention difference".
+                # There is nothing to account for: 7.1 deliberately adopted `Evaluate`'s own
+                # prefactor and KRAKEN's e^{i(ωt-kᵣr)} convention rather than Jensen's, so the
+                # complex fields coincide with no conjugation and no rescaling. That is a stronger
+                # statement than the TL comparison above and the reason to assert it separately.
+                env = UnderwaterEnv(pekeris_env()...)
+                ranges = collect(2_000.0:1_000.0:9_000.0)
+                zr = collect(20.0:10.0:80.0)
+                zs = 36.0
+
+                ref = KR.run_fortran_field(env, 100.0, ranges, zs, zr)
+                sol = kraken_jl(env, 100.0)
+                pj = acoustic_field(sol, ref.ranges, zs, ref.zr)
+
+                @test size(pj) == size(ref.p)
+                ratio = pj ./ ref.p
+                @test all(r -> 0.95 < abs(r) < 1.05, ratio)
+                @test all(r -> abs(rad2deg(angle(r))) < 5, ratio)
+                @test maximum(abs.(pj .- ref.p)) < 0.01 * maximum(abs.(ref.p))
+            end
+        end
     end
 end

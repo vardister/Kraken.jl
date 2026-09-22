@@ -137,3 +137,93 @@ function run_fortran_kraken(env, freq; complex::Bool=false, bindir=nothing, keep
         keep_files || rm(dir; recursive=true, force=true)
     end
 end
+
+### Driving `field.exe`: write the `.env` and `.flp`, run both binaries, read the `.shd`.
+
+"""
+    run_fortran_field(env, freq, ranges, zs, zr; mode=:coherent, nmodes=9999, bindir=nothing,
+                      keep_files=false, kwargs...)
+
+Run unmodified Fortran KRAKEN *and* `field.exe` on `env`, and return the pressure field.
+
+`field.exe` is a second program, not a mode of the first: it reads the `.mod` that `kraken.exe`
+wrote plus a `.flp` describing where to evaluate, and writes a `.shd`. Both binaries take the same
+file root, so this writes both inputs into one temporary directory and runs them in sequence.
+
+Returns `(; p, tl, ranges, zs, zr, shd, dir)` — `p` is complex pressure indexed
+`[receiver depth, range]` for the single source, `tl` is `-20log10|p|`, and `shd` is the full
+[`read_shd_file`](@ref) result. Extra keyword arguments reach [`write_env_file`](@ref).
+
+# Errors
+
+Like `kraken.exe`, `field.exe` exits 0 on a fatal error and reports it in the `.prt` — so the same
+scan applies. One wrinkle: **`field.exe` opens the same `<root>.prt` and overwrites it**, so
+`kraken.exe`'s report is checked and captured *before* `field.exe` runs, not after.
+"""
+function run_fortran_field(
+    env,
+    freq,
+    ranges,
+    zs,
+    zr;
+    mode::Symbol=:coherent,
+    nmodes::Integer=9999,
+    bindir=nothing,
+    keep_files::Bool=false,
+    kwargs...,
+)
+    kraken = _resolve_cmd(bindir, false)
+    field = _resolve_field_cmd(bindir)
+
+    dir = mktempdir()
+    try
+        root = joinpath(dir, "case")
+        write_env_file(root, env, freq; kwargs...)
+        run(pipeline(ignorestatus(Cmd(`$(kraken) case`; dir=dir)); stdout=devnull, stderr=devnull))
+
+        prt = root * ".prt"
+        kraken_report = isfile(prt) ? read(prt, String) : ""
+        kraken_problems = _error_lines(kraken_report)
+        isempty(kraken_problems) ||
+            throw(FortranKrakenError(first(kraken.exec), join(kraken_problems, "\n"), kraken_report))
+        isfile(root * ".mod") || throw(
+            FortranKrakenError(first(kraken.exec), "kraken.exe wrote no .mod for field.exe to read.", kraken_report)
+        )
+
+        write_flp_file(root, ranges, zs, zr; mode=mode, nmodes=nmodes)
+        stderr_buf = IOBuffer()
+        run(pipeline(ignorestatus(Cmd(`$(field) case`; dir=dir)); stdout=devnull, stderr=stderr_buf))
+        stderr_text = strip(String(take!(stderr_buf)))
+
+        # field.exe has just clobbered kraken's .prt with its own.
+        field_report = isfile(prt) ? read(prt, String) : ""
+        field_problems = _error_lines(field_report)
+        isempty(field_problems) ||
+            throw(FortranKrakenError(first(field.exec), join(field_problems, "\n"), field_report))
+
+        shd = root * ".shd"
+        isfile(shd) || throw(
+            FortranKrakenError(
+                first(field.exec),
+                "The run reported no error but wrote no .shd file." *
+                (isempty(stderr_text) ? "" : "\nstderr: $stderr_text"),
+                field_report,
+            ),
+        )
+
+        result = read_shd_file(shd; freq=freq isa Real ? freq : first(freq))
+        p = result.p[1, :, :]   # one source depth
+        return (;
+            p,
+            tl=-20 .* log10.(abs.(p)),
+            ranges=result.ranges,
+            zs=result.zs,
+            zr=result.zr,
+            shd=result,
+            warnings=vcat(_warning_lines(kraken_report), _warning_lines(field_report)),
+            dir=keep_files ? dir : nothing,
+        )
+    finally
+        keep_files || rm(dir; recursive=true, force=true)
+    end
+end

@@ -29,7 +29,16 @@ module KrakenReference
 using AcousticsToolbox_jll
 
 export fortran_available,
-    write_env_file, read_env_file, read_mod_file, read_grp, run_fortran_kraken, compare_with_fortran
+    write_env_file,
+    read_env_file,
+    read_mod_file,
+    read_grp,
+    run_fortran_kraken,
+    compare_with_fortran,
+    write_flp_file,
+    read_shd_file,
+    run_fortran_field,
+    compare_field_with_fortran
 
 """
 Name of the environment variable that overrides the jll binaries with a local Acoustics Toolbox
@@ -136,6 +145,64 @@ without binaries skips with a message instead of erroring.
 """
 fortran_available(; complex::Bool=false) = binary_source(; complex=complex) !== :none
 
+# `field.exe` is a separate program from `kraken.exe`, shipped by the same jll and overridable by
+# the same environment variable. It resolves independently because a local toolbox build could
+# plausibly have one and not the other.
+_field_exe_name() = "field.exe"
+
+function field_jll_path()
+    try
+        AcousticsToolbox_jll.is_available() || return nothing
+        path = AcousticsToolbox_jll.field_path
+        return isfile(path) ? path : nothing
+    catch
+        return nothing
+    end
+end
+
+function field_source()
+    dir = override_dir()
+    if dir !== nothing && isfile(joinpath(dir, _field_exe_name()))
+        return :override
+    end
+    return field_jll_path() === nothing ? :none : :jll
+end
+
+"""
+    field_cmd() -> Cmd
+
+A runnable command for `field.exe`, taking the file root as its single argument.
+"""
+function field_cmd()
+    source = field_source()
+    if source === :override
+        return Cmd([abspath(joinpath(override_dir()::String, _field_exe_name()))])
+    elseif source === :jll
+        return AcousticsToolbox_jll.field()
+    end
+    return error(
+        "No Fortran field.exe available. AcousticsToolbox_jll has no binaries for this platform, " *
+        "and $BIN_ENV_VAR " *
+        (override_dir() === nothing ? "is not set." : "names no field.exe."),
+    )
+end
+
+"""
+    field_available() -> Bool
+
+Whether `field.exe` can be resolved. The field cross-validation tests gate on this *and* on
+[`fortran_available`](@ref), since they need both binaries.
+"""
+field_available() = field_source() !== :none
+
+_resolve_field_cmd(bindir) = bindir === nothing ? field_cmd() : _local_field_cmd(bindir)
+
+function _local_field_cmd(bindir)
+    exe = joinpath(String(bindir), _field_exe_name())
+    isfile(exe) || error("No $(_field_exe_name()) in $bindir")
+    return Cmd([abspath(exe)])
+end
+
 """
     describe() -> String
 
@@ -158,6 +225,10 @@ end
 include("env_writer.jl")
 include("mod_reader.jl")
 include("env_reader.jl")
+# The field harness (plan task 7.4). `flp_writer.jl` reuses `_write_vector` from `env_writer.jl`,
+# so it has to come after it; `runner.jl` uses both it and the `.shd` reader.
+include("flp_writer.jl")
+include("shd_reader.jl")
 include("runner.jl")
 include("compare.jl")
 

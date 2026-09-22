@@ -90,7 +90,7 @@ of dependency precompilation on the first run after a `Manifest.toml` change.
 | `numerical_methods_tests.jl` | Test | Core algorithms: `det_sturm`, `bisection`, `find_kr`, `inverse_iteration` |
 | `automatic_differentiation_tests.jl` | Test | ForwardDiff compatibility, group speed calculations |
 | `reverse_ad_tests.jl` | Test | The `ChainRulesCore` rules in `src/kraken_ad.jl`: each rule in isolation, then Zygote and Mooncake against ForwardDiff and central differences across three environments and three targets, plus `ChainRulesTestUtils.test_rrule` |
-| `fortran_reference_tests.jl` | Test | Cross-validation against unmodified `kraken.exe`; self-skips when no binary resolves |
+| `fortran_reference_tests.jl` | Test | Cross-validation against unmodified `kraken.exe` and `field.exe`; self-skips when no binary resolves |
 
 ### Optional Tests
 
@@ -146,6 +146,33 @@ and those testsets assert a generous absolute ceiling plus the mode counts inste
 | `timings_vs_fortran.jl` | Manual timing comparisons (requires DrWatson; calls the removed `EnvKRAKEN` API, so it does not currently run) |
 
 ### Fortran cross-validation
+
+### The field against `field.exe` (M7.4)
+
+`field.exe` is a second binary: it reads the `.mod` that `kraken.exe` wrote plus a `.flp` saying
+where to evaluate, and writes a `.shd`. `KrakenReference.run_fortran_field` drives both in sequence
+and `compare_field_with_fortran` reports max and RMS dB difference.
+
+Measured RMS |ΔTL| over a 9-depth × 19-range grid, 1-10 km. The plan's bound is 0.5 dB RMS:
+
+| env | 50 Hz | 100 Hz | 200 Hz |
+|---|---|---|---|
+| pekeris, coherent | 0.0026 | 0.0242 | 0.0156 |
+| pekeris, incoherent | 0.0021 | 0.0136 | 0.0099 |
+| one_layer, coherent | 0.0020 | 0.0346 | 0.0148 |
+| one_layer, incoherent | 0.0018 | 0.0083 | 0.0087 |
+
+The worst pointwise difference is 0.42 dB, on an interference null. The **complex** fields also
+agree — magnitude ratio within ±2%, phase within 1.8° — with no conjugation or rescaling, because
+task 7.1 adopted `Evaluate`'s own prefactor and KRAKEN's phase convention rather than Jensen's.
+
+Two things about the file formats that cost time and are asserted rather than left as folklore:
+
+- **`field.exe` writes a blank `PlotType`.** `KrakenField/field.f90` declares
+  `PlotType = '          '` and never assigns it, so a reader that insisted on `'rectilin  '` would
+  reject every shade file it produces. Blank means rectilinear.
+- **`field.exe` overwrites `kraken.exe`'s `.prt`.** Both open `<root>.prt`. The runner reads and
+  scans KRAKEN's report before invoking `field.exe`, or its diagnostics are lost.
 
 `fortran_reference_tests.jl` runs the suite against **unmodified** Fortran KRAKEN. The harness lives
 in `test/reference/KrakenReference.jl` — test-only, deliberately not part of the package, because

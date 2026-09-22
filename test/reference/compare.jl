@@ -6,7 +6,7 @@ using LinearAlgebra: dot, norm
 # dependency and the AD suite loads it anyway, so there is nothing to gain from deferring it.
 using ForwardDiff
 
-using Kraken: kraken_jl, PressureRelease
+using Kraken: kraken_jl, PressureRelease, transmission_loss
 
 """
     FortranComparison
@@ -297,5 +297,98 @@ function compare_with_fortran(
         ref.depths,
         ref.warnings,
         ref.binary,
+    )
+end
+
+### Comparing the pressure field against `field.exe`
+#
+# What can be compared and what cannot. `Kraken.acoustic_field` was built in plan task 7.1 to
+# reproduce `Evaluate`'s own expression — the `i·√(2π)·e^{iπ/4}` prefactor, the 1 m reference that
+# supplies the 4π, and KRAKEN's `e^{i(ωt-kᵣr)}` phase convention — so the *complex* fields should
+# agree, not merely their magnitudes. The one factor Kraken.jl carries and KRAKEN does not is
+# `1/ρ(zₛ)`, which cancels exactly for a source in water of 1 g/cm³ and is the physically correct
+# generalization otherwise (see the header of `src/kraken_field.jl`).
+#
+# Two things are deliberately *not* compared:
+#
+#   * **The range r = 0**, where the mode sum is singular. `Evaluate` guards it with a `WHERE` and
+#     leaves the pressure unscaled; Kraken.jl rejects it outright. Neither answer means anything.
+#   * **Depths at a pressure-release boundary**, where both fields are zero and the dB difference
+#     is `Inf - Inf`. Those are dropped rather than given a fudge factor.
+
+"""
+    FieldComparison
+
+Result of [`compare_field_with_fortran`](@ref): the two transmission-loss fields on a common grid,
+with the summary statistics plan task 7.4 asks for.
+
+`max_db` and `rms_db` are taken over the compared points only — see `n_compared` and `n_dropped`.
+"""
+struct FieldComparison
+    freq::Float64
+    mode::Symbol
+    ranges::Vector{Float64}
+    zr::Vector{Float64}
+    zs::Float64
+    tl_julia::Matrix{Float64}
+    tl_fortran::Matrix{Float64}
+    absdiff::Matrix{Float64}
+    max_db::Float64
+    rms_db::Float64
+    n_compared::Int
+    n_dropped::Int
+    warnings::Vector{String}
+end
+
+function Base.show(io::IO, ::MIME"text/plain", c::FieldComparison)
+    println(io, "FieldComparison at ", c.freq, " Hz, :", c.mode)
+    println(io, "  grid       : ", length(c.zr), " depths × ", length(c.ranges), " ranges")
+    println(io, "  compared   : ", c.n_compared, " points (", c.n_dropped, " dropped)")
+    println(io, "  max |ΔTL|  : ", round(c.max_db; digits=4), " dB")
+    print(io, "  RMS ΔTL    : ", round(c.rms_db; digits=4), " dB")
+    isempty(c.warnings) || print(io, "\n  warnings   : ", length(c.warnings))
+    return nothing
+end
+
+"""
+    compare_field_with_fortran(env, freq, ranges, zs, zr; mode=:coherent, nmodes=9999, kwargs...)
+
+Run both field solvers over the same range-depth grid and return a printable [`FieldComparison`](@ref).
+
+`ranges` are metres, `zs` and `zr` metres. `nmodes` caps both solvers at the same mode count so a
+mode-count disagreement does not masquerade as a field disagreement. Extra keyword arguments reach
+[`write_env_file`](@ref) and, through it, the `.env` the Fortran side reads.
+"""
+function compare_field_with_fortran(env, freq, ranges, zs, zr; mode::Symbol=:coherent, nmodes::Integer=9999, kwargs...)
+    rs = Float64.(collect(ranges))
+    zrv = Float64.(collect(zr))
+    ref = run_fortran_field(env, freq, rs, zs, zrv; mode=mode, nmodes=nmodes, kwargs...)
+
+    # field.exe sorts and may subtabulate the grid it was given, so take the grid back from the
+    # .shd rather than assuming it survived unchanged.
+    sol = kraken_jl(env, freq)
+    tl_julia = transmission_loss(sol, ref.ranges, zs, ref.zr; nmodes=nmodes, mode=mode)
+    tl_fortran = ref.tl
+
+    size(tl_julia) == size(tl_fortran) ||
+        error("grid mismatch: Kraken.jl gave $(size(tl_julia)), field.exe gave $(size(tl_fortran))")
+
+    finite = isfinite.(tl_julia) .& isfinite.(tl_fortran)
+    absdiff = abs.(tl_julia .- tl_fortran)
+    compared = absdiff[finite]
+    return FieldComparison(
+        Float64(freq),
+        mode,
+        collect(ref.ranges),
+        collect(ref.zr),
+        Float64(zs),
+        tl_julia,
+        tl_fortran,
+        absdiff,
+        isempty(compared) ? NaN : maximum(compared),
+        isempty(compared) ? NaN : sqrt(sum(abs2, compared) / length(compared)),
+        length(compared),
+        length(absdiff) - length(compared),
+        ref.warnings,
     )
 end
