@@ -40,8 +40,8 @@ end
 
 check_testing_this_checkout()
 
-# Where the seventeen minutes go. Measured on a clean full run (1036.6 s end to end), each file timed
-# on its own:
+# Where the time goes. The shares below are from a clean full run measured at 1036.6 s end to end,
+# each file timed on its own:
 #
 #   reverse_ad_tests.jl                 ~700 s   68%   Mooncake and Zygote compiling rules
 #   fortran_reference_tests.jl           178 s   17%   one kraken.exe subprocess per case × frequency
@@ -50,9 +50,13 @@ check_testing_this_checkout()
 #   integration_tests.jl                  13 s
 #   numerical_methods_tests.jl            10 s
 #
-# The reverse-mode AD file is two thirds of it, and almost none of that is Kraken computing anything
-# — it is the AD backends compiling. So the Fortran cross-validation, the obvious suspect, is not
-# actually what makes the suite slow.
+# Two caveats on that table, both established 2026-09-23 and both worth knowing before trying to
+# shorten anything. The **absolute numbers are stale** — the suite has since grown to ~1340 s. And
+# the headline is only half right: the AD file really is the bulk, but the largest single block in
+# it was `test_rrule` on `solve_for_kr`, at 373 s cold against 44 s warm in the same session. That
+# 8.5× gap is Julia compiling `test_rrule`/`to_vec`/`rand_tangent` for the solver's concrete
+# signature, not finite differencing. It now lives in `rrule_tests.jl` so it can be skipped on its
+# own. The Fortran cross-validation is the obvious suspect and is still not the problem.
 #
 # `KRAKEN_SKIP_TESTS` is a comma-separated list of file names to leave out while iterating on code
 # they cannot reach. Skipping `reverse_ad_tests.jl` alone takes the suite from ~17 min to ~5.5 min.
@@ -70,6 +74,7 @@ let unknown = setdiff(
             "numerical_methods_tests.jl",
             "automatic_differentiation_tests.jl",
             "reverse_ad_tests.jl",
+            "rrule_tests.jl",
             "fortran_reference_tests.jl",
         ]),
     )
@@ -98,6 +103,10 @@ end
     include_suite("numerical_methods_tests.jl")
     include_suite("automatic_differentiation_tests.jl")
     include_suite("reverse_ad_tests.jl")
+
+    # The `test_rrule` checks, split out of reverse_ad_tests.jl because one of them is 373 s of
+    # compilation on a cold session and nothing in it is reducible. Separate file, separate skip.
+    include_suite("rrule_tests.jl")
 
     # Cross-validation against unmodified kraken.exe from AcousticsToolbox_jll. Self-skipping when
     # no binary resolves, so this is safe to run unconditionally on any platform.

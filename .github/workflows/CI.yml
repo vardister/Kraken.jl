@@ -38,7 +38,14 @@ jobs:
       - uses: julia-actions/julia-buildpkg@v1
       # Runs Pkg.test() from the root environment, which is what picks up test/Project.toml as the
       # test environment. See test/README.md for why --project=test is wrong here.
+      #
+      # KRAKEN_RUN_KNOWN_LIMITATIONS turns on the tripwire testsets that assert a *current*
+      # limitation still holds — today just the one for Mooncake's complex-arithmetic failure. They
+      # are skipped by default because ~45 s to confirm nothing has changed is not worth paying on
+      # every local run, but the whole point of a tripwire is that CI trips it.
       - uses: julia-actions/julia-runtest@v1
+        env:
+          KRAKEN_RUN_KNOWN_LIMITATIONS: "true"
 
   # Benchmarks are opt-in and timing-sensitive, so they run once rather than across the matrix.
   # Thresholds are set to catch order-of-magnitude regressions, not to police CI runner variance.

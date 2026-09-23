@@ -5,12 +5,7 @@ using Zygote
 using Mooncake
 using FiniteDiff
 using DifferentiationInterface
-using ChainRulesTestUtils
-using ChainRulesCore
-using DataInterpolations
-using FiniteDifferences: FiniteDifferences, central_fdm
 using LinearAlgebra
-using Random: AbstractRNG
 
 # Reverse-mode AD through the solver. `src/kraken_ad.jl` attaches two ChainRules `rrule`s, so that
 # neither the bracketing solver nor the inverse iteration is ever traced:
@@ -710,33 +705,49 @@ lossy_kr(θ; freq=100.0) = kraken_jl(pekeris_lossy(θ), freq; TOL...).kr
         @test relerr_norm(g, g_forward) < 1e-7
     end
 
-    @testset "Mooncake cannot trace the complex path (known limitation)" begin
-        # `add_attenuation` introduces complex arithmetic — `sqrt` of a `Complex` — and Mooncake
-        # refuses it:
-        #
-        #   ArgumentError: It is not permissible to bitcast to a differentiable type during AD ...
-        #
-        # The offending call is inside Mooncake's own handling of `Complex`, not in
-        # src/kraken_ad.jl, so no rule here would fix it. Pinned as a *specific* failure rather than
-        # left out, so that Mooncake gaining complex support shows up as this test starting to pass
-        # rather than as nobody noticing.
-        target = θ -> sum(imag, lossy_kr(θ))
-        err = try
-            DifferentiationInterface.gradient(target, AutoMooncake(), θ_lossy)
-            nothing
-        catch e
-            e
-        end
-        @test err !== nothing
-        @test occursin("bitcast", lowercase(sprint(showerror, err)))
+    # Opt-in, and the only testset in this file that is. It costs ~45 s — two cold Mooncake
+    # derivations, one of which is thrown away when it fails — to establish that a limitation
+    # *still* holds. That is a tripwire for the day Mooncake gains complex support: worth having on
+    # every CI run, worth nothing on the twentieth local run of the hour.
+    # `KRAKEN_RUN_KNOWN_LIMITATIONS=true` runs it, and `.github/workflows/CI.yml` sets it.
+    #
+    # Note what goes with it when it is skipped: the lossless-corner check at the bottom, which is
+    # the only place Mooncake meets *this* parameterization. Mooncake over lossless environments is
+    # covered thoroughly by the backend table above, so that is a duplicate rather than a gap.
+    #
+    # The guard is outside the `@testset` rather than an early return inside it: a testset body is a
+    # `let` block, not a function, so `return` there would escape the enclosing scope.
+    if get(ENV, "KRAKEN_RUN_KNOWN_LIMITATIONS", "false") != "true"
+        @info "SKIPPING the Mooncake known-limitation tripwire. Set KRAKEN_RUN_KNOWN_LIMITATIONS=true to run it."
+    else
+        @testset "Mooncake cannot trace the complex path (known limitation)" begin
+            # `add_attenuation` introduces complex arithmetic — `sqrt` of a `Complex` — and Mooncake
+            # refuses it:
+            #
+            #   ArgumentError: It is not permissible to bitcast to a differentiable type during AD ...
+            #
+            # The offending call is inside Mooncake's own handling of `Complex`, not in
+            # src/kraken_ad.jl, so no rule here would fix it. Pinned as a *specific* failure rather than
+            # left out, so that Mooncake gaining complex support shows up as this test starting to pass
+            # rather than as nobody noticing.
+            target = θ -> sum(imag, lossy_kr(θ))
+            err = try
+                DifferentiationInterface.gradient(target, AutoMooncake(), θ_lossy)
+                nothing
+            catch e
+                e
+            end
+            @test err !== nothing
+            @test occursin("bitcast", lowercase(sprint(showerror, err)))
 
-        # Mooncake is fine on the same environment as long as the loss is real-valued throughout —
-        # i.e. the lossless corner. This is what confines the limitation to the complex path.
-        θ_lossless = [1500.0, 1600.0, 1000.0, 1500.0, 100.0, 0.0, 0.0]
-        real_target = θ -> sum(real, lossy_kr(θ))
-        g_mooncake = DifferentiationInterface.gradient(real_target, AutoMooncake(), θ_lossless)
-        g_forward = DifferentiationInterface.gradient(real_target, AutoForwardDiff(), θ_lossless)
-        @test relerr_norm(g_mooncake, g_forward) < 1e-7
+            # Mooncake is fine on the same environment as long as the loss is real-valued throughout —
+            # i.e. the lossless corner. This is what confines the limitation to the complex path.
+            θ_lossless = [1500.0, 1600.0, 1000.0, 1500.0, 100.0, 0.0, 0.0]
+            real_target = θ -> sum(real, lossy_kr(θ))
+            g_mooncake = DifferentiationInterface.gradient(real_target, AutoMooncake(), θ_lossless)
+            g_forward = DifferentiationInterface.gradient(real_target, AutoForwardDiff(), θ_lossless)
+            @test relerr_norm(g_mooncake, g_forward) < 1e-7
+        end
     end
 
     @testset "a lossy sediment layer, not just a lossy half-space" begin
@@ -758,78 +769,11 @@ end
 
 ### The rules on their own, through ChainRulesTestUtils --------------------------------------------
 #
-# Every comparison so far is a gradient of a *composition*, where a wrong term in one rule can be
-# cancelled by a wrong term in another or simply never reached by the cotangent that happens to flow.
-# `test_rrule` asks the narrower question: with a random cotangent, does this one pullback reproduce
-# finite differences of this one primal, over every argument at once? It checks arguments the solver
-# never varies independently — `props.zn_vec` against `cache.a_vec`, say — and it checks the tangent
-# *types*, which is how a rule acquires a `Tangent` field that no backend ever accumulates.
-#
-# It needs to be told three things about these arguments before it can run at all.
-
-# 1. `rand_tangent` and `to_vec` both recurse through a struct's fields, and the interpolant inside
-#    `SampledSSP1D` bottoms out in `DataInterpolations.ExtrapolationType.T` — an `EnumX` value that
-#    neither knows what to do with ("Non-struct types are not supported by this fallback"). Declaring
-#    the interpolant opaque is the honest answer rather than a workaround: the rules in
-#    `src/kraken_ad.jl` already return `f=NoTangent()` for it, because it is fully determined by the
-#    `z` and `c` fields sitting beside it and differentiating both would count the profile twice.
-ChainRulesTestUtils.rand_tangent(::AbstractRNG, ::DataInterpolations.AbstractInterpolation) = NoTangent()
-FiniteDifferences.to_vec(A::DataInterpolations.AbstractInterpolation) = (Float64[], _ -> A)
-
-# 2. `Nz_vec` is a `Vector{Int}`, and the generic struct reconstruction tries to rebuild it out of
-#    perturbed `Float64`s (`TypeError: in new, expected Vector{Int64}`). It is the mesh point count —
-#    the one part of `AcousticProblemProperties` that is deliberately not differentiable, see the
-#    seam note at the top of `src/kraken_core.jl` — so it is carried across unperturbed.
-function FiniteDifferences.to_vec(props::AcousticProblemProperties)
-    v, back = FiniteDifferences.to_vec((props.freq, props.Δz_vec, props.zn_vec))
-    function props_from_vec(x)
-        freq, Δz_vec, zn_vec = back(x)
-        return AcousticProblemProperties{typeof(freq),eltype(Δz_vec)}(freq, props.Nz_vec, Δz_vec, zn_vec)
-    end
-    return v, props_from_vec
-end
-
-# 3. The step has to be capped. FiniteDifferences' adaptive stepper picks ~1e-3 here, and the entries
-#    of `cache.a_vec` are themselves ~2e-3 — so the default probe perturbs the discretized problem by
-#    tens of percent, the root leaves the bracket it was handed, and `BracketingNonlinearSolve` says
-#    so in a warning. `max_range=1e-6` keeps every probe inside the bracket while leaving five
-#    decades of headroom over the 1e-11 at which cancellation would start to matter.
-const RRULE_FDM = central_fdm(5, 1; max_range=1e-6)
-
-@testset "ChainRulesTestUtils" begin
-    # `layer_mesh` is the whole rule: `collect(range(z_top, z_bot, Nz))`, three arguments, one of
-    # them an `Int` that must come back `NoTangent`. Nothing else in this file tests it in isolation.
-    @testset "layer_mesh" begin
-        test_rrule(Kraken.layer_mesh, 0.5, 100.0, 12; check_inferred=false)
-    end
-
-    # `atol = 1e-8` and not smaller because of one specific entry: `∂kr/∂ρb` is ~1.3e-6 on
-    # `one_layer_env`, three decades below the largest cotangent in the same call, and finite
-    # differences resolve it to about 2e-9 absolute. Everything else clears `rtol = 1e-6` on its own.
-    @testset "solve_for_kr — $name" for (name, envf, θ) in (("pekeris", pekeris, θ0), ("one_layer", onelayer, θ1))
-        # 25 Hz keeps the mesh at a few dozen points: `test_rrule` finite-differences *every*
-        # coordinate of every argument, so the cost is quadratic in the mesh, not linear.
-        env, props, cache, _ = setup(envf, θ; freq=25.0)
-        span = bisection(env, props, cache)[1, :]
-        test_rrule(
-            Kraken.solve_for_kr, span, env, props, cache; fdm=RRULE_FDM, rtol=1e-6, atol=1e-8, check_inferred=false
-        )
-    end
-
-    # `mode_eigenvector` is deliberately absent, and it is worth recording why rather than leaving a
-    # gap. `test_rrule` requires a primal that does not mutate its arguments, and this one does:
-    # `create_finite_diff_matrix!` shifts `cache.a_vec` in place and unshifts it on the way out. That
-    # is invisible to a backend, which sees the cache restored, but not to `to_vec`, whose
-    # reconstruction hands the same arrays back to every probe. Measured, with the cotangent fixed so
-    # both sides compute the same number: differentiating with respect to `kr` alone, finite
-    # differences give 3.9617 and the rule gives 3.96168; add `cache` to the argument list and the
-    # same finite difference collapses to 1e-14. Two further blockers sit behind that one — the
-    # primal is the last iterate of an iteration and so is not smooth at the scale the adaptive
-    # stepper probes (4.3's finding), and `get_g`'s `sqrt(kr² - q²)` makes `kr` inadmissible a short
-    # way below the root, which the stepper's magnitude estimation walks straight into
-    # (`DomainError`). The direct check on this rule is the hand-stepped "eigenvector adjoint
-    # content" testset above, which covers every partial family entry by entry.
-end
+# Moved to `rrule_tests.jl`. `test_rrule` checks a pullback against finite differences over every
+# argument at once, which is a different question from the compositions above — and its
+# `solve_for_kr` case costs 373 s cold against 44 s warm, essentially all of it Julia compiling
+# `test_rrule` for the solver's concrete signature. Its own file makes that block skippable through
+# `KRAKEN_SKIP_TESTS` while iterating here. Nothing was dropped.
 
 ### Milestone 6: every boundary condition and every interpolation mode ----------------------------
 #

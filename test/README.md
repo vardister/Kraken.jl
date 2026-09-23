@@ -89,7 +89,8 @@ of dependency precompilation on the first run after a `Manifest.toml` change.
 | `integration_tests.jl` | TestItems | Full `kraken_jl` workflow, physics validation |
 | `numerical_methods_tests.jl` | Test | Core algorithms: `det_sturm`, `bisection`, `find_kr`, `inverse_iteration` |
 | `automatic_differentiation_tests.jl` | Test | ForwardDiff compatibility, group speed calculations |
-| `reverse_ad_tests.jl` | Test | The `ChainRulesCore` rules in `src/kraken_ad.jl`: each rule in isolation, then Zygote and Mooncake against ForwardDiff and central differences across three environments and three targets, plus `ChainRulesTestUtils.test_rrule` |
+| `reverse_ad_tests.jl` | Test | The `ChainRulesCore` rules in `src/kraken_ad.jl` as gradients of compositions: each rule's content in isolation, then Zygote and Mooncake against ForwardDiff and central differences across three environments and three targets, every boundary condition and interpolation mode, attenuation, and the pressure field |
+| `rrule_tests.jl` | Test | The same rules through `ChainRulesTestUtils.test_rrule` — one pullback against finite differences over *every* argument at once. Split out of `reverse_ad_tests.jl` because its `solve_for_kr` case is 373 s of compilation on a cold session |
 | `fortran_reference_tests.jl` | Test | Cross-validation against unmodified `kraken.exe` and `field.exe`; self-skips when no binary resolves |
 
 ### Optional Tests
@@ -97,23 +98,40 @@ of dependency precompilation on the first run after a `Manifest.toml` change.
 | File | Env Variable | Description |
 |------|--------------|-------------|
 | `performance_tests.jl` | `KRAKEN_RUN_PERFORMANCE_TESTS=true` | Benchmarks, memory usage, scaling |
+| one testset in `reverse_ad_tests.jl` | `KRAKEN_RUN_KNOWN_LIMITATIONS=true` | Tripwires that assert a *current* limitation still holds — today only Mooncake's refusal to trace complex arithmetic. ~45 s to confirm nothing changed, so it is skipped by default and CI sets the variable |
 
 ### Making the suite fast enough to iterate on
 
-The full suite is about 17 minutes, and it is worth knowing where that goes before trying to shorten
-it. Measured on a clean run (1036.6 s), each file timed on its own:
+The full suite was 17 minutes when the table below was measured (1036.6 s end to end, each file
+timed on its own) and is ~22 minutes now. **The absolute numbers are stale; the shape still holds.**
 
 | File | Time | Share |
 |------|------|-------|
-| `reverse_ad_tests.jl` | ~700 s | **68%** |
+| `reverse_ad_tests.jl` (then including `rrule_tests.jl`) | ~700 s | **68%** |
 | `fortran_reference_tests.jl` | 178 s | 17% |
 | `automatic_differentiation_tests.jl` | 104 s | 10% |
 | `environment_tests.jl` | 27 s | |
 | `integration_tests.jl` | 13 s | |
 | `numerical_methods_tests.jl` | 10 s | |
 
-The Fortran cross-validation is the obvious suspect and is **not** the problem. Two thirds of the
-wall time is Mooncake and Zygote compiling AD rules, which is compilation, not computation.
+The Fortran cross-validation is the obvious suspect and is **not** the problem. Most of the wall
+time is Mooncake and Zygote compiling AD rules, which is compilation, not computation.
+
+Two things measured on 2026-09-23 sharpen that, and both are why `rrule_tests.jl` now exists:
+
+- **The largest single testset was `test_rrule` on `solve_for_kr`**, and it is 373 s the first time
+  against 44 s every time after, in the same session. The 8.5× gap is Julia compiling `test_rrule`,
+  `to_vec`, `from_vec` and `rand_tangent` for a signature that names `UnderwaterEnv`'s six type
+  parameters. Nothing in the assertion is reducible, so it was moved to its own file where
+  `KRAKEN_SKIP_TESTS` can leave it out.
+- **Cold AD-backend compilation is paid once, not per case.** The first entry of the backend table
+  (`pekeris / wavenumbers`) costs ~117 s and the other eight combinations 5–20 s each, because they
+  reuse its derivations. So adding or removing *cases* from that table barely moves the clock —
+  a tempting optimization that does not work.
+
+Beware measuring a single file in a REPL that is doing anything else: a per-testset timing pass run
+alongside other evals reported 1598 s for `reverse_ad_tests.jl` alone, more than the entire suite
+takes. Use an idle session, or the relative shares rather than the absolute seconds.
 
 `KRAKEN_SKIP_TESTS` takes a comma-separated list of those file names and leaves them out:
 
@@ -124,6 +142,9 @@ KRAKEN_SKIP_TESTS=reverse_ad_tests.jl julia --project=. -e 'using Pkg; Pkg.test(
 # ~2.5 min — measured at 2m40s for 1003 tests
 KRAKEN_SKIP_TESTS=reverse_ad_tests.jl,fortran_reference_tests.jl \
   julia --project=. -e 'using Pkg; Pkg.test()'
+
+# Keep the AD gradient checks but drop the test_rrule compilation, which is the single largest block
+KRAKEN_SKIP_TESTS=rrule_tests.jl julia --project=. -e 'using Pkg; Pkg.test()'
 ```
 
 It defaults to skipping nothing, CI never sets it, an unrecognized file name is a hard error rather
