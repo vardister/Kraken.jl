@@ -2,10 +2,14 @@
 
 This guide goes from an environment to modes, to a pressure field, to a pulse, using the Pekeris
 waveguide throughout: 100 m of water at 1500 m/s over a 1600 m/s seabed. Every block on this page is
-run when the documentation is built, and the output shown is what it printed.
+run when the documentation is built, and the output shown, figures included, is what it produced.
 
-```@setup guide
+The figures come from Kraken.jl's plotting functions, which load with any Makie backend:
+
+```@example guide
 using Kraken
+using CairoMakie   # activates Kraken's plotting extension
+nothing # hide
 ```
 
 ## Solve for the modes
@@ -44,6 +48,13 @@ continues each mode into the seabed as the decaying exponential it is there:
 mode_amplitudes(sol, [0.0, 25.0, 50.0, 100.0, 120.0])
 ```
 
+[`plot_modes`](@ref) draws them beside the sound-speed profile. Below the dashed seafloor each mode
+decays exponentially into the seabed, and the higher modes, nearer their cutoff, reach further:
+
+```@example guide
+plot_modes(sol; modes=1:5)
+```
+
 Every mode is zero at the pressure-release surface. Mode `m` crosses zero `m − 1` times in the water
 column. The modes are normalized so that ``\int \psi_m^2/\rho \, dz = 1``, including the part of the
 integral in the seabed.
@@ -74,6 +85,20 @@ p = acoustic_field(sol, 1_000.0:10.0:10_000.0, 36.0, 0.0:1.0:100.0)
 size(p)
 ```
 
+Over the whole water column the interference pattern is easier to see than to read off a table.
+[`plot_tl`](@ref) computes the TL on a grid and draws it, with the source marked:
+
+```@example guide
+plot_tl(sol, 50.0:25.0:10_000.0, 36.0, 0.0:0.5:100.0)
+```
+
+[`plot_tl_range`](@ref) takes a single receiver depth and draws the coherent and incoherent sums
+together. The incoherent curve is the mean level the interference oscillates about:
+
+```@example guide
+plot_tl_range(sol, 50.0:5.0:10_000.0, 36.0, 55.0)
+```
+
 The phase convention is KRAKEN's, `exp(i(ωt − kᵣr))`, and the amplitude is normalized to a source of
 unit pressure at 1 m. That is why `field.exe`'s output can be compared with no rescaling, and the
 [Validation](@ref validation) page does exactly that.
@@ -97,6 +122,16 @@ Each frequency is an independent solve. A frequency that supports no trapped mod
 contributes nothing rather than an error, which is what a band that starts near the lowest mode's
 cutoff needs.
 
+[`plot_arrivals`](@ref) does this at a series of ranges and stacks the results into a record
+section. Here the source spectrum is a band around 60 Hz, set with `spectrum`. The pulse stretches
+out as it travels, because its modes and frequencies travel at different group speeds, and by 50 km
+the arrival is several times as long as it was at 5 km:
+
+```@example guide
+band(f) = exp(-((f - 60) / 20)^2)
+plot_arrivals(env, 1.0:1.0:200.0, 5_000.0:5_000.0:50_000.0, 36.0, 55.0, 0:0.001:0.5; spectrum=band)
+```
+
 ## Group speeds, by differentiation
 
 The solver can be differentiated, so a derivative of its output is a derivative in the calculus
@@ -113,6 +148,15 @@ group_speeds = 2π ./ dkr_df
 The group speeds lie *below* the water sound speed, as they should: in this waveguide, energy
 travels more slowly than the sound speed of the water.
 
+Where these speeds come from is clearest across frequency. [`plot_dispersion`](@ref) solves at each
+frequency and draws each mode's phase speed. A mode appears at its cutoff, where its phase speed is
+the seabed's 1600 m/s, and falls towards the water's 1500 m/s as frequency rises. The steeper the
+curve, the more its group speed differs from its phase speed:
+
+```@example guide
+plot_dispersion(env, 5.0:1.0:150.0; nmodes=6)
+```
+
 For gradients with respect to many parameters at once, a whole sound-speed profile for example,
 reverse mode is the tool. [Automatic differentiation](@ref) covers both modes and works through a
 full inversion.
@@ -126,6 +170,16 @@ traps about a hundred modes:
 munk = kraken_jl(UnderwaterEnv(munk_env()...), 50.0)
 ```
 
+The low modes are trapped around the sound-channel axis at 1300 m and never touch the surface or
+the bottom. The higher modes span more and more of the water column:
+
+```@example guide
+plot_modes(munk; modes=[1, 2, 10, 40])
+```
+
+The [Validation](@ref validation) page shows this environment's full transmission-loss field, with its
+shadow zone and convergence zones, computed by both Kraken.jl and Fortran KRAKEN.
+
 Layered seabeds, rigid or vacuum boundaries, other sound-speed interpolations, and attenuation are
 all options of [`UnderwaterEnv`](@ref); see [Environments](@ref environments). The Pekeris waveguide
 also has a closed-form solution, [`PekerisUnderwaterEnv`](@ref), which the finite-difference solver
@@ -138,13 +192,25 @@ maximum(abs.(closed_form .- sol.kr) ./ closed_form)
 
 ## Plotting
 
-Plotting is a package extension, so it costs nothing until you load a Makie backend:
+Plotting is a package extension, so it costs nothing until a Makie backend is loaded (`using
+CairoMakie` for files, `using GLMakie` for interactive windows). The figure-level functions each
+return a `Makie.Figure`:
 
-```julia
-using Kraken, CairoMakie   # or GLMakie
+| Function | Draws |
+|---|---|
+| [`plot_modes`](@ref) | the sound-speed profile beside the mode shapes |
+| [`plot_ssp`](@ref) | one sound-speed profile, or several overlaid |
+| [`plot_tl`](@ref) | transmission loss over range and depth |
+| [`plot_tl_range`](@ref) | transmission loss against range at one depth |
+| [`plot_dispersion`](@ref) | modal phase speed against frequency |
+| [`plot_arrivals`](@ref) | broadband arrivals at a series of ranges |
 
-plot_modes(sol; modes=1:5)   # the sound-speed profile beside the mode shapes
-plot_ssp(UnderwaterEnv(munk_env()...))
-```
+[`plot_ssp!`](@ref), [`plot_tl!`](@ref) and [`plot_tl_range!`](@ref) draw into an axis you already
+have and take plain arrays. Use them to build your own layouts, or to draw data from elsewhere with
+the same styling; the [Validation](@ref validation) page uses them to put `field.exe`'s output beside
+Kraken.jl's.
 
-Both return a `Makie.Figure`.
+!!! note "`density` after `using CairoMakie`"
+    Makie exports a `density` plot of its own, so with both packages loaded by `using`, a bare
+    `density` is ambiguous and Julia refuses it. Write `Kraken.density(env.ρ, z)`, or load the backend
+    with `import CairoMakie`, which activates the plotting extension just as well.

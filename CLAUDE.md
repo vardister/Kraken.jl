@@ -164,7 +164,7 @@ dependency or reference it from the test harness.
 
 ## Architecture
 
-`src/Kraken.jl` is the module entry point and `include`s five files, in dependency order:
+`src/Kraken.jl` is the module entry point and `include`s six files, in dependency order:
 
 ```julia
 include("kraken_core.jl")                  # main FD solver — most work happens here
@@ -172,6 +172,7 @@ include("kraken_ad.jl")                    # reverse-mode rules for the differen
 include("kraken_pekeris.jl")               # closed-form Pekeris (2-layer) analytic model
 include("kraken_field.jl")                 # pressure field and transmission loss from the modes
 include("kraken_standard_environments.jl") # canned test environments (pekeris_env, one_layer_env, munk_env, ...)
+include("kraken_plotting.jl")              # plotting stubs + their docstrings; bodies in ext/KrakenMakieExt.jl
 ```
 
 `src/` contains exactly the files `Kraken.jl` includes, and nothing else. The `dev/` directory is
@@ -183,8 +184,15 @@ one less thing for Milestone 7's reverse-mode work to trip over.
 
 Plotting lives in **`ext/KrakenMakieExt.jl`**, a package extension triggered by `Makie` (a
 `[weakdeps]` entry, so it costs nothing unless you ask for it). `using CairoMakie` or `using GLMakie`
-both pull in Makie and activate it. `plot_modes` and `plot_ssp` are exported stubs in `src/Kraken.jl`;
-without a backend loaded they raise an actionable error rather than a `MethodError`. The old
+both pull in Makie and activate it. The exported names (`plot_modes`, `plot_ssp`/`plot_ssp!`,
+`plot_tl`/`plot_tl!`, `plot_tl_range`/`plot_tl_range!`, `plot_dispersion`, `plot_arrivals`) are stubs
+in `src/kraken_plotting.jl`, and **the docstrings live there, not on the extension's methods** — a
+docstring in the extension attaches to the same binding and gets listed twice once a backend loads.
+Without a backend the stubs raise an actionable error; with one loaded but no matching method they
+raise a plain `MethodError`. The `!` variants draw into an existing axis from plain arrays, which is
+how the docs draw `field.exe` output with the same styling. **Revise does not track the extension** —
+restart the session after editing it. The test suite does not load Makie; the docs build (which
+depends on CairoMakie and draws every figure through these functions) is what exercises them. The old
 `src/kraken_plots.jl` is gone — it took the `Dict` returned by the removed Fortran `kraken` function,
 not a `NormalModeSolution`, so it could not have run against the current API.
 

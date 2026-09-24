@@ -1,5 +1,15 @@
 using Documenter
 using Kraken
+# `import`, not `using`: `[density](@ref)` links resolve in Main, and Makie exports a `density` too.
+using CairoMakie: CairoMakie
+
+# Figures as PNG files next to each page. By default Makie also offers every figure as `text/html` (the
+# same PNG, base64-inlined), which Documenter prefers, and which would put the images inside the HTML,
+# over `example_size_threshold` and against each page's size limit. Disabling only `text/html` is not
+# enough: CairoMakie then advertises `image/svg+xml` as well, Documenter prefers that too, and the TL
+# heatmaps (~80k cells each) take minutes apiece to write as vector graphics.
+CairoMakie.activate!(; type="png")
+CairoMakie.disable_mime!("text/html", "image/svg+xml")
 
 # The build guarantees that the docs see the real module, that every exported name is documented
 # (checkdocs=:exports turns a missing docstring into a build failure), and that the code on the pages
@@ -15,6 +25,10 @@ using Kraken
 # `field.exe` through the test suite's `test/reference/` harness and tabulates the agreement, so the
 # numbers on it are measured by this build rather than copied in. That is why the docs environment
 # depends on AcousticsToolbox_jll, LinearAlgebra and Markdown.
+#
+# The figures on those pages are drawn by Kraken's own plotting functions (ext/KrakenMakieExt.jl),
+# so the docs environment depends on CairoMakie, and the build is also what exercises the extension:
+# the test suite does not load Makie.
 #
 # Every docstring example is a `jldoctest`, so the build also checks that the API reference's examples
 # still run and still print what they say. They share this one setup.

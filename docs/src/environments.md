@@ -7,6 +7,8 @@ takes.
 
 ```@setup env
 using Kraken
+# `import`, not `using`: Makie exports a `density` of its own, and this page calls Kraken's.
+import CairoMakie
 ```
 
 ## The three matrices
@@ -123,6 +125,13 @@ A perfect bottom traps more modes than a half-space does: nothing leaks out, so 
 `kᵣ > 0` is trapped rather than only those slower than the bottom. Over a perfect bottom the
 half-space row of `sspHS` is ignored.
 
+The boundary condition shows in the mode shapes. A rigid bottom puts a pressure maximum on the
+seafloor, where a pressure-release surface puts a zero:
+
+```@example env
+plot_modes(kraken_jl(rigid, 100.0); modes=1:3)
+```
+
 An acoustic half-space *above* the water constructs but is refused at solve time. Every KRAKEN case
 that uses one is a transparent surface with no trapped modes, an air half-space behaves as a
 pressure-release surface, and an ice cover is elastic, which Kraken.jl does not model.
@@ -147,7 +156,25 @@ z, c = [0.0, 100.0], [1500.0, 1520.0]
 soundspeed(SampledSSP(z, c, :c_linear), 50.0), soundspeed(SampledSSP(z, c, :n2_linear), 50.0)
 ```
 
-All three agree at the samples. The spline is the one KRAKEN's `CSPLINE` computes, with the same
+On a coarse, strongly curved profile the spline departs visibly from the two linear rules. Here are
+five samples 50 m apart, drawn with [`plot_ssp`](@ref) under each interpolation:
+
+```@example env
+duct_z = [0.0, 50.0, 100.0, 150.0, 200.0]
+duct_c = [1540.0, 1500.0, 1480.0, 1500.0, 1530.0]
+function duct(interp)
+    ssp = hcat(duct_z, duct_c, zeros(5), fill(1000.0, 5), zeros(5), zeros(5))
+    sspHS = [0.0 343.0 0.0 1.21 0.0 0.0; 200.0 1700.0 0.0 1800.0 0.0 0.0]
+    return UnderwaterEnv(ssp, [0.0 0.0 200.0], sspHS; ssp_interp=interp)
+end
+fig = plot_ssp(["C-linear" => duct(:c_linear), "n²-linear" => duct(:n2_linear), "cubic spline" => duct(:cubic_spline)])
+CairoMakie.scatter!(fig.content[1], duct_c, duct_z; color=:black)
+fig
+```
+
+C-linear and n²-linear differ by a fraction of a m/s between samples, too little to see at this
+scale. It is still enough to move `kᵣ` by about 1e-4, which the
+[Validation](@ref validation) page measures. All three agree at the samples. The spline is the one KRAKEN's `CSPLINE` computes, with the same
 not-a-knot end conditions. That differs from a natural spline by enough, near the ends of a coarse
 profile, to show up in `kᵣ`.
 

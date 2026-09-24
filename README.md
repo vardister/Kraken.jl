@@ -16,7 +16,7 @@ This reimplementation is fully written in Julia, and is designed to be more user
 - Differentiable in **both** modes — forward via [ForwardDiff.jl](https://github.com/JuliaDiff/ForwardDiff.jl), reverse via [Zygote.jl](https://github.com/FluxML/Zygote.jl) or [Mooncake.jl](https://github.com/chalk-lab/Mooncake.jl), so the gradient with respect to a whole sound-speed profile costs about one solve instead of one solve per point (see below)
 - Re-using existing environmental data files from the Acoustics Toolbox — `.env` files are both read and written
 - Cross-validated against the **unmodified** Fortran `kraken.exe` on every push (see below)
-- Optional plotting via a package extension — `using CairoMakie` (or `GLMakie`) enables `plot_modes` and `plot_ssp` at no cost to anyone who does not
+- Optional plotting via a package extension — `using CairoMakie` (or `GLMakie`) enables mode, sound-speed, transmission-loss, dispersion and arrival plots (`plot_modes`, `plot_tl`, `plot_dispersion`, …) at no cost to anyone who does not
 
 ## Validation
 

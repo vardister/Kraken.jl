@@ -15,6 +15,7 @@ asserts a tolerance on every case shown here, so a regression fails CI before it
 
 ```@setup validation
 using Kraken, Printf, Markdown
+using CairoMakie
 include(joinpath(pkgdir(Kraken), "test", "reference", "KrakenReference.jl"))
 const KR = KrakenReference
 
@@ -150,6 +151,64 @@ table(["Kraken.jl ↓ / Fortran →"; [l for (_, l) in interps]], rows)
 The diagonal is the agreement. The off-diagonal entries show how far apart the interpolations
 themselves are. They are at least three orders of magnitude larger, so a solve that used the wrong
 interpolation could not pass.
+
+## A field worth looking at: the Munk sound channel
+
+The tables below reduce each comparison to a number. This section shows one in full, for a case
+chosen to be hard: the Munk deep-water profile at 50 Hz, with the source at 1000 m, just above the
+sound-channel axis, out to 100 km. The field has everything a normal-mode model can get wrong. There
+are 102 modes. There is a near-surface shadow zone where they cancel to 110 dB and more. And there
+are convergence zones about 60 km apart, where refracted energy returns to the surface, which depend
+on the relative phases of all the modes staying right across 100 km. Both programs compute the field
+on the same 201-depth × 397-range grid.
+
+```@example validation
+munk = UnderwaterEnv(munk_env()...)
+field_cmp = KR.compare_field_with_fortran(munk, 50.0, 1_000.0:250.0:100_000.0, 1000.0, 0.0:25.0:5000.0)
+
+fig = Figure(; size=(900, 900))
+tl_range = (60.0, 110.0)
+ax_julia = Axis(fig[1, 1]; title="Kraken.jl", ylabel="Depth (m)", yreversed=true)
+hm = plot_tl!(ax_julia, field_cmp.ranges, field_cmp.zr, field_cmp.tl_julia; colorrange=tl_range)
+ax_fortran = Axis(fig[2, 1]; title="Fortran kraken.exe + field.exe", ylabel="Depth (m)", yreversed=true)
+plot_tl!(ax_fortran, field_cmp.ranges, field_cmp.zr, field_cmp.tl_fortran; colorrange=tl_range)
+Colorbar(fig[1:2, 2], hm; label="TL (dB)")
+ax_diff = Axis(fig[3, 1]; title="Kraken.jl − Fortran", xlabel="Range (km)", ylabel="Depth (m)", yreversed=true)
+hd = plot_tl!(ax_diff, field_cmp.ranges, field_cmp.zr, field_cmp.tl_julia .- field_cmp.tl_fortran;
+              colormap=:balance, colorrange=(-0.5, 0.5))
+Colorbar(fig[3, 2], hd; label="ΔTL (dB)")
+linkaxes!(ax_julia, ax_fortran, ax_diff)
+hidexdecorations!(ax_julia; grid=false)
+hidexdecorations!(ax_fortran; grid=false)
+fig
+```
+
+```@example validation
+Markdown.parse(@sprintf("RMS difference over the grid: **%.3f dB**, over %d points.", field_cmp.rms_db, field_cmp.n_compared)) # hide
+```
+
+The difference panel is on a ±0.5 dB scale and is nearly blank. What structure it has is where the
+field is weakest. In the shadow zone, TL is above 110 dB because a hundred modes very nearly cancel,
+so any small difference in the individual modes survives the sum at full size. The two programs'
+meshes differ, and Fortran passes its modes to `field.exe` through a `.mod` file in single
+precision. The individual specks are interference nulls, where TL changes by tens of dB within one
+grid cell, so any difference is magnified.
+
+A cut at the source depth shows the same agreement as curves, through the shadow zone and the first
+convergence zone:
+
+```@example validation
+i = findfirst(==(1000.0), field_cmp.zr)
+fig = Figure(; size=(900, 350))
+ax = Axis(fig[1, 1]; xlabel="Range (km)", ylabel="TL (dB)", yreversed=true, title="Receiver at 1000 m")
+plot_tl_range!(ax, field_cmp.ranges, field_cmp.tl_fortran[i, :]; label="Fortran", linewidth=5, color=(:gray, 0.6))
+plot_tl_range!(ax, field_cmp.ranges, field_cmp.tl_julia[i, :]; label="Kraken.jl", color=:black)
+axislegend(ax; position=:rb)
+fig
+```
+
+Both figures use the extension's own [`plot_tl!`](@ref) and [`plot_tl_range!`](@ref), which take a
+plain TL matrix, so `field.exe`'s output is drawn exactly as Kraken.jl's is.
 
 ## Pressure field and transmission loss
 

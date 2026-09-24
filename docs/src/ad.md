@@ -204,6 +204,18 @@ for i in eachindex(z_inv)
 end
 ```
 
+Drawn with [`plot_ssp`](@ref), the recovered profile lies on top of the truth, and the prior's
+missing structure is plain:
+
+```@example ad
+using CairoMakie
+plot_ssp([
+    "prior" => profile_env(c_prior, z_inv),
+    "recovered" => profile_env(c_hat, z_inv),
+    "truth" => profile_env(c_true, z_inv),
+])
+```
+
 Every iteration of that loop cost one gradient — and one gradient costs about what one forward solve
 costs, whether the profile has 8 points or 500. With forward mode the same loop would have cost 8
 solves per iteration, and 500 solves per iteration for a finely sampled profile. That is the
@@ -316,6 +328,22 @@ for (t, L, cb) in tl_history
     @printf("%12d %14.3e %14.2f\n", t, L, cb)
 end
 @printf("\ntruth %.1f m/s, recovered %.2f m/s, error %.2f m/s\n", cb_true, cb_hat, cb_hat - cb_true)
+```
+
+The fit, at the shallower receiver and 150 Hz. The starting guess is only about 0.2 dB off,
+consistently along the whole track. That small, systematic offset is what the inversion has to work
+with, and the recovered curve falls on the data:
+
+```@example ad
+fig = Figure(; size=(900, 350))
+ax = Axis(fig[1, 1]; xlabel="Range (km)", ylabel="Incoherent TL (dB)", yreversed=true,
+          title="Receiver at $(tl_depths[1]) m, $(tl_freqs[2]) Hz")
+plot_tl_range!(ax, tl_ranges, tl_data[2][1, :]; label="data (cb = $(cb_true) m/s)", linewidth=5, color=(:gray, 0.6))
+plot_tl_range!(ax, tl_ranges, tl_of(1560.0, tl_freqs[2], tl_nmodes[2])[1, :]; label="start (cb = 1560 m/s)", linestyle=:dash)
+plot_tl_range!(ax, tl_ranges, tl_of(cb_hat, tl_freqs[2], tl_nmodes[2])[1, :];
+               label=@sprintf("recovered (cb = %.1f m/s)", cb_hat), color=:black)
+axislegend(ax; position=:rt)
+fig
 ```
 
 Ninety m/s of error in the starting guess comes back as a fraction of one. Starting from the other

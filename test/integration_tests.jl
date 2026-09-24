@@ -789,3 +789,26 @@ end
     # Isolated cutoff bins barely move the waveform; the two pulses are the same signal.
     @test sum(p .* p_analytic) / sqrt(sum(abs2, p) * sum(abs2, p_analytic)) > 0.999
 end
+
+@testitem "Plotting functions without a Makie backend say how to get one" begin
+    # The test environment deliberately has no Makie, so this is the path every user without a
+    # backend hits. Each exported plotting name must be a stub that explains itself, not a
+    # MethodError that leaves them guessing. With a backend loaded the extension takes over; the docs
+    # build draws every figure through it, which is where that half is exercised.
+    @test Base.get_extension(Kraken, :KrakenMakieExt) === nothing
+    sol = kraken_jl(UnderwaterEnv(pekeris_env()...), 100.0)
+    plotting = (
+        plot_modes, plot_ssp, plot_ssp!, plot_tl, plot_tl!, plot_tl_range, plot_tl_range!, plot_dispersion, plot_arrivals
+    )
+    for f in plotting
+        err = try
+            f(sol)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ErrorException
+        @test occursin("needs a Makie backend", err.msg)
+        @test occursin("using CairoMakie", err.msg)
+    end
+end

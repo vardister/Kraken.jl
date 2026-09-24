@@ -2328,8 +2328,19 @@ a doctest.
   - **The guide, environments and home pages are `@example` blocks throughout**, so their output is what
     the code printed. The home page's hand-copied validation figures (2.7e-5, 0.99995, "65 of 402") and its
     attenuation/group-speed sections moved to the pages that now generate or own them.
-  - **No figures.** A TL plot would help the guide, but it needs CairoMakie in the docs env, which costs
-    minutes of CI compile time. Plotting is shown as a non-executed block.
+  - **Figures (added 2026-09-23, after the task, on request).** The plotting extension grew
+    `plot_tl`/`plot_tl!`, `plot_tl_range`/`plot_tl_range!`, `plot_dispersion`, `plot_arrivals` and
+    `plot_ssp!`. Their stubs and docstrings are in the new `src/kraken_plotting.jl`, and none of the docstrings are
+    on the extension's methods, where they would be listed twice. The docs env gained CairoMakie, and
+    every figure on the site goes through these functions. The headline figure is on the validation
+    page: the Munk field at 50 Hz to 100 km, drawn by Kraken.jl, by Fortran, and as their difference
+    (0.064 dB RMS). Other figures are spread over the guide, the environments page and both AD
+    inversions. The docs build is now what exercises the extension, since the test suite has no
+    Makie; a new test item covers the no-backend stubs. Gotchas found on the way:
+    - Makie exports `density`, so pages and `make.jl` that call Kraken's `density` must
+      `import CairoMakie`.
+    - `CairoMakie.disable_mime!("text/html")` alone makes CairoMakie advertise SVG, which Documenter
+      then prefers and takes minutes per heatmap to write. `make.jl` therefore disables both.
 
 ### 8.3 [ ] Rewrite the README and refresh the examples
 - **Files:** `README.md`, `examples/*.jl`
