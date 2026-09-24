@@ -2297,7 +2297,7 @@ a doctest.
   - **`edit_link="master"`** is set explicitly. Documenter otherwise shells out to `git remote` and warns
     when that fails.
 
-### 8.2 [ ] Write the documentation site
+### 8.2 [x] Write the documentation site *(completed 2026-09-23)*
 - **Files:** `docs/src/index.md`, `docs/src/guide.md`, `docs/src/environments.md`, `docs/src/ad.md`, `docs/src/validation.md`, `docs/src/api.md`, `docs/src/api/*.md`, `docs/make.jl`
 - **What:** Build out the site: a getting-started guide, an environments page covering the ssp/layers/sspHS
   matrix layout and all the boundary and interpolation options from Milestone 6, the AD page from 4.8/7.5, a
@@ -2306,6 +2306,30 @@ a doctest.
 - **Acceptance:** All pages build; the validation page numbers are generated from the recorded results rather
   than hand-copied.
 - **Dependencies:** 8.1
+- **Outcome:** Six pages in the nav: Home, Getting started (`guide.md`), Environments, Automatic
+  differentiation (unchanged), Validation, and the API reference from 8.1.
+  - **The validation numbers are measured by the docs build itself**, not read from a recorded file.
+    `validation.md` `include`s `test/reference/KrakenReference.jl` and runs `kraken.exe`/`field.exe` from
+    `AcousticsToolbox_jll` in `@example` blocks, using the same cases and harness as the test suite. There is
+    no intermediate results file to go stale, and a missing binary fails the build rather than rendering
+    empty tables. It adds about 1 min to the build, 28 s of it Munk at 400 Hz (817 modes), and the docs env
+    gains `AcousticsToolbox_jll`, `LinearAlgebra` and `Markdown`. It covers:
+    - the standard-environment sweep
+    - attenuation
+    - every boundary-condition pair
+    - the 3×3 SSP-interpolation matrix
+    - coherent and incoherent TL against `field.exe`
+  - **What the build does not run.** The OALIB `.env` cases are GPL-3, opt-in via `KRAKEN_OALIB_TESTS`,
+    and not available to the build, so the page describes them and links `test/README.md` rather than
+    copying its counts.
+  - **One recorded number is stale.** Every generated figure reproduces the test/README.md tables except
+    `pekeris_env` + 0.05 dB/λ half-space `Im(kᵣ)`: 7.1e-4 now, 7.9e-4 recorded at 5.3. The page is the
+    current one.
+  - **The guide, environments and home pages are `@example` blocks throughout**, so their output is what
+    the code printed. The home page's hand-copied validation figures (2.7e-5, 0.99995, "65 of 402") and its
+    attenuation/group-speed sections moved to the pages that now generate or own them.
+  - **No figures.** A TL plot would help the guide, but it needs CairoMakie in the docs env, which costs
+    minutes of CI compile time. Plotting is shown as a non-executed block.
 
 ### 8.3 [ ] Rewrite the README and refresh the examples
 - **Files:** `README.md`, `examples/*.jl`
