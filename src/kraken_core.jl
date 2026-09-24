@@ -84,14 +84,35 @@ abstract type SampledSSP <: SoundSpeedProfile end
 # too — a deviation that only shows up for a spline profile whose density varies within a medium.
 
 """
+    SSP_INTERPOLATION_CHARS::Dict{Char,Symbol}
+
 The KRAKEN top-option character for each SSP interpolation, as read from a `.env` file's first
 option character. See [`SampledSSP`](@ref) for what each one means.
+
+# Example
+```jldoctest
+julia> SSP_INTERPOLATION_CHARS['N']
+:n2_linear
+
+julia> env = UnderwaterEnv(munk_env()...; ssp_interp=SSP_INTERPOLATION_CHARS['N']);
+
+julia> env.c.mode
+:n2_linear
+```
 """
 const SSP_INTERPOLATION_CHARS = Dict('C' => :c_linear, 'N' => :n2_linear, 'S' => :cubic_spline)
 
 """
+    DEFAULT_SSP_INTERPOLATION::Symbol
+
 The SSP interpolation used when an environment does not name one: `:c_linear`, which is what every
 result in this package predates the option and was computed with.
+
+# Example
+```jldoctest
+julia> UnderwaterEnv(pekeris_env()...).c.mode === DEFAULT_SSP_INTERPOLATION === :c_linear
+true
+```
 """
 const DEFAULT_SSP_INTERPOLATION = :c_linear
 
@@ -235,8 +256,8 @@ SampledSSP1D(depth, c, f) = SampledSSP1D(depth, c, f, DEFAULT_SSP_INTERPOLATION)
     SampledSSP(depth, c)
     SampledSSP(depth, c, mode::Symbol)
 
-Create a sound speed profile from measurements at discrete depths `depth` in meters and sound speeds
-`c` in m/s.
+Create a sound speed profile from measurements at discrete depths `depth` in meters (positive
+downwards, from the surface) and sound speeds `c` in m/s. Query it with [`soundspeed`](@ref).
 
 `mode` is one of `:c_linear` (the default — `c` linear in depth), `:n2_linear` (`1/c²` linear in
 depth) or `:cubic_spline`. All three agree at the sample depths and differ between them.
@@ -245,6 +266,17 @@ depth) or `:cubic_spline`. All three agree at the sample depths and differ betwe
 spells a layer interface as two samples at (numerically) the same depth, and one spline through the
 whole column would be wildly wrong there rather than merely inexact. KRAKEN splines each medium
 separately; doing the same here needs a per-medium profile this type does not have yet.
+
+# Example
+```jldoctest
+julia> ssp = SampledSSP([0.0, 100.0], [1500.0, 1520.0]);
+
+julia> soundspeed(ssp, 50.0)
+1510.0
+
+julia> round(soundspeed(SampledSSP([0.0, 100.0], [1500.0, 1520.0], :n2_linear), 50.0); digits=4)
+1509.9007
+```
 """
 SampledSSP(depth, c) = SampledSSP1D(depth, c, DataInterpolations.LinearInterpolation)
 function SampledSSP(depth, c, mode::Symbol)
@@ -298,10 +330,17 @@ end
 """
     SampledDensity(depth, ρ)
 
-Constructor for `SampledDensity1D`.
+Create a density profile from measurements at discrete depths `depth` in meters (positive downwards)
+and densities `ρ` in kg/m³. Interpolation between samples is linear. Query it with
+[`density`](@ref).
 
-Create a density profile based on measurements at discrete depths `z` in meters and density `ρ` in kg/m³.
-Two options for interpolation are available: `:linear` and `:smooth`.
+# Example
+```jldoctest
+julia> ρ = SampledDensity([0.0, 100.0], [1000.0, 1100.0]);
+
+julia> density(ρ, 25.0)
+1025.0
+```
 """
 SampledDensity(depth, ρ) = SampledDensity1D(depth, ρ, DataInterpolations.LinearInterpolation)
 SampledDensity(depth, ρ, type::Symbol) = SampledDensity1D(depth, ρ, type)
@@ -338,12 +377,19 @@ end
 """
     SampledAttenuation(depth, α)
 
-Constructor for `SampledAttenuation1D`.
+Create an attenuation profile from values `α` sampled at discrete depths `depth` in meters (positive
+downwards). `α` is in whatever units the enclosing [`UnderwaterEnv`](@ref) declares as `atten_units`.
+Interpolation is linear, to match [`SampledSSP`](@ref) and [`SampledDensity`](@ref) — the three
+profiles are evaluated on the same mesh and a different interpolator here would put the attenuation
+somewhere the sound speed is not. Query it with [`attenuation`](@ref).
 
-Create an attenuation profile sampled at discrete depths `z` in meters. Interpolation is linear, to
-match [`SampledSSP`](@ref) and [`SampledDensity`](@ref) — the three profiles are evaluated on the
-same mesh and a different interpolator here would put the attenuation somewhere the sound speed is
-not.
+# Example
+```jldoctest
+julia> α = SampledAttenuation([0.0, 100.0], [0.0, 0.2]);
+
+julia> attenuation(α, 50.0)
+0.1
+```
 """
 SampledAttenuation(depth, α) = SampledAttenuation1D(depth, α, DataInterpolations.LinearInterpolation)
 SampledAttenuation(depth, α, type::Symbol) = SampledAttenuation1D(depth, α, type)
@@ -355,9 +401,19 @@ end
 """
     attenuation(α::AttenuationProfile, z)
 
-Get the attenuation at depth `z`, in the profile's own declared units. `z` is generally negative,
-since the sea surface is the datum and the z-axis points upwards — the same convention as
-[`soundspeed`](@ref) and [`density`](@ref).
+Get the attenuation at depth `z` (m, positive downwards), in the profile's own declared units. `z`
+may be a number or a vector of depths. The depth convention is the same as [`soundspeed`](@ref)'s,
+and so is the warning there about negative depths.
+
+# Example
+```jldoctest
+julia> env = UnderwaterEnv(one_layer_env(; α1=0.4)...);
+
+julia> attenuation(env.α, [50.0, 110.0])
+2-element Vector{Float64}:
+ 0.0
+ 0.4
+```
 """
 function attenuation end
 
@@ -399,8 +455,22 @@ makes the Julia conversion agree with the Fortran to the last bit instead of to 
 const DB_PER_NEPER_KHZ = 8685.8896
 
 """
+    ATTENUATION_UNIT_CHARS::Dict{Char,Symbol}
+
 Map from the attenuation-unit character in a KRAKEN top-option string (`TopOpt(3:3)`) to the symbol
-[`attenuation_nepers_per_m`](@ref) accepts. See the note above for the two that are easy to misread.
+[`attenuation_nepers_per_m`](@ref) accepts. Two are easy to misread: `'M'` is dB per *metre*, not
+dB/km, and `'F'` is dB/(m·kHz), the same quantity as dB/(km·Hz).
+
+# Example
+```jldoctest
+julia> ATTENUATION_UNIT_CHARS['M']
+:dB_per_m
+
+julia> env = UnderwaterEnv(pekeris_env(; αb=0.1)...; atten_units=ATTENUATION_UNIT_CHARS['M']);
+
+julia> env.atten_units
+:dB_per_m
+```
 """
 const ATTENUATION_UNIT_CHARS = Dict(
     'N' => :nepers_per_m,
@@ -412,11 +482,19 @@ const ATTENUATION_UNIT_CHARS = Dict(
 )
 
 """
-The default attenuation units: `'W'`, dB per wavelength.
+    DEFAULT_ATTENUATION_UNITS::Symbol
 
-This is KRAKEN's most common choice and the one [`DEFAULT_TOPOPT`] in the test-only `.env` writer
+The default attenuation units: `:dB_per_wavelength`, KRAKEN's `'W'`.
+
+This is KRAKEN's most common choice and the one the test-only `.env` writer (`DEFAULT_TOPOPT`)
 already emitted while every `αp` was zero, so it is the value that keeps existing environments
 reading exactly as they did.
+
+# Example
+```jldoctest
+julia> UnderwaterEnv(pekeris_env(; αb=0.5)...).atten_units === DEFAULT_ATTENUATION_UNITS
+true
+```
 """
 const DEFAULT_ATTENUATION_UNITS = :dB_per_wavelength
 
@@ -443,6 +521,15 @@ Four of the six depend on frequency, which is why an environment stores the raw 
 conversion happens inside the solve. The degenerate guards (`c == 0`, `c·α == 0`) are KRAKEN's own
 and return zero rather than a division by zero — `Q = 0` in particular is how a lossless medium is
 spelled under that convention, so it has to mean "no loss" and not `Inf`.
+
+# Example
+```jldoctest
+julia> attenuation_nepers_per_m(8.6858896, 1500.0, 100.0, :dB_per_m)   # 8.686 dB = 1 neper
+1.0
+
+julia> attenuation_nepers_per_m(0.0, 1500.0, 100.0, :Q)                # Q = 0 means lossless
+0.0
+```
 """
 function attenuation_nepers_per_m(α, c, freq, units::Symbol)
     T = float(promote_type(typeof(α), typeof(c), typeof(freq)))
@@ -477,7 +564,14 @@ and at the bottom of the last medium. They correspond to KRAKEN's boundary-optio
 [`PressureRelease`](@ref) is `V`, [`RigidBoundary`](@ref) is `R`, [`AcousticHalfspace`](@ref) is `A`.
 
 The types are tags and carry no data. A half-space's properties stay on the environment (`cb`, `ρb`,
-`αb` for the bottom), which is where the reverse-mode rules and the Mooncake bridge read them.
+`αb` for the bottom), which is where the reverse-mode rules and the Mooncake bridge read them. Pass
+them to [`UnderwaterEnv`](@ref) as its `top_bc` and `bottom_bc` keywords.
+
+# Example
+```jldoctest
+julia> all(bc -> bc isa BoundaryCondition, (PressureRelease(), RigidBoundary(), AcousticHalfspace()))
+true
+```
 """
 abstract type BoundaryCondition end
 
@@ -485,7 +579,16 @@ abstract type BoundaryCondition end
     PressureRelease()
 
 A vacuum beyond the boundary, so the pressure vanishes on it: KRAKEN's `V` option. This is the
-default top boundary of an [`UnderwaterEnv`](@ref), the free sea surface.
+default top boundary of an [`UnderwaterEnv`](@ref), the free sea surface. It may also close the
+bottom, in which case the half-space row of `sspHS` is ignored.
+
+# Example
+```jldoctest
+julia> env = UnderwaterEnv(pekeris_env()...; bottom_bc=PressureRelease());
+
+julia> env.top_bc, env.bottom_bc
+(PressureRelease(), PressureRelease())
+```
 """
 struct PressureRelease <: BoundaryCondition end
 
@@ -493,7 +596,17 @@ struct PressureRelease <: BoundaryCondition end
     RigidBoundary()
 
 A perfectly rigid boundary, so the normal particle velocity (and with it `∂ψ/∂z`) vanishes on it:
-KRAKEN's `R` option.
+KRAKEN's `R` option. Allowed at the top or the bottom.
+
+# Example
+```jldoctest
+julia> env = UnderwaterEnv(pekeris_env()...; bottom_bc=RigidBoundary());
+
+julia> sol = kraken_jl(env, 50.0);
+
+julia> length(sol.kr)
+7
+```
 """
 struct RigidBoundary <: BoundaryCondition end
 
@@ -506,6 +619,12 @@ boundary of an [`UnderwaterEnv`](@ref), whose half-space sound speed, density an
 
 Supported at the bottom only. Above the surface it describes no modal problem — see
 [`assert_supported_boundaries`](@ref).
+
+# Example
+```jldoctest
+julia> UnderwaterEnv(pekeris_env()...).bottom_bc
+AcousticHalfspace()
+```
 """
 struct AcousticHalfspace <: BoundaryCondition end
 
@@ -517,7 +636,10 @@ Base.show(io::IO, bc::BoundaryCondition) = print(io, nameof(typeof(bc)), "()")
 ### Underwater Environment
 
 """
-Underater environment used for running the FORTRAN version of KRAKEN.
+    UnderwaterEnvFORTRAN{T}
+
+The three KRAKEN `.env`-style matrices of an environment, `ssp`, `layers` and `sspHS`, stored as they
+are rather than interpreted. [`UnderwaterEnv`](@ref) has a constructor that takes one.
 """
 struct UnderwaterEnvFORTRAN{T<:Real}
     ssp::Matrix{T}
@@ -528,10 +650,23 @@ end
 """
     UnderwaterEnvFORTRAN(ssp, layers, sspHS)
 
-Constructor for `UnderwaterEnvFORTRAN`.
-The input matrices are the same as the matrices used in the FORTRAN version of KRAKEN.
-These are the sound speed profile `ssp`, the layer information `layers`, and the sound speed profile
-at the surface and bottom half-space `sspHS`.
+Bundle the three KRAKEN-layout matrices, promoted to a common element type.
+
+# Arguments
+- `ssp`: the sound-speed table, one row per sample, columns `[z, cp, cs, ρ, αp, αs]`.
+- `layers`: one row per medium; column 3 is the depth of the medium's lower interface.
+- `sspHS`: two rows, the top and bottom half-spaces, in the same column layout as `ssp`.
+
+The layout and units are the ones [`UnderwaterEnv`](@ref) documents.
+
+# Example
+```jldoctest
+julia> fenv = UnderwaterEnvFORTRAN(pekeris_env()...)
+UnderwaterEnvFORTRAN{Float64}
+
+julia> UnderwaterEnv(fenv).depth
+100.0
+```
 """
 function UnderwaterEnvFORTRAN(ssp, layers, sspHS)
     ssp, layers, sspHS = promote(ssp, layers, sspHS)
@@ -543,7 +678,21 @@ function Base.show(io::IO, ::UnderwaterEnvFORTRAN{T}) where {T}
 end
 
 """
-Underwater environment containing the sound speed profile, density profile and attenuation profile.
+    UnderwaterEnv{T1,T2,T3,T4,TB,BB}
+
+A range-independent underwater environment: the sound speed, density and attenuation profiles of the
+water column and sediment layers, the bottom half-space, the layer interfaces, and the two boundary
+conditions. Build one with `UnderwaterEnv(ssp, layers, sspHS; ...)`; the fields below are what the
+solver reads.
+
+# Fields
+- `c`, `ρ`, `α`: the [`SampledSSP`](@ref), [`SampledDensity`](@ref) and
+  [`SampledAttenuation`](@ref) profiles of the whole column.
+- `cb`, `ρb`, `αb`: sound speed (m/s), density (kg/m³) and attenuation of the bottom half-space.
+- `h_vec`, `layer_depth`: each medium's thickness and the depth of its lower interface (m).
+- `depth`: the depth of the last interface, where the bottom boundary sits.
+- `atten_units`: the units of `α` and `αb`, one of the values of [`ATTENUATION_UNIT_CHARS`](@ref).
+- `top_bc`, `bottom_bc`: the [`BoundaryCondition`](@ref)s.
 
 `α` and `αb` are the water-column and half-space attenuations in the units named by `atten_units`;
 nothing converts them until a frequency is known. An environment whose attenuations are all zero is
@@ -571,12 +720,28 @@ struct UnderwaterEnv{
 end
 
 """
-    UnderwaterEnv(ssp, layers, sspHS)
+    UnderwaterEnv(ssp, layers, sspHS; atten_units=:dB_per_wavelength, ssp_interp=:c_linear,
+                  top_bc=PressureRelease(), bottom_bc=AcousticHalfspace())
 
-Constructor for `UnderwaterEnv`.
+Build an environment from the three matrices of a KRAKEN `.env` file. Every
+[standard environment](@ref pekeris_env) returns this triple, so `UnderwaterEnv(pekeris_env()...)`
+is the usual way in.
 
-Create an underwater environment based on the sound speed profile `ssp`, the layer information `layers`, and the sound speed profile
-at the surface and bottom half-space `sspHS`.
+# Arguments
+- `ssp`: the sound-speed table, one row per sample, columns `[z, cp, cs, ρ, αp, αs]` — depth (m,
+  positive downwards), compressional and shear speed (m/s; shear is unused), density (**kg/m³**, not
+  the g/cm³ of a `.env` file), compressional and shear attenuation. A layer interface is written as
+  two rows at the same depth (or `z` and `z + eps(z)`), one for each side.
+- `layers`: one row per medium; column 3 is the depth of the medium's lower interface. The other
+  columns are unused.
+- `sspHS`: two rows in the `ssp` layout, the top and bottom half-spaces. Only the bottom row is read,
+  and only when `bottom_bc` is an [`AcousticHalfspace`](@ref).
+
+# Keyword arguments
+- `atten_units`: the units of the `αp` column and the half-space's; see
+  [`attenuation_nepers_per_m`](@ref).
+- `ssp_interp`: `:c_linear`, `:n2_linear` or `:cubic_spline`; see [`SampledSSP`](@ref).
+- `top_bc`, `bottom_bc`: the [`BoundaryCondition`](@ref)s.
 
 `depth` — the interface with the bottom half-space — is taken from `layers[end, 3]` in both this
 constructor and the `UnderwaterEnvFORTRAN` one. `layers` is what defines the media boundaries (it is
@@ -589,6 +754,22 @@ what KRAKEN's `V` top option and `A` bottom option describe. The top may also be
 [`RigidBoundary`](@ref), and the bottom a [`RigidBoundary`](@ref) or [`PressureRelease`](@ref), in
 which case `sspHS`'s bottom row is not used. A top [`AcousticHalfspace`](@ref) constructs, but
 [`AcousticProblemProperties`](@ref) refuses to solve it.
+
+# Example
+```jldoctest
+julia> ssp = [0.0 1500.0 0.0 1000.0 0.0 0.0
+              100.0 1500.0 0.0 1000.0 0.0 0.0];
+
+julia> layers = [0.0 0.0 100.0];
+
+julia> sspHS = [0.0 343.0 0.0 1.21 0.0 0.0
+                100.0 1600.0 0.0 1500.0 0.0 0.0];
+
+julia> env = UnderwaterEnv(ssp, layers, sspHS);
+
+julia> env.depth, env.cb, env.ρb
+(100.0, 1600.0, 1500.0)
+```
 """
 function UnderwaterEnv(
     ssp,
@@ -614,9 +795,18 @@ function UnderwaterEnv(
 end
 
 """
-    UnderwaterEnv(krak_ssp::UnderwaterEnvFORTRAN{T}) where {T}
+    UnderwaterEnv(krak_ssp::UnderwaterEnvFORTRAN; atten_units, ssp_interp, top_bc, bottom_bc)
 
-Constructor for `UnderwaterEnv` using the `UnderwaterEnvFORTRAN` struct.
+Build an environment from the matrices bundled in an [`UnderwaterEnvFORTRAN`](@ref). Identical to
+`UnderwaterEnv(krak_ssp.ssp, krak_ssp.layers, krak_ssp.sspHS; ...)`, keywords and defaults included.
+
+# Example
+```jldoctest
+julia> UnderwaterEnv(UnderwaterEnvFORTRAN(one_layer_env()...)).layer_depth
+2-element Vector{Float64}:
+ 100.0
+ 120.0
+```
 """
 function UnderwaterEnv(
     krak_ssp::UnderwaterEnvFORTRAN{T};
@@ -659,6 +849,12 @@ linear above. The two AD modes therefore take **opposite sides** there and neith
 ForwardDiff's `iszero` on a `Dual` sees the seed and takes the lossy branch (right-hand derivative),
 while Zygote evaluates this on the primal and takes the lossless one (zero). Differentiate at a
 nonzero attenuation. See the note at the end of `src/kraken_ad.jl`.
+
+# Example
+```jldoctest
+julia> is_lossy(UnderwaterEnv(pekeris_env()...)), is_lossy(UnderwaterEnv(pekeris_env(; αb=0.5)...))
+(false, true)
+```
 """
 is_lossy(env::UnderwaterEnv) = any(!iszero, env.α.α) || !iszero(env.αb)
 
@@ -780,31 +976,65 @@ bottom_energy(::BoundaryCondition, v, kr, env, props) = zero(eltype(v))
 
 ### Sound Speed and Density Functions to extract values from profiles at a give depth from profiles
 """
-    soundspeed(ssp::SoundSpeedProfile, x, y, z)
+    soundspeed(ssp::SampledSSP, z)
 
-Get sound speed at location (`x`, `y`, `z`). If a sound speed profile is range
-independent, `x` and `y` may be ignored. `z` is generally negative, since the
-sea surface is the datum and z-axis points upwards.
+Get the sound speed (m/s) at depth `z` (m), interpolated as the profile's `mode` says. `z` may be a
+number or a vector of depths.
+
+Depths are **positive downwards** from the surface, the same convention as the `ssp` table an
+[`UnderwaterEnv`](@ref) is built from. A negative depth is not an error: it lies above the first
+sample, and the profile extrapolates as a constant, so it silently returns the surface value.
+
+# Example
+```jldoctest
+julia> env = UnderwaterEnv(munk_env()...);
+
+julia> soundspeed(env.c, 1300.0)   # the sound-channel axis
+1500.0
+
+julia> soundspeed(env.c, -1300.0) == soundspeed(env.c, 0.0)
+true
+```
 """
 function soundspeed end
 
 soundspeed(ssp::SampledSSP1D, z) = ssp_from_interp(ssp.mode, ssp.f(z))
 
 """
-    maxsoundspeed(ssp::SoundSpeedProfile)
+    maxsoundspeed(ssp::SampledSSP)
 
-Get the maximum sound speed from the sound speed profile.
+The largest tabulated sound speed (m/s) in `ssp`. Over an [`AcousticHalfspace`](@ref) the solver
+requires it to be below the half-space speed `cb`.
+
+# Example
+```jldoctest
+julia> maxsoundspeed(UnderwaterEnv(one_layer_env()...).c)
+1550.0
+```
 """
 function maxsoundspeed end
 
 maxsoundspeed(ssp::SampledSSP) = maximum(ssp.c)
 
 """
-    density(ρ::DensityProfile, x, y, z)
+    density(ρ::SampledDensity, z)
 
-Get density at location (`x`, `y`, `z`). If a density profile is range
-independent, `x` and `y` may be ignored. `z` is generally negative, since the
-sea surface is the datum and z-axis points upwards.
+Get the density (kg/m³) at depth `z` (m, positive downwards). `z` may be a number or a vector. The
+depth convention, and the constant extrapolation outside the table, are as for
+[`soundspeed`](@ref).
+
+At a layer interface the value is the one from the medium above.
+
+# Example
+```jldoctest
+julia> env = UnderwaterEnv(one_layer_env()...);
+
+julia> density(env.ρ, [50.0, 100.0, 110.0])
+3-element Vector{Float64}:
+ 1000.0
+ 1000.0
+ 1500.0
+```
 """
 function density end
 
@@ -906,10 +1136,18 @@ linear interpolation, exactly) is supplied by the rule instead.
 layer_mesh(z_top, z_bot, Nz) = collect(range(z_top, z_bot, Nz))
 
 """
-    AcousticProblemProperties(env::UnderwaterEnv, freq; factor=1, n_per_wavelength=20)
+    AcousticProblemProperties{T,T2}
 
-Properties of the acoustic problem based on the underwater environment `env` and frequency `freq`.
-`factor` is a factor for the mesh spacing and `n_per_wavelength` is the number of mesh points per wavelength.
+The finite-difference mesh for one environment at one frequency: step 2 of the solve, between the
+environment and the [`AcousticProblemCache`](@ref). [`kraken_jl`](@ref) builds these itself; you need
+one only to drive the lower-level functions ([`bisection`](@ref), [`find_kr`](@ref),
+[`inverse_iteration`](@ref), …) by hand.
+
+# Fields
+- `freq`: frequency (Hz).
+- `Nz_vec`: mesh points in each medium.
+- `Δz_vec`: mesh spacing in each medium (m).
+- `zn_vec`: each medium's mesh depths (m, positive downwards).
 """
 struct AcousticProblemProperties{T<:Real,T2<:Real}
     freq::T
@@ -921,7 +1159,26 @@ end
 """
     AcousticProblemProperties(env::UnderwaterEnv, freq; factor::Int=1, n_per_wavelength=20)
 
-Get the properties of the acoustic problem based on the underwater environment `env` and frequency `freq`.
+Choose the mesh for `env` at frequency `freq` (Hz).
+
+The target spacing is `n_per_wavelength` points per wavelength at the fastest speed that bounds the
+problem — the half-space's `cb`, or the column's own maximum over a rigid or vacuum bottom — and every
+medium gets at least 10 intervals. `factor` multiplies the interval count; [`kraken_jl`](@ref) passes
+`1, 2, 4, …` to build the successively finer meshes it Richardson-extrapolates across.
+
+Throws an `ArgumentError` for an [`AcousticHalfspace`](@ref) top boundary, which the solver does not
+support.
+
+# Example
+```jldoctest
+julia> env = UnderwaterEnv(pekeris_env()...);
+
+julia> props = AcousticProblemProperties(env, 100.0)
+AcousticProblemProperties{Float64,Float64}(1 layers)
+
+julia> props.Nz_vec, props.Δz_vec
+([125], [0.8])
+```
 """
 function AcousticProblemProperties(env::UnderwaterEnv, freq; factor::Int=1, n_per_wavelength=20)
     if freq isa Int
@@ -954,6 +1211,23 @@ bottom half-space — below that cutoff the vertical wavenumber in the bottom is
 leaky mode) and this real-valued formulation has no solution. `bisection` therefore only ever
 searches `kr ∈ [ω/cb, max(ω/c)]`; calling `get_g` (or `det_sturm`) below the cutoff throws a
 `DomainError` from `sqrt`.
+
+# Arguments
+- `kr`: trial horizontal wavenumber (1/m).
+- `env`: the environment; `cb`, `ρb` and `bottom_bc` are read.
+- `props`: the problem properties, for the frequency.
+
+# Example
+```jldoctest
+julia> env = UnderwaterEnv(pekeris_env()...);
+
+julia> props = AcousticProblemProperties(env, 100.0);
+
+julia> kr = 2π * 100 / 1550;   # between ω/cb and ω/c
+
+julia> round(get_g(kr, env, props); sigdigits=4)
+6.703e-5
+```
 """
 get_g(kr, env::UnderwaterEnv, props::AcousticProblemProperties) = bottom_admittance(env.bottom_bc, kr, env, props)
 
@@ -964,7 +1238,19 @@ end
 bottom_admittance(::BoundaryCondition, kr, env, props) = zero(kr)
 
 """
-Cache for the acoustic problem vectors.
+    AcousticProblemCache{T}
+
+The assembled finite-difference system for one mesh: step 3 of the solve. Root finding and inverse
+iteration evaluate the system at many trial wavenumbers, and the cache is what they reuse — and
+mutate in place, restoring it before they return.
+
+# Fields
+- `a_vec`: main diagonal, which `A` shares rather than copies.
+- `e_vec`: off-diagonals.
+- `λ_scaling`: the factor multiplying `kr²` on each row.
+- `A`: the `Tridiagonal` matrix over `a_vec` and `e_vec`.
+
+See [`finite_difference_coefficients`](@ref) for what each vector holds.
 """
 mutable struct AcousticProblemCache{T}
     a_vec::T
@@ -995,6 +1281,18 @@ the top of this file). Reverse-mode AD traces this function, so keep it free of 
 
 The mesh (`Nz_vec`, `Δz_vec`, `zn_vec`) is piecewise constant in the parameters and is treated as a
 constant here — only `env` carries derivative information.
+
+# Example
+```jldoctest
+julia> env = UnderwaterEnv(one_layer_env()...);
+
+julia> props = AcousticProblemProperties(env, 100.0);
+
+julia> a, e, λ = finite_difference_coefficients(env, props);
+
+julia> length(a) == length(e) == length(λ) == sum(props.Nz_vec)
+true
+```
 """
 function finite_difference_coefficients(env::UnderwaterEnv, props::AcousticProblemProperties)
     #TODO: create vector that generalizes well to different types
@@ -1034,12 +1332,24 @@ end
 """
     AcousticProblemCache(env::UnderwaterEnv, props::AcousticProblemProperties)
 
-Prepare the vectors `a_vec`, `e_vec`, and `λ_scaling` for the acoustic problem. Return an
-`AcousticProblemCache` struct.
+Assemble the finite-difference system for `env` on the mesh `props`.
 
 The coefficients themselves come from [`finite_difference_coefficients`](@ref); this constructor
 only wraps them and builds the `Tridiagonal` view over `a_vec`/`e_vec` that root-finding and inverse
 iteration mutate in place.
+
+# Example
+```jldoctest
+julia> env = UnderwaterEnv(pekeris_env()...);
+
+julia> props = AcousticProblemProperties(env, 100.0);
+
+julia> cache = AcousticProblemCache(env, props)
+AcousticProblemCache{Vector{Float64}}
+
+julia> size(cache.A)
+(125, 125)
+```
 """
 function AcousticProblemCache(env::UnderwaterEnv, props::AcousticProblemProperties)
     a_vec, e_vec, λ_scaling = finite_difference_coefficients(env, props)
@@ -1079,6 +1389,23 @@ both `kr` and the environment parameters, so it cancels in any derivative of the
 affect the mode count.
 
 With a half-space bottom, only defined for `kr >= 2π * freq / cb` — see [`get_g`](@ref).
+
+# Arguments
+- `kr`: trial horizontal wavenumber (1/m).
+- `env`, `props`, `cache`: the environment, its mesh, and the system assembled on it.
+
+# Example
+The Pekeris waveguide at 100 Hz has 5 modes, and 2 of them lie above `kr = 0.41`:
+```jldoctest
+julia> env = UnderwaterEnv(pekeris_env()...);
+
+julia> props = AcousticProblemProperties(env, 100.0);
+
+julia> cache = AcousticProblemCache(env, props);
+
+julia> det_sturm(0.41, env, props, cache).mode_num
+2
+```
 """
 function det_sturm(kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; scale=true)
     local p2, p1, p0, λ
@@ -1138,6 +1465,28 @@ Searches `kr ∈ [ω/(0.9999 cb), max(ω/c)]`, the band in which modes are trapp
 when the bottom is rigid or vacuum and nothing can leak out of the column. Returns an
 `n_modes × 2` matrix of `[left right]` brackets, or `nothing` when the environment supports no
 trapped modes at this frequency (e.g. water too shallow relative to the wavelength).
+
+Each bracket holds exactly one root of [`det_sturm`](@ref), which is what [`solve_for_kr`](@ref)
+needs. Mode counting is by the Sturm sequence, so no root is missed however closely two modes are
+spaced.
+
+# Arguments
+- `env`, `props`, `cache`: the environment, its mesh, and the system assembled on it.
+
+# Example
+```jldoctest
+julia> env = UnderwaterEnv(pekeris_env()...);
+
+julia> props = AcousticProblemProperties(env, 100.0);
+
+julia> size(bisection(env, props, AcousticProblemCache(env, props)))
+(5, 2)
+
+julia> props5 = AcousticProblemProperties(env, 5.0);   # below the first mode's cutoff
+
+julia> bisection(env, props5, AcousticProblemCache(env, props5)) === nothing
+true
+```
 """
 function bisection(env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache)
     ω = 2pi * props.freq
@@ -1208,8 +1557,34 @@ end
 """
     find_kr(env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; method=ITP(), kwargs...)
 
-Find the roots of the acoustic problem. `method` is any bracketing solver accepted by
-`IntervalNonlinearProblem`. Returns an empty vector when `bisection` finds no trapped modes.
+Find every trapped-mode wavenumber of the finite-difference system on one mesh, in descending order:
+[`bisection`](@ref) brackets them and [`solve_for_kr`](@ref) refines each bracket. Returns an empty
+vector when there are no trapped modes.
+
+These are single-mesh wavenumbers, carrying the mesh's discretization error. [`kraken_jl`](@ref)
+calls this on several meshes and extrapolates.
+
+# Arguments
+- `env`, `props`, `cache`: the environment, its mesh, and the system assembled on it.
+- `method`: any bracketing solver from NonlinearSolve.jl accepted by `IntervalNonlinearProblem`.
+- `kwargs...`: passed to `solve`, e.g. `abstol` and `reltol`.
+
+For the closed-form Pekeris model, see `find_kr(::PekerisUnderwaterEnv, freq)`.
+
+# Example
+```jldoctest
+julia> env = UnderwaterEnv(pekeris_env()...);
+
+julia> props = AcousticProblemProperties(env, 100.0);
+
+julia> round.(find_kr(env, props, AcousticProblemCache(env, props)); digits=4)
+5-element Vector{Float64}:
+ 0.4179
+ 0.415
+ 0.41
+ 0.4029
+ 0.3938
+```
 """
 function find_kr(
     env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; method=ITP(), kwargs...
@@ -1225,7 +1600,33 @@ function find_kr(
 end
 
 """
-Solve for the roots of the acoustic problem.
+    solve_for_kr(span, env, props, cache; method=ITP(), kwargs...)
+
+Refine one mode's wavenumber: the root of [`det_sturm`](@ref) inside the bracket `span`.
+
+# Arguments
+- `span`: a two-element `[left, right]` bracket containing exactly one root, i.e. one row of
+  [`bisection`](@ref)'s result.
+- `env`, `props`, `cache`: the environment, its mesh, and the system assembled on it.
+- `method`: a bracketing solver accepted by `IntervalNonlinearProblem`.
+- `kwargs...`: passed to `solve`.
+
+This is one of the two functions carrying a reverse-mode rule: its derivative comes from the implicit
+function theorem applied to `det_sturm`, not from differentiating the solver's iterations.
+
+# Example
+```jldoctest
+julia> env = UnderwaterEnv(pekeris_env()...);
+
+julia> props = AcousticProblemProperties(env, 100.0);
+
+julia> cache = AcousticProblemCache(env, props);
+
+julia> spans = bisection(env, props, cache);
+
+julia> round(solve_for_kr(spans[1, :], env, props, cache); digits=4)
+0.4179
+```
 """
 function solve_for_kr(span, env, props, cache; method=ITP(), kwargs...)
     function f(u, p)
@@ -1398,6 +1799,27 @@ This is the second of the two functions *behind the differentiable seam* (see th
 this file): it mutates the cache, branches on `argmax`, and iterates, and reverse mode never traces
 any of it — `src/kraken_ad.jl` states the eigenvector adjoint directly instead. The cache is left
 exactly as it was found.
+
+# Arguments
+- `kr`: a converged wavenumber, e.g. from [`find_kr`](@ref). The iteration shifts slightly below it.
+- `env`, `props`, `cache`: the environment, its mesh, and the system assembled on it.
+- `reltol`: stop once successive iterates differ by less than this, relatively (1%).
+
+# Example
+```jldoctest
+julia> env = UnderwaterEnv(pekeris_env()...);
+
+julia> props = AcousticProblemProperties(env, 100.0);
+
+julia> cache = AcousticProblemCache(env, props);
+
+julia> kr = first(find_kr(env, props, cache));
+
+julia> kr_new, v = mode_eigenvector(kr, env, props, cache);
+
+julia> length(v) == sum(props.Nz_vec), v[1] >= 0
+(true, true)
+```
 """
 function mode_eigenvector(
     kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; reltol=0.01
@@ -1460,6 +1882,29 @@ that depends on the density profile and the mesh coordinates other than through 
 coefficients, and leaving it traced means the backend reaches `env.ρ` through the same
 [`density`](@ref) call it already differentiates in [`finite_difference_coefficients`](@ref), rather
 than the eigenvector rule having to carry an interpolant adjoint of its own.
+
+# Arguments
+- `v`: the eigenvector, sampled on the flattened mesh `reduce(vcat, props.zn_vec)`.
+- `kr`: its wavenumber, which sets the half-space decay rate.
+- `env`, `props`: the environment and its mesh.
+
+# Example
+```jldoctest
+julia> env = UnderwaterEnv(pekeris_env()...);
+
+julia> props = AcousticProblemProperties(env, 100.0);
+
+julia> cache = AcousticProblemCache(env, props);
+
+julia> kr0 = first(find_kr(env, props, cache));
+
+julia> kr, v = mode_eigenvector(kr0, env, props, cache);
+
+julia> ψ = normalize_mode(v, kr, env, props);   # exactly what inverse_iteration returns
+
+julia> ψ == last(inverse_iteration(kr0, env, props, cache))
+true
+```
 """
 function normalize_mode(v, kr, env::UnderwaterEnv, props::AcousticProblemProperties)
     amp1 = mode_energy(v, env, props) # Amplitude of the waveguide, integrated medium by medium
@@ -1517,6 +1962,21 @@ KRAKEN's complex sound speed: `c + i α c² / ω`, for an attenuation `α` alrea
 This is the last line of `CRCI` (`alphaT = alphaT * c * c / omega; CRCI = CMPLX( c, alphaT )`). The
 imaginary part is arranged so that `ω / c̃ ≈ ω/c - iα`, i.e. so a plane wave in a homogeneous medium
 loses exactly `α` nepers per metre — which is what makes `α` mean what its units say.
+
+# Arguments
+- `c`: the real sound speed (m/s).
+- `α_nepers`: attenuation in nepers/m; convert with [`attenuation_nepers_per_m`](@ref) first.
+- `ω`: angular frequency (rad/s).
+
+# Example
+```jldoctest
+julia> ω = 2π * 100;
+
+julia> c̃ = complex_soundspeed(1500.0, 1e-3, ω);
+
+julia> round(imag(ω / c̃); sigdigits=3)   # ≈ -α, to first order in α c / ω
+-0.001
+```
 """
 complex_soundspeed(c, α_nepers, ω) = complex(c, α_nepers * c^2 / ω)
 
@@ -1551,6 +2011,27 @@ opposite ends of the mode spectrum, which is a useful way to tell which one you 
 
 Calibrating against Fortran below about 1e-3 on a layered case measures `kraken.exe`'s mesh rather
 than this one: its automatic mesh carries ~1.6e-3 of discretization error on `one_layer_env`.
+
+# Arguments
+- `ψ`: the normalized mode shape, on the flattened mesh.
+- `kr`: the mode's real wavenumber.
+- `env`, `props`: the environment and its mesh.
+
+# Example
+```jldoctest
+julia> env = UnderwaterEnv(pekeris_env(; αb=0.5)...);
+
+julia> props = AcousticProblemProperties(env, 100.0);
+
+julia> cache = AcousticProblemCache(env, props);
+
+julia> kr, ψ = inverse_iteration(first(find_kr(env, props, cache)), env, props, cache);
+
+julia> δ = modal_attenuation(ψ, kr, env, props);
+
+julia> real(δ) == 0 && imag(δ) < 0
+true
+```
 """
 function modal_attenuation(ψ, kr, env::UnderwaterEnv, props::AcousticProblemProperties)
     ω = 2pi * props.freq
@@ -1586,12 +2067,36 @@ end
 bottom_attenuation(::BoundaryCondition, ψ, kr, env, props) = zero(real(eltype(ψ)))
 
 """
-    inverse_iteration(kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; kwargs...)
+    inverse_iteration(kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; reltol=0.01)
+    inverse_iteration(kr_vec::Vector, env, props, cache; reltol=0.01)
 
-Performs inverse iteration to find the corresponding modal depth function ψₘ for a given wavenumber kᵣ
+Recover the normalized mode shape ψₘ belonging to the wavenumber `kr`: step 5 of the solve.
 
-Returns `(kr_new, ψ)`. Composed of [`mode_eigenvector`](@ref), which is opaque to reverse-mode AD and
-carries its own rule, and [`normalize_mode`](@ref), which is traced.
+Returns `(kr_new, ψ)`, the iteration's refined wavenumber and the mode sampled on the flattened mesh
+`reduce(vcat, props.zn_vec)`, normalized so that its energy is one. Given a vector of wavenumbers it
+returns a vector and a matrix with one mode per column.
+
+Composed of [`mode_eigenvector`](@ref), which is opaque to reverse-mode AD and carries its own rule,
+and [`normalize_mode`](@ref), which is traced.
+
+# Arguments
+- `kr` / `kr_vec`: converged wavenumbers, e.g. from [`find_kr`](@ref).
+- `env`, `props`, `cache`: the environment, its mesh, and the system assembled on it.
+- `reltol`: passed to [`mode_eigenvector`](@ref).
+
+# Example
+```jldoctest
+julia> env = UnderwaterEnv(pekeris_env()...);
+
+julia> props = AcousticProblemProperties(env, 100.0);
+
+julia> cache = AcousticProblemCache(env, props);
+
+julia> krs, modes = inverse_iteration(find_kr(env, props, cache), env, props, cache);
+
+julia> size(modes)
+(125, 5)
+```
 """
 function inverse_iteration(
     kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; reltol=0.01
@@ -1668,7 +2173,7 @@ with [`inverse_iteration`](@ref), and Richardson-extrapolates the squared wavenu
 levels until they converge.
 
 Returns a `NormalModeSolution` with fields `kr` (horizontal wavenumbers, descending), `modes` (one
-column per mode, sampled on the finest mesh), `env`, and `props`. Returns an empty solution when the
+column per mode, sampled on the first and coarsest mesh, which is `props`), `env`, and `props`. Returns an empty solution when the
 environment supports no trapped modes at this frequency.
 
 # Keyword arguments
@@ -1695,12 +2200,27 @@ about, because neither is an approximation that can be tightened away:
   * **The mode shapes come from the coarsest mesh**, as they do in the primal — only the wavenumbers
     are extrapolated. So `∂modes/∂θ` is the derivative of the level-1 solve.
 
+# Arguments
+- `env`: the [`UnderwaterEnv`](@ref) to solve.
+- `freq`: frequency (Hz).
+
 # Example
-```julia
-env = UnderwaterEnv(pekeris_env()...)
-sol = kraken_jl(env, 100.0)
-sol.kr        # 5 wavenumbers
-sol.modes     # mode shapes, one column each
+```jldoctest
+julia> env = UnderwaterEnv(pekeris_env()...);
+
+julia> sol = kraken_jl(env, 100.0)
+NormalModeSolution{Float64}(5 modes)
+
+julia> round.(sol.kr; digits=4)
+5-element Vector{Float64}:
+ 0.4179
+ 0.415
+ 0.41
+ 0.4029
+ 0.3938
+
+julia> kraken_jl(UnderwaterEnv(pekeris_env(; αb=0.5)...), 100.0)   # lossy: complex kᵣ
+NormalModeSolution{ComplexF64}(5 modes)
 ```
 """
 function kraken_jl(env, freq; n_meshes=5, rmax=10_000, method=ITP(), dont_break=false, abstol=1e-6, reltol=1e-6)
@@ -1788,6 +2308,25 @@ of [`modal_attenuation`](@ref) to each `kᵣ²`.
 the `is_lossy` guard rather than adding a zero: a lossless environment goes through the same
 arithmetic it always did and every existing result stays bit-identical, instead of acquiring a
 `0.0im` that changes the element type of `NormalModeSolution.kr` and of everything downstream of it.
+
+# Arguments
+- `krs`: the converged real wavenumbers.
+- `modes`: their normalized mode shapes, one per column.
+- `env`, `props`: the environment and the mesh the modes are sampled on.
+
+# Example
+```jldoctest
+julia> env = UnderwaterEnv(pekeris_env(; αb=0.5)...);
+
+julia> props = AcousticProblemProperties(env, 100.0);
+
+julia> cache = AcousticProblemCache(env, props);
+
+julia> krs, modes = inverse_iteration(find_kr(env, props, cache), env, props, cache);
+
+julia> eltype(krs), eltype(add_attenuation(krs, modes, env, props))
+(Float64, ComplexF64)
+```
 """
 function add_attenuation(krs, modes, env::UnderwaterEnv, props::AcousticProblemProperties)
     is_lossy(env) || return krs

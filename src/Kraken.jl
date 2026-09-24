@@ -19,7 +19,19 @@ export plot_modes, plot_ssp
 
 Plot the sound-speed profile alongside the computed mode shapes.
 
-Requires a Makie backend: run `using CairoMakie` (or `using GLMakie`) to enable it.
+Requires a Makie backend: run `using CairoMakie` (or `using GLMakie`) to enable it. Without one this
+throws an error saying so.
+
+# Arguments
+- `sol`: the solution from [`kraken_jl`](@ref).
+- `modes`: which modes to draw, by index.
+
+# Example
+```julia
+using CairoMakie
+sol = kraken_jl(UnderwaterEnv(pekeris_env()...), 100.0)
+fig = plot_modes(sol; modes=1:3)
+```
 """
 function plot_modes end
 
@@ -28,7 +40,18 @@ function plot_modes end
 
 Plot the sound-speed profile of an environment.
 
-Requires a Makie backend: run `using CairoMakie` (or `using GLMakie`) to enable it.
+Requires a Makie backend: run `using CairoMakie` (or `using GLMakie`) to enable it. Without one this
+throws an error saying so.
+
+# Arguments
+- `env`: the [`UnderwaterEnv`](@ref) whose profile to draw.
+- `npoints`: how many depths to evaluate the profile at.
+
+# Example
+```julia
+using CairoMakie
+fig = plot_ssp(UnderwaterEnv(munk_env()...))
+```
 """
 function plot_ssp end
 

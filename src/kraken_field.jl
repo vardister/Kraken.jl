@@ -128,10 +128,20 @@ mesh point the mode continues as `φ(D)·exp(-γ(z - D))` into the bottom half-s
 KRAKEN's `ReadOneMode` does. Depths below a rigid or vacuum bottom are an error, as is a negative
 depth.
 
+# Arguments
+- `sol`: the solution from [`kraken_jl`](@ref).
+- `z`: a depth or a vector of depths (m).
+- `nmodes`: evaluate only the first this many modes.
+
 # Example
-```julia
-sol = kraken_jl(UnderwaterEnv(pekeris_env()...), 100.0)
-mode_amplitudes(sol, 0:10:100)     # 11 × M
+```jldoctest
+julia> sol = kraken_jl(UnderwaterEnv(pekeris_env()...), 100.0);
+
+julia> size(mode_amplitudes(sol, 0:10:100))   # 11 depths × 5 modes
+(11, 5)
+
+julia> size(mode_amplitudes(sol, 50.0; nmodes=2))
+(1, 2)
 ```
 """
 function mode_amplitudes(sol::NormalModeSolution, z; nmodes=length(sol.kr))
@@ -183,6 +193,12 @@ Returns a `length(zr) × length(ranges)` matrix — depth down the rows, range a
 always, including when `ranges` or `zr` is a single number. `transmission_loss` is the same field in
 dB.
 
+# Arguments
+- `sol`: the solution from [`kraken_jl`](@ref).
+- `ranges`: a range or a vector of ranges (m), all positive.
+- `zs`: source depth (m, positive downwards).
+- `zr`: a receiver depth or a vector of them (m).
+
 # Keyword arguments
 - `nmodes`: how many modes to sum, from the first (largest `kᵣ`). Defaults to all of them; the
   solution has already discarded everything that is not propagating.
@@ -208,9 +224,13 @@ The field is the far-field mode sum, which is singular at `r = 0` and inaccurate
 or so of the source; zero and negative ranges are rejected rather than returned as `Inf`.
 
 # Example
-```julia
-sol = kraken_jl(UnderwaterEnv(pekeris_env()...), 100.0)
-p = acoustic_field(sol, 1_000:100:10_000, 25.0, 0:5:100)
+```jldoctest
+julia> sol = kraken_jl(UnderwaterEnv(pekeris_env()...), 100.0);
+
+julia> p = acoustic_field(sol, 1_000:100:10_000, 25.0, 0:5:100);
+
+julia> size(p), eltype(p)   # 21 depths × 91 ranges
+((21, 91), ComplexF64)
 ```
 """
 function acoustic_field(sol::NormalModeSolution, ranges, zs, zr; nmodes=length(sol.kr), mode=:coherent)
@@ -245,11 +265,22 @@ The reference is the pressure a point source of the same strength would produce 
 space, which is the normalization built into the field itself, so nothing further is subtracted
 here. Larger numbers mean a weaker signal.
 
+# Arguments
+The same as [`acoustic_field`](@ref)'s: `sol`, `ranges` (m), source depth `zs` (m), receiver depths
+`zr` (m), and the keywords `nmodes` and `mode`.
+
 # Example
-```julia
-sol = kraken_jl(UnderwaterEnv(pekeris_env()...), 100.0)
-tl = transmission_loss(sol, 1_000:100:10_000, 25.0, 50.0)
-smooth = transmission_loss(sol, 1_000:100:10_000, 25.0, 50.0; mode=:incoherent)
+```jldoctest
+julia> sol = kraken_jl(UnderwaterEnv(pekeris_env()...), 100.0);
+
+julia> round.(transmission_loss(sol, 1_000:1_000:5_000, 25.0, 50.0); digits=1)
+1×5 Matrix{Float64}:
+ 56.2  50.8  58.6  61.7  60.9
+
+julia> smooth = transmission_loss(sol, 1_000:100:10_000, 25.0, 50.0; mode=:incoherent);
+
+julia> size(smooth)
+(1, 91)
 ```
 """
 function transmission_loss(sol::NormalModeSolution, ranges, zs, zr; kwargs...)
@@ -300,10 +331,20 @@ function: the loop below is a `map` over `freqs` precisely so that turning it in
 the entire change needed to parallelize it. That is deliberately not done yet — a parallel version
 of a wrong answer is still wrong, and task 7.4 is what confirms the serial one.
 
+# Arguments
+- `env`: the [`UnderwaterEnv`](@ref) to solve.
+- `freqs`: the frequencies (Hz). [`synthesize_pulse`](@ref) wants them evenly spaced.
+- `ranges`, `zs`, `zr`: as for [`acoustic_field`](@ref).
+- `nmodes`, `mode`: as for [`acoustic_field`](@ref), applied at every frequency.
+
 # Example
-```julia
-env = UnderwaterEnv(pekeris_env()...)
-P = broadband_field(env, 10.0:1.0:200.0, 5_000.0, 36.0, 55.0)   # 191 × 1 × 1
+```jldoctest
+julia> env = UnderwaterEnv(pekeris_env()...);
+
+julia> P = broadband_field(env, 10.0:10.0:200.0, 5_000.0, 36.0, 55.0);
+
+julia> size(P)   # 20 frequencies × 1 depth × 1 range
+(20, 1, 1)
 ```
 """
 function broadband_field(env::UnderwaterEnv, freqs, ranges, zs, zr; nmodes=typemax(Int), mode=:coherent, kwargs...)
@@ -357,13 +398,25 @@ The phase convention is KRAKEN's, the same one [`acoustic_field`](@ref) document
 `e^{i(ωt - kᵣr)}`, so this sums `e^{+i2πft}` and takes twice the real part, the positive-frequency
 half of a real signal's inverse transform.
 
+# Arguments
+- `P`: the spectrum, frequency along the first axis.
+- `freqs`: the evenly spaced frequencies (Hz) `P` is sampled at.
+- `times`: the times (s) to evaluate the signal at.
+
 # Example
-```julia
-env = UnderwaterEnv(pekeris_env()...)
-freqs = 2.0:2.0:300.0
-P = broadband_field(env, freqs, 10_000.0, 36.0, 55.0)
-t = 0:0.002:2.0
-p = synthesize_pulse(P[:, 1, 1], freqs, t; t_reduce=10_000.0 / maximum(env.c.c))
+```jldoctest
+julia> env = UnderwaterEnv(pekeris_env()...);
+
+julia> freqs = 5.0:5.0:200.0;
+
+julia> P = broadband_field(env, freqs, 5_000.0, 36.0, 55.0);
+
+julia> t = 0:0.002:0.5;
+
+julia> p = synthesize_pulse(P[:, 1, 1], freqs, t; t_reduce=5_000.0 / maximum(env.c.c));
+
+julia> length(p) == length(t), eltype(p)
+(true, Float64)
 ```
 """
 function synthesize_pulse(P::AbstractVector, freqs, times; spectrum=nothing, t_reduce=0)

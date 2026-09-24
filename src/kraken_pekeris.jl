@@ -9,26 +9,28 @@ import NaNMath as nm
 export PekerisUnderwaterEnv, find_kr, get_modal_function, pressure_f, find_spans, get_modal_function_values
 
 """
-	PekerisUnderwaterEnv
+    PekerisUnderwaterEnv(c1, cb, ρ1, ρb, depth)
 
-	A type representing the underwater environment in the Pekeris model.
+The Pekeris waveguide in closed form: an isovelocity water layer over a homogeneous fluid half-space.
+This is the separate, analytic solve path — [`find_kr`](@ref) on one of these solves the dispersion
+relation directly instead of going through the finite-difference machinery, which makes it the
+reference the general solver is checked against. It is lossless.
 
-	# Fields
-	- `c1::T1`: The sound speed in the water column.
-	- `cb::T1`: The sound speed in the bottom half-space.
-	- `ρ1::T1`: The density of the water column.
-	- `ρb::T1`: The density of the bottom half-space.
-	- `depth::T1`: The depth of the water column.
+# Arguments
+- `c1`, `ρ1`: water sound speed (m/s) and density (kg/m³).
+- `cb`, `ρb`: half-space sound speed and density. `cb > c1` is required for trapped modes and
+  asserted.
+- `depth`: water depth (m).
 
-	# Constructor
-	```julia
-	PekerisUnderwaterEnv(c1::T1, cb, ρ1, ρb, depth) where {T1}
-	```
+The same waveguide for the finite-difference solver is [`pekeris_env`](@ref).
 
-	# Example
-	```julia
-	env = PekerisUnderwaterEnv(1500.0, 1600.0, 1000.0, 2000.0, 100.0)
-	```
+# Example
+```jldoctest
+julia> env = PekerisUnderwaterEnv(1500.0, 1600.0, 1000.0, 1500.0, 100.0);
+
+julia> env.depth
+100.0
+```
 """
 struct PekerisUnderwaterEnv{T1<:Real,T2<:Real,T3<:Real,T4<:Real,T5<:Real}
     c1::T1
@@ -44,19 +46,42 @@ struct PekerisUnderwaterEnv{T1<:Real,T2<:Real,T3<:Real,T4<:Real,T5<:Real}
 end
 
 """
-    find_kr(env, freq, p; n_points = 5_000, method = A42())
+    find_kr(env::PekerisUnderwaterEnv, freq; n_points=2_000, method=Roots.A42(), kwargs...)
 
-    Find the horizontal wavenumbers for the Pekeris model.
+The horizontal wavenumbers of the Pekeris waveguide at frequency `freq` (Hz), in descending order,
+from its dispersion relation `tan(kz·D) + (ρb/ρ1)·kz/γ = 0`.
 
-    # Arguments
-    - `env::PekerisUnderwaterEnv`: The underwater environment.
-    - `freq::Real`: The frequency of the signal.
-    - `p::Vector{Real}`: The Pekeris parameters.
-    - `n_points::Int=2_000`: The number of points to use in the search.
-    - `method::NonlinearSolver=NewtonRaphson()`: The method to use for the search.
+The trapped band `ω/cb < kr < ω/c1` is sampled at `n_points` points, every sign change from positive
+to negative is taken as a bracket, and each is refined with `Roots.find_zero`. The dispersion
+function also changes sign at the poles of `tan`, from negative to positive, which is why only one
+direction counts. Two modes closer together than the sampling step would be missed; `n_points` is
+what to raise if that ever happens.
 
-    # Returns
-    - `Vector{Real}`: The horizontal wavenumbers.
+# Arguments
+- `env`: the [`PekerisUnderwaterEnv`](@ref).
+- `freq`: frequency (Hz).
+- `n_points`: samples of the trapped band used to bracket the roots.
+- `method`: the `Roots.jl` method passed to `find_zero`.
+- `kwargs...`: passed to `find_zero`.
+
+Returns an empty vector when no mode is trapped.
+
+# Example
+The finite-difference solve of the same waveguide agrees to the digits shown:
+```jldoctest
+julia> env = PekerisUnderwaterEnv(1500.0, 1600.0, 1000.0, 1500.0, 100.0);
+
+julia> round.(find_kr(env, 100.0); digits=4)
+5-element Vector{Float64}:
+ 0.4179
+ 0.415
+ 0.41
+ 0.4029
+ 0.3938
+
+julia> round.(kraken_jl(UnderwaterEnv(pekeris_env()...), 100.0).kr; digits=4) == round.(find_kr(env, 100.0); digits=4)
+true
+```
 """
 function find_kr(env::PekerisUnderwaterEnv, f; n_points=2_000, method=Roots.A42(), kwargs...)
     T = promote_type(typeof(env.c1), typeof(env.cb), typeof(env.ρ1), typeof(env.ρb), typeof(env.depth), typeof(f))
@@ -86,17 +111,22 @@ function find_kr(env::PekerisUnderwaterEnv, f; n_points=2_000, method=Roots.A42(
 end
 
 """
-    find_spans(func, x, p)
+    find_spans(func, x)
 
-    Find the spans where the function changes sign.
+The consecutive pairs `(x[i], x[i+1])` across which `func` goes from positive to negative — the
+brackets `find_kr(::PekerisUnderwaterEnv, freq)` refines. Returns a lazy generator of tuples, or an
+empty vector when there are none.
 
-    # Arguments
-    - `func::Function`: The function to find the spans for.
-    - `x::Vector{Real}`: The x values.
-    - `p::Vector{Real}`: The parameters.
+# Arguments
+- `func`: a scalar function.
+- `x`: increasing sample points.
 
-    # Returns
-    - `Vector{eltype(x)}`: The spans.
+# Example
+```jldoctest
+julia> collect(find_spans(cos, 0:0.5:5))   # cos falls through zero at π/2 and rises at 3π/2
+1-element Vector{Tuple{Float64, Float64}}:
+ (1.5, 2.0)
+```
 """
 function find_spans(func, x)
     idxes = [i for i in 1:(length(x) - 1) if (func(x[i]) > 0 && func(x[i + 1]) < 0)]
@@ -130,18 +160,28 @@ end
 """
     get_modal_function_values(env, krs, freq, zr, zs)
 
-    Evaluate the Pekeris modal functions at the receiver and source depths.
+Evaluate the normalized Pekeris mode functions at a receiver depth and a source depth.
 
-    # Arguments
-    - `env::PekerisUnderwaterEnv`: The underwater environment.
-    - `krs::Vector{Real}`: The horizontal wavenumbers.
-    - `freq::Real`: The frequency of the signal.
-    - `zr::Real`: The receiver depth.
-    - `zs::Real`: The source depth.
+Returns `(modes_zr, modes_zs)`, two vectors with one value per wavenumber in `krs`. Below `depth`
+the modes decay exponentially into the half-space.
 
-    # Returns
-    - `Vector{Real}`: The modal function at the receiver depth.
-    - `Vector{Real}`: The modal function at the source depth.
+# Arguments
+- `env`: the [`PekerisUnderwaterEnv`](@ref).
+- `krs`: its wavenumbers at `freq`, from `find_kr(env, freq)`.
+- `freq`: frequency (Hz).
+- `zr`, `zs`: receiver and source depths (m, positive downwards).
+
+# Example
+```jldoctest
+julia> env = PekerisUnderwaterEnv(1500.0, 1600.0, 1000.0, 1500.0, 100.0);
+
+julia> krs = find_kr(env, 100.0);
+
+julia> ψr, ψs = get_modal_function_values(env, krs, 100.0, 0.0, 50.0);
+
+julia> all(iszero, ψr)   # every mode vanishes at the pressure-release surface
+true
+```
 """
 function get_modal_function_values(env, krs, freq, zr, zs)
     @unpack c1, cb, ρ1, ρb, depth = env
@@ -172,6 +212,25 @@ Returns a closure, so it can be evaluated at any depth: sinusoidal in the water 
 exponentially decaying below the interface, normalized the same way as
 [`get_modal_function_values`](@ref) (which is the right call when you only need a fixed pair of
 depths).
+
+# Arguments
+- `env`: the [`PekerisUnderwaterEnv`](@ref).
+- `krs`: its wavenumbers at `freq`, from `find_kr(env, freq)`.
+- `freq`: frequency (Hz).
+
+The closure takes a depth `z` (m, positive downwards) and a mode index.
+
+# Example
+```jldoctest
+julia> env = PekerisUnderwaterEnv(1500.0, 1600.0, 1000.0, 1500.0, 100.0);
+
+julia> krs = find_kr(env, 100.0);
+
+julia> Ψ = get_modal_function(env, krs, 100.0);
+
+julia> Ψ(50.0, 2) == last(get_modal_function_values(env, krs, 100.0, 0.0, 50.0))[2]
+true
+```
 """
 function get_modal_function(env, krs, freq)
     @unpack c1, cb, ρ1, ρb, depth = env
@@ -192,22 +251,35 @@ function get_modal_function(env, krs, freq)
 end
 
 """
-    pressure_f(env, krs, freq, r, zs, zr; t0 = 0.1, max_modes = Inf)
+    pressure_f(env::PekerisUnderwaterEnv, krs, freq, r, zs, zr; t0=0.1, max_modes=Inf)
 
-    Compute the pressure field for the Pekeris model.
+The complex pressure of the Pekeris waveguide at one frequency, range and depth pair, as a normal
+mode sum. Returns zero at `freq = 0` or when there are no modes.
 
-    # Arguments
-    - `env::PekerisUnderwaterEnv`: The underwater environment.
-    - `krs::Vector{Real}`: The horizontal wavenumbers.
-    - `freq::Real`: The frequency of the signal.
-    - `r::Real`: The range.
-    - `zs::Real`: The source depth.
-    - `zr::Real`: The receiver depth.
-    - `t0::Real=0.1`: The time offset.
-    - `max_modes::Int=Inf`: The maximum number of modes to use.
+The result carries an extra phase `exp(2πi·freq·(r/min(c1, cb) - t0))`, which shifts the arrival
+to `t0` seconds into a time window when the spectrum is inverse-transformed. At a single frequency
+it changes the phase and leaves `abs` alone.
 
-    # Returns
-    - `Complex{Real}`: The pressure field.
+# Arguments
+- `env`: the [`PekerisUnderwaterEnv`](@ref).
+- `krs`: its wavenumbers at `freq`, from `find_kr(env, freq)`.
+- `freq`: frequency (Hz).
+- `r`: range (m).
+- `zs`, `zr`: source and receiver depths (m, positive downwards).
+- `t0`: where in the time window the arrival lands (s).
+- `max_modes`: sum only the first this many modes.
+
+# Example
+```jldoctest
+julia> env = PekerisUnderwaterEnv(1500.0, 1600.0, 1000.0, 1500.0, 100.0);
+
+julia> krs = find_kr(env, 100.0);
+
+julia> p = pressure_f(env, krs, 100.0, 5_000.0, 25.0, 50.0);
+
+julia> p isa Complex, abs(pressure_f(env, krs, 100.0, 5_000.0, 25.0, 50.0; t0=0.0)) ≈ abs(p)
+(true, true)
+```
 """
 function pressure_f(env::PekerisUnderwaterEnv, krs, freq, r, zs, zr; t0=0.1, max_modes=Inf)
     if freq == 0

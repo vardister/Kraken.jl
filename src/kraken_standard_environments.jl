@@ -36,6 +36,17 @@ kraken_jl(lossy, 100.0).kr                                # ComplexF64; Im(kᵣ)
 Prefer `α0` (water-column loss) when the *accuracy* of the attenuation matters: the half-space term
 of the perturbation carries a `1/γ` that grows without bound at the bottom cutoff, so a large `αb`
 degrades the least-trapped mode first. See [`modal_attenuation`](@ref).
+
+# Example
+```jldoctest
+julia> ssp, layers, sspHS = pekeris_env(; depth=200.0);
+
+julia> size(ssp), layers
+((2, 6), [0.0 0.0 200.0])
+
+julia> kraken_jl(UnderwaterEnv(pekeris_env()...), 100.0)
+NormalModeSolution{Float64}(5 modes)
+```
 """
 function pekeris_env(;
     c0::Real=1500.0, cb::Real=1600.0, ρ0::Real=1000.0, ρb::Real=1500.0, depth::Real=100.0, α0::Real=0.0, αb::Real=0.0
@@ -95,6 +106,19 @@ of the bottom-cutoff blow-up that a large `αb` suffers.
 one trapezoid over the whole mesh — a single straddled interval there is enough to cost an order of
 convergence. With that, `α1 = 0.4` dB/λ agrees with `kraken.exe` to 2.9e-3 at the default mesh and
 converges at second order; a flat trapezoid gave 8.1e-2 and first order.
+
+# Arguments
+- `c0`, `ρ0`, `h0`, `α0`: water sound speed (m/s), density (kg/m³), depth (m) and attenuation.
+- `c1`, `ρ1`, `h1`, `α1`: the same for the sediment layer, `h1` being its thickness.
+- `cb`, `ρb`, `αb`: the half-space's sound speed, density and attenuation.
+
+# Example
+```jldoctest
+julia> env = UnderwaterEnv(one_layer_env()...);
+
+julia> env.layer_depth, env.h_vec
+([100.0, 120.0], [100.0, 20.0])
+```
 """
 function one_layer_env(;
     c0=1500.0, c1=1550.0, cb=1600.0, ρ0=1000.0, ρ1=1500.0, ρb=2000.0, h0=100.0, h1=20.0, α0=0.0, α1=0.0, αb=0.0
@@ -132,7 +156,22 @@ end
 Like [`one_layer_env`](@ref), but the sediment sound speed ramps linearly from `c1_1` at its top to
 `c1_2` at its base.
 
-Returns `(ssp, layers, sspHS)`.
+Returns `(ssp, layers, sspHS)`. The environment is lossless.
+
+# Arguments
+- `c0`, `ρ0`, `h0`: water sound speed (m/s), density (kg/m³) and depth (m).
+- `c1_1`, `c1_2`, `ρ1`, `h1`: sediment sound speed at its top and base, density, and thickness.
+- `cb`, `ρb`: the half-space's sound speed and density.
+
+# Example
+```jldoctest
+julia> env = UnderwaterEnv(one_layer_slope_env()...);
+
+julia> soundspeed(env.c, [110.0, 120.0])
+2-element Vector{Float64}:
+ 1565.0
+ 1580.0
+```
 """
 function one_layer_slope_env(;
     c0=1500.0, c1_1=1550.0, c1_2=1580.0, cb=1600.0, ρ0=1000.0, ρ1=1500.0, ρb=2000.0, h0=100.0, h1=20.0
@@ -176,7 +215,25 @@ end
 Water column over two sediment layers, each with a linear sound-speed gradient, over a fluid
 half-space.
 
-Returns `(ssp, layers, sspHS)`. Layer `i` ramps from `ci_1` to `ci_2` over thickness `hi`.
+Returns `(ssp, layers, sspHS)`. Layer `i` ramps from `ci_1` to `ci_2` over thickness `hi`. The
+environment is lossless.
+
+# Arguments
+- `c0`, `ρ0`, `h0`: water sound speed (m/s), density (kg/m³) and depth (m).
+- `c1_1`, `c1_2`, `ρ1`, `h1`: the first sediment layer's top and base sound speed, density, thickness.
+- `c2_1`, `c2_2`, `ρ2`, `h2`: the same for the second layer.
+- `cb`, `ρb`: the half-space's sound speed and density.
+
+# Example
+```jldoctest
+julia> env = UnderwaterEnv(two_layer_slope_env()...);
+
+julia> env.layer_depth
+3-element Vector{Float64}:
+ 100.0
+ 120.0
+ 140.0
+```
 """
 function two_layer_slope_env(;
     c0=1500.0,
@@ -244,6 +301,16 @@ c(z) = 1500 \\, [1 + ε (ẑ - 1 + e^{-ẑ})], \\quad ẑ = 2(z - 1300)/1300, \\
 
 so its minimum is exactly 1500.0 m/s at the 1300 m sound channel axis, where `ẑ = 0`. That value and
 location are the defining property of the profile — the environment tests assert both.
+
+It takes no arguments.
+
+# Example
+```jldoctest
+julia> env = UnderwaterEnv(munk_env()...);
+
+julia> env.depth, soundspeed(env.c, 1300.0)
+(5000.0, 1500.0)
+```
 """
 function munk_env()
     function c(z)

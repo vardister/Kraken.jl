@@ -2263,8 +2263,8 @@ moved to NonlinearSolve's `ITP()`. After this milestone the docs site builds and
 an API reference, an AD page, and a Fortran-validation page, and every code block in the README is executed by
 a doctest.
 
-### 8.1 [ ] Docstring coverage for the public API
-- **Files:** `src/*.jl`
+### 8.1 [x] Docstring coverage for the public API *(completed 2026-09-23)*
+- **Files:** `src/*.jl`, `docs/make.jl`, `docs/src/api.md`, `docs/src/api/*.md`
 - **What:** Ensure every exported symbol has a docstring with signature, arguments, and at least one example.
   Fix the docstrings that are currently wrong: `find_kr(::PekerisUnderwaterEnv, ...)` documents a `p` argument
   and a `NewtonRaphson()` default that its signature does not have. Add `Documenter`'s `checkdocs=:exports` so
@@ -2273,9 +2273,32 @@ a doctest.
   export them or have the tests qualify them, consistently.
 - **Acceptance:** Docs build with `checkdocs=:exports` and no warnings.
 - **Dependencies:** 7.5
+- **Outcome:** Two of the three asks were already done when this started: `checkdocs=:exports` was in
+  `docs/make.jl`, and `soundspeed`/`maxsoundspeed`/`density` were exported. What remained:
+  - **Every example is a `jldoctest`**, set up once by `DocMeta.setdocmeta!` in `docs/make.jl`, so the build
+    runs all of them. The existing ```` ```julia ```` examples in `kraken_field.jl` and `kraken_jl` were
+    converted too. The one exception is `plot_modes`/`plot_ssp`: the docs env has no Makie backend, so those
+    stay as plain `julia` blocks. Outputs are chosen to be stable: sizes, `Bool`s, `show` strings, and
+    wavenumbers rounded to 4 digits.
+  - **Docstrings that were wrong, not just missing:** `soundspeed`/`density`/`attenuation` said `z` is
+    "generally negative" and documented a 4-argument `(x, y, z)` signature that has no method. Depths are
+    positive downwards, and a negative one silently returns the surface value; the docstrings now say so.
+    `kraken_jl` said the modes are "sampled on the finest mesh" while its own AD note, and the code, use the
+    first and coarsest one. `SampledDensity` advertised `:linear`/`:smooth` interpolation options; the 3-arg
+    method passes the `Symbol` where an interpolant constructor goes and cannot work. The claim is gone, but
+    the method is still there, unfixed. All of `kraken_pekeris.jl`'s docstrings were indented, so Documenter
+    rendered each one as a single code block. Pekeris `find_kr` is fixed as the task asked.
+  - **The API reference is split into topic pages** (`docs/src/api/{environments,solver,field,pekeris,
+    internals}.md`, with `api.md` as the index). With examples, the single page came to 176 KB, over
+    Documenter's 100 KiB `size_threshold_warn` and close to the 200 KiB `size_threshold`, where the build
+    fails. Public docstrings go on the topic pages; unexported ones go on `internals.md`, which exists
+    because docstrings `@ref` them. `find_kr` is listed by signature on the solver page, so its Pekeris
+    method appears only on the Pekeris page.
+  - **`edit_link="master"`** is set explicitly. Documenter otherwise shells out to `git remote` and warns
+    when that fails.
 
 ### 8.2 [ ] Write the documentation site
-- **Files:** `docs/src/index.md`, `docs/src/guide.md`, `docs/src/environments.md`, `docs/src/ad.md`, `docs/src/validation.md`, `docs/src/api.md`, `docs/make.jl`
+- **Files:** `docs/src/index.md`, `docs/src/guide.md`, `docs/src/environments.md`, `docs/src/ad.md`, `docs/src/validation.md`, `docs/src/api.md`, `docs/src/api/*.md`, `docs/make.jl`
 - **What:** Build out the site: a getting-started guide, an environments page covering the ssp/layers/sspHS
   matrix layout and all the boundary and interpolation options from Milestone 6, the AD page from 4.8/7.5, a
   validation page presenting the Fortran comparison results as a table (this is the package's main credibility
