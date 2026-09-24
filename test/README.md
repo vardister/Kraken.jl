@@ -136,16 +136,34 @@ takes. Use an idle session, or the relative shares rather than the absolute seco
 `KRAKEN_SKIP_TESTS` takes a comma-separated list of those file names and leaves them out:
 
 ```bash
-# ~5.5 min instead of ~17
+# 7.3 min instead of 22 — measured 2026-09-23 at 438.6 s
 KRAKEN_SKIP_TESTS=reverse_ad_tests.jl julia --project=. -e 'using Pkg; Pkg.test()'
 
-# ~2.5 min — measured at 2m40s for 1003 tests
+# 5.4 min — measured at 321.7 s. Both AD files out; this is the tight edit/test loop
+KRAKEN_SKIP_TESTS=reverse_ad_tests.jl,rrule_tests.jl julia --project=. -e 'using Pkg; Pkg.test()'
+
+# ~2.5 min — measured at 2m40s for 1003 tests, before the suite grew
 KRAKEN_SKIP_TESTS=reverse_ad_tests.jl,fortran_reference_tests.jl \
   julia --project=. -e 'using Pkg; Pkg.test()'
 
-# Keep the AD gradient checks but drop the test_rrule compilation, which is the single largest block
+# Keep every AD gradient check but drop the test_rrule compilation
 KRAKEN_SKIP_TESTS=rrule_tests.jl julia --project=. -e 'using Pkg; Pkg.test()'
 ```
+
+The `rrule_tests.jl` line is worth 116.9 s of the 438.6 s above, and the split of that is the
+interesting part: only 36.7 s of it is the testsets running (351.4 s against 314.7 s of reported
+`Test Summary` time). The other ~80 s is Julia loading and precompiling `ChainRulesTestUtils` and
+`FiniteDifferences`, which no other test file needs — which is why the `using` lines for them came
+out of `reverse_ad_tests.jl` when the block moved, and why skipping the file skips more than the
+file. The pass count drops by exactly 42, the assertion count of `rrule_tests.jl`, which is the
+check that the skip is doing what it says.
+
+That 116.9 s is also a **lower bound** on what it saves in a full run: both of those runs skip `reverse_ad_tests.jl`, so
+`ChainRulesTestUtils` compiles in a world where Zygote and Mooncake were never loaded. In a full run
+it compiles after those have invalidated a large part of the method table, which is the difference
+between the 116.9 s here and the 373 s the same testset took when it lived inside
+`reverse_ad_tests.jl`. Measuring the full-run delta properly needs two ~22 min runs, and run-to-run
+variance is about 6% (85 s), so it has not been done.
 
 It defaults to skipping nothing, CI never sets it, an unrecognized file name is a hard error rather
 than a silent no-op, and each skip prints a warning saying the run does not show the suite is green.
