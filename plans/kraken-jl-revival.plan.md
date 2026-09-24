@@ -2248,7 +2248,7 @@ delivered. After this milestone there is a published docs site, an accurate READ
 the work is citable and installable.
 
 **Success criteria:** The docs site builds in CI and deploys, every exported symbol has a docstring, the
-README's examples run verbatim as written, and v0.3.0 is tagged.
+README's examples run verbatim as written, and v0.4.0 is tagged.
 
 **Key decisions:** `Kraken` is *already* registered in General under this repo's UUID (established during task
 1.1), so the naming question is settled and releasing is a version bump rather than a new registration. That
@@ -2318,11 +2318,17 @@ a doctest.
 - **Acceptance:** README doctests pass in CI; every file in `examples/` runs.
 - **Dependencies:** 8.2
 
-### 8.4 [ ] Deploy docs from CI and tag v0.3.0
+### 8.4 [ ] Deploy docs from CI and tag v0.4.0
 - **Files:** `.github/workflows/Docs.yml`, `Project.toml`, `CHANGELOG.md`
 - **What:** Add a docs workflow that builds and deploys on push to master and on tags. Write a CHANGELOG
-  covering this plan's work, noting the breaking renames from Milestone 1.2 explicitly. Bump the version to
-  0.3.0 and tag. Prepare but do not submit General-registry registration — surface the name-collision question
+  covering this plan's work, noting the breaking renames from Milestone 1.2 explicitly. Tag v0.4.0 (the version is
+  already bumped). Prepare but do not submit General-registry registration — surface the name-collision question
   for a decision rather than deciding it here.
-- **Acceptance:** Docs deploy and are reachable; v0.3.0 tagged; CHANGELOG lists the breaking changes.
+- **Acceptance:** Docs deploy and are reachable; v0.4.0 tagged; CHANGELOG has a [0.4.0] section.
+- **Note (2026-09-23, during 8.1):** `v0.3.0` was already tagged and registered in General (released from
+  the `release-0.3.0` branch, forked from this plan at 3.8, with a `CHANGELOG.md` that is already on
+  `revival`). `Project.toml` is bumped to **0.4.0** for this release: everything since 0.3.0 is new
+  capability, and lossy environments now return complex `kr`. So this task adds a `[0.4.0]` section to
+  the existing CHANGELOG rather than writing one from scratch, and its "Known limitations" list is what
+  mostly changes.
 - **Dependencies:** 8.3
