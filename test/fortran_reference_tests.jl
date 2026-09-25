@@ -629,6 +629,45 @@ const KR = KrakenReference
             end
         end
 
+        # --- the two spellings of a layer interface (plan task 6.9) ---------------------------
+        #
+        # `UnderwaterEnv` documents an interface as two SSP rows at the same depth, "or `z` and
+        # `z + eps(z)`". Every standard environment used the second spelling and `read_env_file` used to
+        # rewrite `.env` files into it, so nothing ever solved the first. It was wrong: the water
+        # column's last mesh point read the sediment's `c` and `ρ`, and this shelf came out 4–8% from
+        # `kraken.exe` with mode correlations down to 0.77. The sediment is *slower* than the water
+        # and much denser, which is what makes one misread mesh point that expensive.
+        @testset "M6.9: both spellings of an interface match kraken.exe" begin
+            function shelf(; seam=0.0)
+                D, h = 74.4, 11.0
+                ssp = [
+                    0.0 1468.3 0.0 1030.0 0.0 0.0
+                    D 1468.3 0.0 1030.0 0.0 0.0
+                    D+seam 1445.0 0.0 1600.0 0.0 0.0
+                    D+h 1555.0 0.0 1600.0 0.0 0.0
+                ]
+                sspHS = [0.0 343.0 0.0 1.21 0.0 0.0; D+h 1830.0 0.0 2000.0 0.0 0.0]
+                return UnderwaterEnv(ssp, [0.0 0.0 D; 0.0 0.0 D+h], sspHS)
+            end
+            same_depth, offset = shelf(), shelf(; seam=eps(74.4))
+
+            # The interface query returns the medium above, in both spellings.
+            for env in (same_depth, offset)
+                @test soundspeed(env.c, 74.4) == 1468.3
+                @test density(env.ρ, 74.4) == 1030.0
+            end
+
+            @testset "$(freq) Hz" for freq in (24.0, 50.0, 100.0)
+                # The same problem, so the same answer to the last bit.
+                @test kraken_jl(same_depth, freq).kr == kraken_jl(offset, freq).kr
+
+                c = KR.compare_with_fortran(same_depth, freq)
+                @test c.n_julia == c.n_fortran
+                @test KR.max_kr_reldiff(c) < 1e-4
+                @test KR.min_mode_corr(c) > 0.9999
+            end
+        end
+
         # --- attenuation against kraken.exe (plan task 5.3) ----------------------------------
         #
         # `Im(kᵣ)` needs tolerances of its own, and they are looser than the wavenumber ones by more

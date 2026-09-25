@@ -233,6 +233,27 @@ end
 Base.show(io::IO, s::NotAKnotSpline) = print(io, "NotAKnotSpline(", length(s.t), " knots)")
 
 """
+    separate_interfaces(depth)
+
+`depth` with the second of every pair of equal consecutive samples moved down by `eps`, so that a layer
+interface written as two rows at the same depth reads the same as one written `z0`, `z0 + eps(z0)`.
+
+The two spellings are not interchangeable without this. `DataInterpolations` looks a query up with
+`searchsortedlast`, which puts a query *on* a repeated knot in the interval that starts at the second
+copy, i.e. in the medium below. Every medium's mesh ends exactly on its lower interface, so the water
+column's last mesh point took the sediment's sound speed and density: on a 74 m shelf that put `kᵣ`
+4–8% away from `kraken.exe`. With the second copy `eps` deeper, the query lands in the interval ending
+at the first copy, which is the medium above, as [`soundspeed`](@ref) documents.
+
+The offset is `eps` of the depth itself, which ForwardDiff and Zygote both differentiate as 1, so a
+layer depth that is a parameter keeps its derivative.
+"""
+function separate_interfaces(depth)
+    repeated(i) = i > firstindex(depth) && depth[i] == depth[i - 1]
+    return [repeated(i) ? depth[i] + eps(depth[i]) : depth[i] for i in eachindex(depth)]
+end
+
+"""
 Sound speed profile based on measurements at discrete depths `z` in meters and sound speed `c` in m/s.
 
 `mode` is the interpolation between samples — see [`SampledSSP`](@ref). `f` interpolates whatever that
@@ -245,6 +266,7 @@ struct SampledSSP1D{T1,T2,T3} <: SampledSSP
     f::T3
     mode::Symbol
     function SampledSSP1D(depth, c, f, mode::Symbol)
+        depth = separate_interfaces(depth)
         interp = f(ssp_interp_values(mode, c), depth; extrapolation=ExtrapolationType.Constant)
         return new{eltype(depth),eltype(c),typeof(interp)}(-depth, c, interp, mode)
     end
@@ -322,6 +344,7 @@ struct SampledDensity1D{T1,T2,T3} <: SampledDensity
     f::T3
     # Constructor for Type inputs
     function SampledDensity1D(depth, ρ, f)
+        depth = separate_interfaces(depth)
         interp = f(ρ, depth; extrapolation=ExtrapolationType.Constant)
         return new{eltype(depth),eltype(ρ),typeof(interp)}(-depth, ρ, interp)
     end
@@ -369,6 +392,7 @@ struct SampledAttenuation1D{T1,T2,T3} <: SampledAttenuation
     α::Vector{T2}
     f::T3
     function SampledAttenuation1D(depth, α, f)
+        depth = separate_interfaces(depth)
         interp = f(α, depth; extrapolation=ExtrapolationType.Constant)
         return new{eltype(depth),eltype(α),typeof(interp)}(-depth, α, interp)
     end

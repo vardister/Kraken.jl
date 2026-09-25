@@ -60,7 +60,8 @@ kraken_jl(env, 100.0)
 
 A layer interface is written as **two rows at the same depth**, one carrying the properties above it
 and one the properties below. [`one_layer_env`](@ref) puts a sediment layer under the water this way.
-It uses `z0 + eps(z0)` for the second row so that the depths stay strictly increasing:
+It writes the second row at `z0 + eps(z0)`. Writing both at exactly `z0`, as a `.env` file does, is
+equivalent, because the profiles move the second of two equal depths down by `eps` themselves:
 
 ```@example env
 ssp, layers, sspHS = one_layer_env()

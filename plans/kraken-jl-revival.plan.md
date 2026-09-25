@@ -1989,6 +1989,93 @@ end value like the linear interpolants. `src/kraken_ad.jl` changed only a commen
 Not touched: `cCubic` also splines density, and Kraken.jl keeps it linear (6.3's note). Splining per
 medium, which `Munk/MunkB_ray.env` would need, is still refused.
 
+### Found during 8.3 (2026-09-24): three solver defects
+
+Writing `examples/dispersion.jl` for 8.3 turned up kinks in group speed against frequency. Tracing
+them found three separate defects. Each was measured in the docs session. The environment was the 8.3
+shelf: 74.4 m of 1468.3 m/s water over 11 m of 1445–1555 m/s sediment on a 1830 m/s half-space.
+
+| # | Defect | Measured |
+|---|---|---|
+| D1 | An interface written as two SSP rows at the **same** depth (the spelling the `UnderwaterEnv` docstring and `environments.md` document) gives the water column's last mesh point the sediment's `c` and `ρ` | kᵣ 4–8% from `kraken.exe`, mode correlation 0.77, a different mode count at 24 Hz. The same environment spelled `z0 + eps(z0)` is 3e-5 / 0.99999 |
+| D2 | The SSP/density reverse rule takes the interval *ending* at a duplicate knot and the primal takes the one *starting* there, so the rule differentiates a different function from the one the primal computes | Zygote ∂kᵣ/∂c_water 5% wrong on a single mesh, 15% through `kraken_jl`; 4.5e-7 with the `eps` spelling |
+| D3 | ForwardDiff goes through ITP's iterations, and nothing applies the implicit-function theorem to a `Dual` | the root's partials come from a secant across a 3e-13 bracket where f ≈ ±1e-14. Worst 0.18% on Pekeris 10–200 Hz and 1.6% on the shelf 10–100 Hz, with 2 frequencies in ~190 over 0.1% on each. A hand-built IFT derivative matched central differences to 5e-9 where ForwardDiff was 0.55% off |
+
+Why none of this was caught:
+- **D1 and D2:** every standard environment uses the `eps` spelling. `read_env_file` also rewrites
+  exact duplicates to `nextfloat` (`test/reference/env_reader.jl`, added in 3.7). So no Fortran
+  comparison ever saw the documented spelling.
+- **D3 was not new.** 4.2 measured it (1.3% on `∂kr₁/∂cb` at 250 Hz, see Architecture Decisions)
+  and accepted it: finite differences, not ForwardDiff, arbitrate between the two modes, and
+  `reverse_ad_tests.jl` pins "the rule is tolerance-independent, ForwardDiff is not". What 4.2 did not
+  weigh is that ForwardDiff is the method the README, the guide and the AD page all recommend for
+  group speeds, and on the refined meshes (which get no `abstol`) the error reaches 1.6%. The group-speed
+  tests' frequencies happen to land where the last secant step is accurate.
+- **A floor that is not a defect:** with `kraken_jl`'s default `abstol = 1e-6` on the coarse mesh, the
+  reverse rule sits 4.5e-7 from central differences on the shelf, because the root it is evaluated at
+  is not fully converged. That is 4.4's "the root itself moves" note, reproduced. An IFT rule for
+  ForwardDiff (6.11) will inherit the same floor, which is why 6.11's bound is 1e-6 and not tighter.
+
+### 6.9 [x] Solve an interface written as two rows at the same depth correctly *(completed 2026-09-24)*
+- **Files:** `src/kraken_core.jl`, `test/reference/env_reader.jl`, `test/fortran_reference_tests.jl`,
+  `docs/src/environments.md`
+- **What:** Make the exact-duplicate spelling of an interface solve the same problem as the `z0 + eps(z0)`
+  spelling. That means the water column's last mesh point takes the medium *above*, as
+  `environments.md` already promises. The likely fix is to nudge the second of each pair of equal
+  consecutive depths up by `eps` inside `UnderwaterEnv`, before the profiles are built. Use arithmetic
+  that ForwardDiff and Zygote can both follow (`eps` of the value, not `nextfloat`, no mutation of the
+  primal). Then remove the reader's own `nextfloat` workaround, so the `.env` path goes through the
+  constructor's fix instead of around it. `:cubic_spline` must still refuse a repeated depth.
+- **Acceptance:** A new Fortran reference test solves the 8.3 shelf in *both* spellings at 24, 50 and
+  100 Hz. Both spellings match `kraken.exe` (kᵣ < 1e-4, mode correlation > 0.9999) and match each
+  other. `soundspeed`/`density` on the interface depth return the upper medium's values for both
+  spellings. The OALIB cases (with `KRAKEN_OALIB_TESTS`) and the rest of the suite are unchanged.
+- **Dependencies:** None
+- **Outcome:** `separate_interfaces` in `src/kraken_core.jl` moves the second of each pair of equal
+  consecutive depths down by `eps` of itself. It runs in the inner constructors of all three profile
+  types, so a `SampledSSP`/`SampledDensity`/`SampledAttenuation` built directly is covered too. The
+  existing constructor rrules stay correct unchanged, because the offset has derivative 1.
+  - **The two spellings now solve bit for bit the same problem.** On the shelf, `kraken_jl(...).kr` is
+    `==` across spellings at 24, 50 and 100 Hz, and `kraken.exe` agrees as it did for the `eps`
+    spelling (3e-5 / 0.99999 at 50 Hz). New testset `"M6.9: both spellings of an interface match
+    kraken.exe"`, 16 assertions.
+  - **The reader no longer rewrites to `nextfloat`.** It only snaps a row that sits *above* the
+    previous depth back onto it (a Float32 rounding of the interface), so `.env` files now reach the
+    constructor with the documented spelling. OALIB cases unchanged: 209 + 20 + 28 pass with
+    `KRAKEN_OALIB_TESTS` set, 1266 in the Fortran file.
+  - `environments.md` no longer implies the `eps` spelling is required.
+  - Full `Pkg.test()`: 2515 pass, 0 fail, 1402 s.
+
+### 6.10 [ ] Pin the reverse-mode profile rule to the primal at interfaces
+- **Files:** `src/kraken_ad.jl` (only if 6.9 does not already fix it), `test/reverse_ad_tests.jl`
+- **What:** Once 6.9 removes duplicate knots from the interpolants, D2 should disappear. Confirm that
+  rather than assuming it. Extend the existing bit-for-bit `val == A(z)` assertion from the standard
+  environments to an environment built with the duplicate spelling. Add a gradient check on the shelf:
+  Zygote's ∂kᵣ/∂c_water against ForwardDiff and central differences, on a single mesh and through
+  `kraken_jl`. If `SampledSSP`/`SampledDensity` can still be built directly with duplicate depths, the
+  rule and the primal must agree there too, or the constructor must refuse the input.
+- **Acceptance:** The shelf gradient agrees with central differences to < 1e-6 in both modes. The
+  rule-vs-primal assertion covers a duplicate-spelled environment.
+- **Dependencies:** 6.9
+
+### 6.11 [ ] Give ForwardDiff an implicit-function rule for `solve_for_kr`
+- **Files:** `ext/KrakenForwardDiffExt.jl` (new), `Project.toml` (`[weakdeps]`/`[extensions]`),
+  `test/automatic_differentiation_tests.jl`
+- **What:** When the problem carries `Dual`s, solve for the root on the primal values. Then set its
+  partials by the implicit function theorem on `det_sturm`: `∂kᵣ = -(∂f/∂p) / (∂f/∂kᵣ)`, both
+  evaluated at the converged root. This is the formula the reverse rule (4.2) already uses. The ITP
+  iterates must no longer set the result's partials. Kraken.jl's only AD dependency is ChainRulesCore,
+  so ForwardDiff comes in as a weak dependency and this lives in a package extension. Nested `Dual`s
+  (tags) and complex-valued downstream code must keep working. This reverses 4.2's decision to accept
+  the error. Update that Architecture Decision, and the 243-line testset "the rule is
+  tolerance-independent, ForwardDiff is not" in `test/reverse_ad_tests.jl`, which will then fail its
+  "the rule is the closer of the two" assertion by design.
+- **Acceptance:** The group speed of the 8.3 shelf from ForwardDiff agrees with central differences to
+  < 1e-6 at every frequency of 10:0.5:100 Hz, and Pekeris at 10:1:200 Hz. Before the fix, the worst
+  cases are 1.6% and 0.18%, and the test pins at least one of them. The existing forward-mode and
+  Fortran group-speed tests still pass.
+- **Dependencies:** None
+
 ---
 
 ## Milestone 7: Pressure Field & Transmission Loss
@@ -2351,7 +2438,8 @@ a doctest.
   `EnvKRAKEN` API and cannot run at all — established during 1.4. Rewrite the ones worth keeping with
   descriptive names and delete the rest rather than leaving numbered scripts of unknown provenance.
 - **Acceptance:** README doctests pass in CI; every file in `examples/` runs.
-- **Dependencies:** 8.2
+- **Dependencies:** 8.2, 6.9, 6.10, 6.11 (the dispersion example is what found D1–D3, and its group-speed
+  panel is the end-to-end check that 6.11 worked)
 
 ### 8.4 [ ] Deploy docs from CI and tag v0.4.0
 - **Files:** `.github/workflows/Docs.yml`, `Project.toml`, `CHANGELOG.md`

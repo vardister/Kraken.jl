@@ -464,11 +464,14 @@ function read_env_file(path::AbstractString; strict::Bool=true)
     ssp[:, 4] .*= 1 / DEFAULT_DENSITY_SCALE
     halfspace[4] /= DEFAULT_DENSITY_SCALE
 
-    # `UnderwaterEnv` interpolates the SSP with DataInterpolations, which needs strictly increasing
-    # depths — but an interface contributes two rows at the same depth. The standard environment
-    # builders offset the second by `eps`; do the same here.
+    # An interface contributes two rows at the same depth, and `UnderwaterEnv` separates those itself
+    # (`separate_interfaces`). This used to offset the second row by `nextfloat` here, which meant
+    # no `.env` file ever reached the constructor with the documented spelling, and so nothing noticed
+    # that the constructor solved that spelling wrongly. The only rewrite left is for a medium whose first
+    # row sits a Float32 rounding *above* the interface that `ReadSSP` accepted as the previous
+    # medium's bottom. That row is snapped onto the interface so the depths never decrease.
     for i in 2:size(ssp, 1)
-        ssp[i, 1] <= ssp[i - 1, 1] && (ssp[i, 1] = nextfloat(ssp[i - 1, 1]))
+        ssp[i, 1] < ssp[i - 1, 1] && (ssp[i, 1] = ssp[i - 1, 1])
     end
 
     layers = hcat(zeros(nmedia), zeros(nmedia), layer_depths)
