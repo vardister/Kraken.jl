@@ -362,6 +362,49 @@ end
         end
     end
 
+    # Every environment above spells its interfaces `z0`, `z0 + eps(z0)`. The documented alternative is
+    # two rows at exactly `z0`, and before plan task 6.9 the primal and this rule disagreed there: the
+    # primal read the water column's last mesh point from the medium *below*, while the rule picked the
+    # interval ending at the knot. So Zygote differentiated a function the solver did not compute, and
+    # ∂kᵣ/∂c_water on this shelf was 5% wrong on one mesh and 15% wrong through `kraken_jl`. 6.9 fixed the
+    # primal by separating equal depths when the profile is built. These tests check that the rule and
+    # the primal now agree for the same-depth spelling too.
+    shelf(cw) = UnderwaterEnv(
+        [
+            0.0 cw 0.0 1030.0 0.0 0.0
+            74.4 cw 0.0 1030.0 0.0 0.0
+            74.4 1445.0 0.0 1600.0 0.0 0.0
+            85.4 1555.0 0.0 1600.0 0.0 0.0
+        ],
+        [0.0 0.0 74.4; 0.0 0.0 85.4],
+        [0.0 343.0 0.0 1.21 0.0 0.0; 85.4 1830.0 0.0 2000.0 0.0 0.0],
+    )
+
+    @testset "interpolant rule: the primal value, exactly — interface at one depth" begin
+        env = shelf(1468.3)
+        for freq in (25.0, 100.0)
+            props = AcousticProblemProperties(env, freq)
+            queries = vcat(reduce(vcat, props.zn_vec), env.layer_depth, [0.0, env.depth])
+            @test all(z -> soundspeed(env.c, z) === first(Kraken.linear_interp_partials(env.c.f, z)), queries)
+            @test all(z -> density(env.ρ, z) === first(Kraken.linear_interp_partials(env.ρ.f, z)), queries)
+        end
+        # The same holds for a profile built directly, without going through `UnderwaterEnv`.
+        ssp = SampledSSP([0.0, 50.0, 50.0, 100.0], [1500.0, 1490.0, 1600.0, 1650.0])
+        @test soundspeed(ssp, 50.0) === first(Kraken.linear_interp_partials(ssp.f, 50.0)) === 1490.0
+    end
+
+    @testset "a gradient across an interface at one depth" begin
+        # ∂kᵣ₁/∂c_water, the parameter the old disagreement hit hardest. Central differences use no AD
+        # at all. On one mesh the bound is set by the root tolerance: `kraken_jl` solves the coarse
+        # mesh to `abstol = 1e-6`, which leaves the rule 4.5e-7 from the differences (the 4.4 note).
+        for kws in ((n_meshes=1,), (;))
+            f = cw -> real(kraken_jl(shelf(cw), 50.0; kws...).kr[1])
+            fd = (f(1468.3 + 1e-3) - f(1468.3 - 1e-3)) / 2e-3
+            @test abs(Zygote.gradient(f, 1468.3)[1] / fd - 1) < 1e-6
+            @test abs(ForwardDiff.derivative(f, 1468.3) / fd - 1) < 1e-6
+        end
+    end
+
     @testset "interpolant rule: all five partial families" begin
         # The rule's content in isolation, against ForwardDiff on the same three inputs — the knot
         # depths, the values, and the query point. `two_layer_slope_env` is the one standard

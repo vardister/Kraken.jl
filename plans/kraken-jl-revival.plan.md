@@ -2046,7 +2046,7 @@ Why none of this was caught:
   - `environments.md` no longer implies the `eps` spelling is required.
   - Full `Pkg.test()`: 2515 pass, 0 fail, 1402 s.
 
-### 6.10 [ ] Pin the reverse-mode profile rule to the primal at interfaces
+### 6.10 [x] Pin the reverse-mode profile rule to the primal at interfaces *(completed 2026-09-24)*
 - **Files:** `src/kraken_ad.jl` (only if 6.9 does not already fix it), `test/reverse_ad_tests.jl`
 - **What:** Once 6.9 removes duplicate knots from the interpolants, D2 should disappear. Confirm that
   rather than assuming it. Extend the existing bit-for-bit `val == A(z)` assertion from the standard
@@ -2057,6 +2057,17 @@ Why none of this was caught:
 - **Acceptance:** The shelf gradient agrees with central differences to < 1e-6 in both modes. The
   rule-vs-primal assertion covers a duplicate-spelled environment.
 - **Dependencies:** 6.9
+- **Outcome:** 6.9 fixed D2 as expected, and `src/kraken_ad.jl` is unchanged. After 6.9 the primal
+  and the rule both take the medium above at a same-depth interface. Two testsets in
+  `test/reverse_ad_tests.jl` pin that:
+  - **`"interpolant rule: the primal value, exactly — interface at one depth"`** extends the
+    bit-for-bit `===` check to the shelf spelled with a repeated depth. It also covers a `SampledSSP`
+    built directly from repeated depths, which returns the upper value (1490 at the 50 m interface).
+  - **`"a gradient across an interface at one depth"`** checks Zygote and ForwardDiff ∂kᵣ₁/∂c_water
+    against central differences, within 1e-6, on one mesh and through `kraken_jl`. Measured:
+    reverse 4.5e-7 and forward 4e-10 on one mesh (the reverse figure is the `abstol = 1e-6` root
+    floor from 4.4, reproduced in isolation: 2.8e-10 with the default tolerance), and both −5.7e-8
+    through `kraken_jl`. Before 6.9 the same check was 5% and 15% off.
 
 ### 6.11 [ ] Give ForwardDiff an implicit-function rule for `solve_for_kr`
 - **Files:** `ext/KrakenForwardDiffExt.jl` (new), `Project.toml` (`[weakdeps]`/`[extensions]`),
