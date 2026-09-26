@@ -30,6 +30,9 @@ plans/
 # test/README.md for why the test environment must be dev-linked by hand.
 Manifest.toml
 
+# Figures written by the scripts in examples/
+examples/figures/
+
 # Coverage output
 *.cov
 

@@ -6,12 +6,16 @@
 #   at once, using Zygote (reverse mode), and how to convince yourself the answer is right.
 #
 # HOW TO RUN IT
-#   From the repository root:
+#   From the repository root, once per clone:
 #
-#       julia --project=test examples/reverse_ad.jl
+#       julia --project=examples -e 'using Pkg; Pkg.instantiate()'
 #
-#   `--project=test` is used because Zygote is a *test* dependency of this repo, not a dependency of
-#   the package — Kraken.jl only depends on ChainRulesCore, which is what carries the rules. In your
+#   and then:
+#
+#       julia --project=examples examples/reverse_ad.jl
+#
+#   The `examples` environment brings Zygote and ForwardDiff, which are not dependencies of the
+#   package. Kraken.jl itself carries its reverse-mode rules through ChainRulesCore alone. In your
 #   own project you would just `Pkg.add("Zygote")` alongside Kraken.
 #
 #   The file is written in `#%%` cells, so it also runs block by block in VS Code or as a notebook.
@@ -263,15 +267,16 @@ let
 end
 
 #%% ---------------------------------------------------------------------------------------------
-# 7. A gradient the reference cannot produce: dependence on the root solver's tolerance
+# 7. The root solver's tolerance does not move the gradient
 # -----------------------------------------------------------------------------------------------
-# A property worth seeing, because it is where reverse mode is not merely as good as forward mode
-# but better. The rule uses the implicit function theorem: it differentiates the *equation* the
-# wavenumber satisfies, evaluated at the converged root, instead of differentiating the arithmetic
-# of the root search. So its answer does not depend on how hard the solver worked.
+# The rule uses the implicit function theorem: it differentiates the *equation* the wavenumber
+# satisfies, evaluated at the converged root, instead of differentiating the arithmetic of the root
+# search. So its answer does not depend on how hard the solver worked.
 #
-# ForwardDiff, which does differentiate the search, inherits the search's truncation error. At
-# 250 Hz, mode 1, the two disagree by over 1%, and finite differences confirm the rule is right.
+# ForwardDiff used to differentiate the search itself and inherit its truncation error: at 250 Hz,
+# mode 1, it was over 1% off, and it fell apart at the tightest tolerance. Since plan task 6.11,
+# Kraken's ForwardDiff extension applies the same implicit-function derivative, so both columns
+# below are constant and equal.
 
 function kr_with_tol(θ; freq=250.0, mode=1, tol=nothing)
     env = UnderwaterEnv(pekeris_env(; c0=θ[1], cb=θ[2], ρ0=θ[3], ρb=θ[4], depth=θ[5])...)
@@ -292,8 +297,8 @@ let f = θ -> kr_with_tol(θ)
     @printf("   %-12s %18.10e\n", "finite diff", fd_gradient(f, θ_pek)[2])
 end
 println("""
-   The reverse column is constant to ~13 digits; the forward column drifts and then collapses at
-   the tightest setting. Finite differences agree with the reverse column.""")
+   Both columns are constant to ~13 digits and agree with each other, and finite differences
+   agree with both.""")
 
 #%% ---------------------------------------------------------------------------------------------
 # 8. MODE SHAPES: the gradient of a functional of ψ, not just of a wavenumber

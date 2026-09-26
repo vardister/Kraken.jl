@@ -64,6 +64,31 @@ jobs:
         env:
           KRAKEN_RUN_PERFORMANCE_TESTS: "true"
 
+  # Every script in examples/ runs to the end. They are what a new user copies from, and before plan
+  # task 8.3 five of the seven called an API that had been removed, with nothing to notice. They have
+  # their own environment (examples/Project.toml, which points Kraken at this checkout through
+  # `[sources]`, hence Julia 1.11+ here). The scripts assert their own results as they go, so a run
+  # that finishes is a run that passed.
+  examples:
+    name: Examples
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1"
+      - uses: julia-actions/cache@v2
+      - name: Instantiate examples environment
+        run: julia --project=examples -e 'using Pkg; Pkg.instantiate()'
+      - name: Run every example
+        run: |
+          for f in examples/*.jl; do
+            echo "::group::$f"
+            julia --project=examples --threads=auto "$f"
+            echo "::endgroup::"
+          done
+
   # Build only, no deploy — publishing needs a DOCUMENTER_KEY, which is the maintainer's call to
   # set up. The point of this job is that the docs build cannot silently rot again: it was broken
   # for the entire life of the repo because make.jl said `using KRAKEN` and the module is `Kraken`,

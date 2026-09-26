@@ -104,8 +104,11 @@ write `@views x[1:(end-1)] .= x[1:(end-1)] .- y` instead. Verify locally with
 
 Test files fall into three categories (see `test/README.md` for the up-to-date table):
 - **TestItems** files (`environment_tests.jl`, `integration_tests.jl`) — use `@testitem`, run via `@run_package_tests` in `runtests.jl`.
-- **Test** files (`numerical_methods_tests.jl`, `automatic_differentiation_tests.jl`, `fortran_reference_tests.jl`, `performance_tests.jl`) — plain `@testset`, `include`d from `runtests.jl`.
+- **Test** files (`numerical_methods_tests.jl`, `automatic_differentiation_tests.jl`, `fortran_reference_tests.jl`, `readme_tests.jl`, `performance_tests.jl`) — plain `@testset`, `include`d from `runtests.jl`. `readme_tests.jl` runs every ```` ```julia ```` block of `README.md`, so a README example that needs a package the test env lacks (Makie) belongs in prose.
 - **Manual scripts** (`timings_vs_fortran.jl` needs DrWatson) — not wired into `runtests.jl`, run by hand.
+
+`examples/` has its own environment (`examples/Project.toml`, Kraken via `[sources]`, so Julia 1.11+)
+and a CI job that runs every script in it; the scripts assert their own results.
 
 **Anything added to `test/` must be declared in `test/Project.toml`, stdlibs included.**
 `--project=test` resolves against a manifest that already contains every stdlib indirectly, so

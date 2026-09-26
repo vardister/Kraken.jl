@@ -2,220 +2,185 @@
 
 [![CI](https://github.com/vardister/Kraken.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/vardister/Kraken.jl/actions/workflows/CI.yml)
 [![Format](https://github.com/vardister/Kraken.jl/actions/workflows/Format.yml/badge.svg)](https://github.com/vardister/Kraken.jl/actions/workflows/Format.yml)
+[![Docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://vardister.github.io/Kraken.jl/dev/)
 
-**❗Documentation is currently under construction.**
+Kraken.jl computes underwater sound propagation with normal modes. It is a pure-Julia
+reimplementation of Michael Porter's [KRAKEN](https://oalib-acoustics.org/models-and-software/normal-modes/)
+from the Acoustics Toolbox, with ideas from
+[UnderwaterAcoustics.jl](https://github.com/org-arl/UnderwaterAcoustics.jl). Given a range-independent
+ocean (a sound-speed profile, sediment layers and a seabed), it finds the horizontal wavenumbers and
+mode shapes, and from those the pressure field and transmission loss.
 
-KRAKEN.jl is a Normal-Mode based simulation package for underwater acoustic propagation. It's heavily based on [Michael Porter's KRAKEN Fortran code located in the Acoustics Toolbox](https://oalib-acoustics.org/models-and-software/normal-modes/) and [UnderwaterAcoustics.jl](https://github.com/org-arl/UnderwaterAcoustics.jl).
+Every step is differentiable, in forward mode and in reverse mode. That makes group speeds,
+sensitivities and gradient-based inversions a matter of calling an AD package on the solver.
 
-This reimplementation is fully written in Julia, and is designed to be more user-friendly, and easier to extend. It is also designed to be more efficient, and to take advantage of Julia's parallelization capabilities.
+- **Validated against Fortran KRAKEN.** Every push compares the solver with the *unmodified*
+  `kraken.exe` and `field.exe` from
+  [`AcousticsToolbox_jll`](https://github.com/JuliaBinaryWrappers/AcousticsToolbox_jll.jl), on
+  standard environments, lossy ones, every boundary condition and every profile interpolation.
+- **What it models:** layered fluid media, compressional attenuation in six unit conventions,
+  pressure-release, rigid and acoustic half-space boundaries, three sound-speed interpolations,
+  coherent and incoherent transmission loss, and broadband pulses.
+- **Differentiable:** forward mode through [ForwardDiff.jl](https://github.com/JuliaDiff/ForwardDiff.jl),
+  reverse mode through [Zygote.jl](https://github.com/FluxML/Zygote.jl) or
+  [Mooncake.jl](https://github.com/chalk-lab/Mooncake.jl). Both use implicit-function rules for the
+  root finder and the eigenvectors, so neither differentiates solver iterations.
+- **Optional plotting:** `using CairoMakie` (or `GLMakie`) enables `plot_modes`, `plot_ssp`,
+  `plot_tl`, `plot_tl_range`, `plot_dispersion` and `plot_arrivals`.
 
-## Features
-
-- Normal-Mode based simulation for underwater acoustic propagation fully written in Julia
-- User-friendly and easy to extend
-- Differentiable in **both** modes — forward via [ForwardDiff.jl](https://github.com/JuliaDiff/ForwardDiff.jl), reverse via [Zygote.jl](https://github.com/FluxML/Zygote.jl) or [Mooncake.jl](https://github.com/chalk-lab/Mooncake.jl), so the gradient with respect to a whole sound-speed profile costs about one solve instead of one solve per point (see below)
-- Re-using existing environmental data files from the Acoustics Toolbox — `.env` files are both read and written
-- Cross-validated against the **unmodified** Fortran `kraken.exe` on every push (see below)
-- Optional plotting via a package extension — `using CairoMakie` (or `GLMakie`) enables mode, sound-speed, transmission-loss, dispersion and arrival plots (`plot_modes`, `plot_tl`, `plot_dispersion`, …) at no cost to anyone who does not
-
-## Validation
-
-Every push runs the solver against unmodified Fortran KRAKEN. The binaries come from
-[`AcousticsToolbox_jll`](https://github.com/JuliaBinaryWrappers/AcousticsToolbox_jll.jl), so CI needs
-no Fortran toolchain, and the comparison is driven over the toolbox's own `.env`/`.mod` file
-interface — nothing in this package links against Fortran code or ships a shared library.
-
-Across the five standard environments at 25–400 Hz, the largest relative wavenumber difference
-against `kraken.exe` is **2.7e-5** and the smallest mode-shape correlation is **0.99995**. Of the 402
-environment files shipped with the Acoustics Toolbox, **167** use only features Kraken.jl models
-today — 101 of them lossy, which attenuation support unlocked. See [`test/README.md`](test/README.md)
-for the per-environment table, the attenuation comparison, and what blocks the rest.
-
-## Missing features
-- [ ] Inclusion of shear wave properties in environment
-- [ ] Boundary conditions other than a pressure-release surface over a fluid half-space
-- [ ] SSP interpolation other than C-linear
-- [ ] Leaky modes — the full complex solve, `krakenc.exe`'s job (see the caveat under Attenuation)
-- [x] Compressional wave attenuation in environment
-- [x] Reverse-mode automatic differentiation
-
-## Attenuation
-
-An environment's `αp` column is read and used, and a lossy waveguide gives **complex** wavenumbers
-whose imaginary part is the modal attenuation:
-
-```julia
-env = UnderwaterEnv(pekeris_env(; αb=0.5)...)   # 0.5 dB per wavelength in the seabed
-sol = kraken_jl(env, 100.0)
-sol.kr            # ComplexF64; Im(kᵣ) < 0, so the mode decays with range
-imag(sol.kr[1])   # nepers per metre of range for mode 1
-```
-
-A lossless environment still returns real `Float64` wavenumbers, unchanged and bit-identical to
-before attenuation existed — the complex path is entered only when there is loss to model.
-
-Units follow KRAKEN's own six conventions, selected with `atten_units` and defaulting to
-dB/wavelength (`'W'`, KRAKEN's `TopOpt(3:3)`):
-
-| `atten_units` | `.env` char | meaning |
-|---|---|---|
-| `:nepers_per_m` | `N` | nepers/m |
-| `:dB_per_m` | `M` | dB/m |
-| `:dB_per_kmHz` | `F` | dB/(m·kHz), i.e. dB/(km·Hz) |
-| `:dB_per_wavelength` | `W` | dB/wavelength *(default)* |
-| `:Q` | `Q` | quality factor |
-| `:loss_parameter` | `L` | loss parameter |
-
-```julia
-UnderwaterEnv(pekeris_env(; α0=1e-3)...; atten_units=:nepers_per_m)
-```
-
-Four of the six depend on frequency, so an environment stores the value you gave it and converts at
-solve time — exactly as the Fortran's `CRCI` does.
-
-### The approximation, and where it runs out
-
-Attenuation is added by **first-order perturbation** of the real eigenvalue, which is what
-`kraken.exe` does; `krakenc.exe` is the separate program that solves the complex problem outright.
-The two agree to first order in α *exactly* — shrink α and the disagreement falls as α² until it hits
-the single precision of the reference file.
-
-Two things limit how accurately `Im(kᵣ)` comes out, and they bite on opposite ends of the mode
-spectrum:
-
-- **The perturbation is first order in `v = 2ω α_b/(c_b γ²)`**, not in `α_b`, and `γ → 0` at the
-  bottom cutoff — so a strongly attenuating seabed degrades the *least*-trapped mode first.
-  Agreement with `kraken.exe` runs from 1.8e-3 on a weakly attenuating waveguide to ~10% for a
-  near-cutoff mode over a 0.5 dB/λ seabed. Inherent to the method; the fix is the full complex solve.
-- **Everything else is ordinary discretization**, and it is second order in the mesh spacing. Both the
-  energy normalization and the perturbation integral are taken medium by medium, so a jump in `ρ` or
-  `α` at a layer interface is resolved exactly rather than averaged across — on
-  `one_layer_env(; α1=0.4)` that is the difference between 8.1e-2 and 2.9e-3 agreement, and it is
-  what keeps a lossy sediment layer usable at the default mesh.
-
-Neither affects `Re(kᵣ)`, which stays within 1e-4 of `kraken.exe` throughout.
-[`test/README.md`](test/README.md) has the measured table.
+The [documentation](https://vardister.github.io/Kraken.jl/dev/) has a getting-started guide, the
+environment format, the AD details, and the validation results measured by the docs build itself.
 
 ## Installation
 
-```julia
-using Pkg
-Pkg.add("Kraken")
+```julia-repl
+pkg> add Kraken
 ```
 
-## Usage
+## Quick start
+
+An environment is three matrices laid out like an Acoustics Toolbox `.env` file. `pekeris_env()`
+returns them for a 100 m isovelocity water column over a fast seabed:
 
 ```julia
 using Kraken
 
-# Load the environment
-ssp, layers, sspHS = pekeris_env() # Similar structure to environment files from the Acoustics Toolbox
+ssp, layers, sspHS = pekeris_env()
 env = UnderwaterEnv(ssp, layers, sspHS)
 
-# Run the simulation
-freq = 100.0
-sol = kraken_jl(env, freq)
-
-# Access the results
-modes = sol.modes
-wavenumbers = sol.kr
-zn = vcat(sol.props.zn_vec...)
+sol = kraken_jl(env, 100.0)   # solve at 100 Hz
+sol.kr                        # horizontal wavenumbers (1/m), one per mode
+sol.modes                     # mode shapes, one column per mode
 ```
+
+`kraken_jl` refines the depth mesh and Richardson-extrapolates the wavenumbers until they converge.
+From the modes, the field at any ranges and receiver depths is a mode sum:
+
+```julia
+ranges = 100.0:100.0:10_000.0   # m
+zs, zr = 25.0, [10.0, 50.0]     # source depth, receiver depths (m)
+
+p = acoustic_field(sol, ranges, zs, zr)        # complex pressure, length(zr) × length(ranges)
+tl = transmission_loss(sol, ranges, zs, zr)    # dB re 1 m
+tl_smooth = transmission_loss(sol, ranges, zs, zr; mode=:incoherent)
+```
+
+With a Makie backend loaded, `plot_tl(sol, ranges, zs, 0.0:1.0:100.0)` draws the TL as a
+range-depth image and `plot_modes(sol)` draws the modes beside the profile.
+
+## Environments
+
+Each row of `ssp` is `[depth, cp, cs, ρ, αp, αs]`: depth in m (positive downwards), speeds in m/s,
+density in **kg/m³** (a `.env` file uses g/cm³), and attenuation in the environment's units. A layer
+interface is two rows at the same depth, one for each side. `layers` has one row per medium, with the
+medium's lower interface depth in the third column. `sspHS` holds the top and bottom half-spaces.
+
+Here is a 74 m shelf with a soft, slow sediment layer over a hard, lossy basement:
+
+```julia
+shelf_ssp = [
+    0.0 1468.3 0.0 1030.0 0.0 0.0
+    74.4 1468.3 0.0 1030.0 0.0 0.0
+    74.4 1445.0 0.0 1600.0 0.05 0.0   # sediment: slower than the water above it
+    85.4 1555.0 0.0 1600.0 0.05 0.0
+]
+shelf_layers = [0.0 0.0 74.4; 0.0 0.0 85.4]
+shelf_hs = [0.0 343.0 0.0 1.21 0.0 0.0; 85.4 1830.0 0.0 2000.0 0.25 0.0]
+
+shelf = UnderwaterEnv(shelf_ssp, shelf_layers, shelf_hs)
+kraken_jl(shelf, 50.0).kr   # complex: attenuation makes every mode decay with range
+```
+
+The keyword arguments cover the rest of what a `.env` file can say:
+
+```julia
+UnderwaterEnv(
+    shelf_ssp, shelf_layers, shelf_hs;
+    atten_units=:dB_per_m,        # or :nepers_per_m, :dB_per_kmHz, :dB_per_wavelength (default), :Q, :loss_parameter
+    ssp_interp=:n2_linear,        # or :c_linear (default), :cubic_spline
+    top_bc=PressureRelease(),     # or RigidBoundary()
+    bottom_bc=AcousticHalfspace(),# or RigidBoundary(), PressureRelease()
+)
+```
+
+A lossless environment returns real `Float64` wavenumbers. Loss is added by first-order perturbation,
+which is what `kraken.exe` does. The full complex solve of `krakenc.exe`, which also finds leaky
+modes, is not implemented.
 
 ## Automatic differentiation
 
-The solver is differentiable in **both** modes, and which one you want depends on how many parameters
-you are differentiating with respect to. Forward mode costs one solve per parameter; reverse mode
-costs a fixed multiple of one solve regardless of the parameter count. Kraken.jl itself depends only
-on ChainRulesCore.jl — ForwardDiff, Zygote and Mooncake are yours to add.
+Kraken.jl depends only on ChainRulesCore for its derivative rules. Add ForwardDiff, Zygote or Mooncake
+to your own environment.
 
-### Group speeds (forward mode — one parameter)
-
-Group speeds are defined as the derivative of the angular frequency $\omega = 2\pi f$ with respect to the wavenumbers $k_{r,m}$. This is written as
-
-$$ c_g = \frac{\partial \omega}{\partial k_{r,m}} $$
-
-That is a derivative with respect to a single parameter, so forward mode is the right tool:
+**Forward mode** costs one solve per input, so it suits a handful of parameters. Group speed is
+`dω/dkᵣ`, a derivative with respect to frequency alone:
 
 ```julia
 using ForwardDiff
-using Kraken
 
-
-function calculate_kr_pekeris(freq)
-    ssp, layers, sspHS = pekeris_env()
-    env = UnderwaterEnv(ssp, layers, sspHS)
-    props = AcousticProblemProperties(env, freq)
-    cache = AcousticProblemCache(env, props)
-    wavenumbers = find_kr(env, props, cache)
-    return wavenumbers
-end
-
-freq = 100.0
-group_speeds = 2pi ./ ForwardDiff.derivative(calculate_kr_pekeris, freq)
+dkr_df = ForwardDiff.derivative(f -> kraken_jl(env, f).kr, 100.0)
+group_speeds = 2π ./ dkr_df   # m/s, one per mode
 ```
 
-These are checked against Fortran KRAKEN's own group-speed table on every push, to within 0.1%.
-
-### Whole-profile gradients (reverse mode — many parameters)
-
-For an inversion the unknown is not one number but a whole sound-speed profile, and reverse mode
-returns every derivative in one pass:
+**Reverse mode** costs a fixed multiple of one solve however many inputs there are, so it suits a
+whole sound-speed profile. Build the depth grid outside the differentiated function:
 
 ```julia
-using Kraken, Zygote
+using Zygote
 
-z = collect(range(0.0, 100.0, 50))     # build the depth grid OUTSIDE the differentiated function
+z = collect(range(0.0, 100.0, 50))
 c = fill(1500.0, 50)
 
 function modal_sum(cvec)
     ssp = hcat(z, cvec, zero(cvec), fill(1000.0, 50), zero(cvec), zero(cvec))
-    sspHS = [0.0 343.0 0.0 0.00121 0.0 0.0; 100.0 1600.0 0.0 1500.0 0.0 0.0]
+    sspHS = [0.0 343.0 0.0 1.21 0.0 0.0; 100.0 1600.0 0.0 1500.0 0.0 0.0]
     env = UnderwaterEnv(ssp, [0.0 0.0 100.0], sspHS)
     return sum(kraken_jl(env, 100.0).kr)
 end
 
-grad = Zygote.gradient(modal_sum, c)[1]   # all 50 derivatives, one pass
+grad = Zygote.gradient(modal_sum, c)[1]   # all 50 derivatives in one pass
 ```
 
-Measured on a 2021 M1 — the sum of all modal wavenumbers of that waveguide at 100 Hz, differentiated
-with respect to an `N`-point profile. (The measurement uses the single-mesh
-`bisection`/`solve_for_kr` path rather than `kraken_jl`, so the ratios isolate the cost of
-differentiation from the mesh-refinement loop.)
+At 50 profile points reverse mode is already several times faster than forward mode, and the gap
+grows linearly with the number of points. The [AD page](https://vardister.github.io/Kraken.jl/dev/ad/)
+has the measurements, a worked inversion that recovers a sound-speed profile, and the one caveat: the
+top-level derivative is conditional on the depth mesh, which is chosen from the frequency and
+changes in integer steps.
 
-| `N` | forward / primal | reverse / primal |
-|---:|---:|---:|
-| 1 | 1.1× | 5.3× |
-| 5 | 2.6× | 6.5× |
-| 10 | 5.2× | 6.0× |
-| 50 | 25.7× | 5.8× |
-| 500 | 253× | 5.4× |
+## Validation
 
-Here `N` is the number of inputs (the profile points) and `M` the number of outputs. Forward mode
-costs one pass per input, so it scales as `O(N)`; reverse mode costs one pass per output, so it
-scales as `O(M)` — and a misfit between predicted and measured data is a scalar, so `M = 1`.
+Kraken.jl is checked against unmodified Fortran KRAKEN on every push. The binaries come from
+`AcousticsToolbox_jll`, so CI needs no Fortran compiler, and the comparison goes through the toolbox's
+own `.env`/`.mod` files: nothing here links against Fortran. The test suite compares wavenumbers, mode
+shapes, modal attenuation, group speeds, AD gradients and the `field.exe` pressure field. Set
+`KRAKEN_OALIB_TESTS` to a toolbox `tests/` directory and it also runs the toolbox's own environment
+files. [`test/README.md`](test/README.md) has the tolerances and what each comparison measured.
 
-Forward mode grows linearly with `N`; reverse mode stays flat. The two cross near a dozen parameters,
-and at a 500-point profile reverse mode is 47× faster.
-The residual 5.8× is mostly Zygote's fixed ~0.3 ms tape overhead on a very small solve — at 400 Hz,
-where the same waveguide carries 18 modes, a 50-parameter gradient costs 1.9× the primal.
+## Examples
 
-Reverse mode goes through wavenumbers, mode shapes, and the top-level `kraken_jl`, and works with
-Zygote and Mooncake alike — the rules are written once with ChainRulesCore.
+The scripts in [`examples/`](examples/) have their own environment:
 
-The [documentation's AD page](https://vardister.github.io/Kraken.jl/dev/ad/) has the details,
-including a worked gradient-based inversion that recovers a sound-speed profile from synthetic
-wavenumbers, and the caveats (the top-level gradient is conditional on the mesh schedule).
+```sh
+$ julia --project=examples -e 'using Pkg; Pkg.instantiate()'
+$ julia --project=examples examples/dispersion.jl
+```
 
-## More examples
+| Script | What it shows |
+|---|---|
+| [`deep_water_modes.jl`](examples/deep_water_modes.jl) | A measured 5 km profile over a sediment layer and a rigid basement, and its modes |
+| [`dispersion.jl`](examples/dispersion.jl) | Phase speed, group speed (by ForwardDiff) and attenuation against frequency on a lossy shelf |
+| [`broadband_sweep.jl`](examples/broadband_sweep.jl) | A frequency sweep across threads, checked against the serial result |
+| [`reverse_ad.jl`](examples/reverse_ad.jl) | A tour of reverse-mode AD, with each gradient checked against ForwardDiff and finite differences |
 
-[`examples/reverse_ad.jl`](examples/reverse_ad.jl) is a runnable tour of the AD support:
-`julia --project=test examples/reverse_ad.jl`.
+## Limitations
 
-❗The other files in `examples/` do not currently run: they call an `EnvKRAKEN` API that was removed
-when the Fortran sources moved out of this repository. They are being rewritten against the current
-API.
+- No shear waves: `cs` and `αs` are read and ignored.
+- No leaky modes: attenuation is perturbational, like `kraken.exe`, not the complex solve of `krakenc.exe`.
+- Range-independent only.
+- `:cubic_spline` interpolation is limited to a single medium, because the spline runs through the
+  whole column where KRAKEN splines each medium separately.
 
 ## Contributing
 
-Contributions are welcome! Please fork the repository and submit a pull request with your changes. For major changes, please open an issue first to discuss what you would like to change.
+Contributions are welcome. Please open an issue first for major changes. `test/README.md` explains
+how to run the suite, including against a local Acoustics Toolbox build.

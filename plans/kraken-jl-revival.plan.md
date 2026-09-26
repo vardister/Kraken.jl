@@ -2475,7 +2475,7 @@ a doctest.
     - `CairoMakie.disable_mime!("text/html")` alone makes CairoMakie advertise SVG, which Documenter
       then prefers and takes minutes per heatmap to write. `make.jl` therefore disables both.
 
-### 8.3 [ ] Rewrite the README and refresh the examples
+### 8.3 [x] Rewrite the README and refresh the examples *(completed 2026-09-25)*
 - **Files:** `README.md`, `examples/*.jl`
 - **What:** Rewrite the README around what the package now does. The current group-speed example passes
   `method=Roots.A42()` to a `find_kr` that now takes `ITP()` — convert the README's code blocks to doctests so
@@ -2486,6 +2486,34 @@ a doctest.
 - **Acceptance:** README doctests pass in CI; every file in `examples/` runs.
 - **Dependencies:** 8.2, 6.9, 6.10, 6.11 (the dispersion example is what found D1–D3, and its group-speed
   panel is the end-to-end check that 6.11 worked)
+- **Outcome:**
+  - **README rewritten** around what the package does now: quick start, field and TL, the environment
+    matrices with every keyword option, AD in both modes, validation, examples and limitations.
+    Hand-copied figures that drift (2.7e-5, "167 of 402", the AD cost table) are gone; they are
+    measured on the docs site. The old claim that `.env` files are "read and written" is dropped:
+    the reader and writer are test-only (`test/reference/`), not API.
+  - **README code is tested, not doctested.** `test/readme_tests.jl` runs every ```` ```julia ````
+    block in order in one sandbox module (6 blocks, ~40 s). A `jldoctest` fence renders as plain text
+    on GitHub, and what drifted before was the API, not the output, so running the blocks catches it.
+    The install line is fenced `julia-repl` and the shell commands `sh`, so neither runs. Plotting is
+    described in prose because the test env has no Makie. It is in `KRAKEN_SKIP_TESTS`'s list,
+    `Markdown` is declared in `test/Project.toml`, and it is listed in `test/README.md` and `CLAUDE.md`.
+  - **Examples:** all seven `testkrak*.jl` scripts are deleted. What was worth keeping is rewritten
+    under descriptive names, and `examples/` has its own `Project.toml`, with Kraken via `[sources]`:
+    - `deep_water_modes.jl`, from testkrak1/2. The same measured profile thinned to 21 points, with
+      densities converted from g/cm³ to kg/m³ (they were 1000× off) and the rigid basement kept.
+    - `dispersion.jl`, from testkrak3–6. Phase speed, group speed by ForwardDiff, attenuation, and
+      the Airy phase, on testkrak6's lossy shelf. This is the script that found D1–D3. Its group-speed
+      panel is now smooth, and after 6.9 its cutoffs moved (mode 1 from ~17 Hz to ~8 Hz).
+    - `broadband_sweep.jl`, from the Distributed/`EnvKRAKEN` script. `Threads.@threads`, asserting
+      threaded == serial exactly: 2.2–2.5× on 6 threads.
+    - `reverse_ad.jl` is kept, pointed at the new environment, and its section 7 rewritten: forward
+      and reverse now print the same constant column.
+  - **A new CI job, `Examples`,** runs every script in `examples/`, and the scripts `@assert` their
+    own results. `examples/figures/` is gitignored.
+  - **`docs/src/ad.md`** no longer says forward mode inherits the root solver's truncation error.
+  - **Verified:** each example run to the end in the examples environment, and `readme_tests.jl` on
+    its own (7 pass). The docs build was not rerun: `ad.md`'s change is one prose paragraph.
 
 ### 8.4 [ ] Deploy docs from CI and tag v0.4.0
 - **Files:** `.github/workflows/Docs.yml`, `Project.toml`, `CHANGELOG.md`

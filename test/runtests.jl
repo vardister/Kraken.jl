@@ -76,6 +76,7 @@ let unknown = setdiff(
             "reverse_ad_tests.jl",
             "rrule_tests.jl",
             "fortran_reference_tests.jl",
+            "readme_tests.jl",
         ]),
     )
     isempty(unknown) ||
@@ -111,6 +112,9 @@ end
     # Cross-validation against unmodified kraken.exe from AcousticsToolbox_jll. Self-skipping when
     # no binary resolves, so this is safe to run unconditionally on any platform.
     include_suite("fortran_reference_tests.jl")
+
+    # Every `julia` block in README.md still runs (plan task 8.3).
+    include_suite("readme_tests.jl")
 
     # Performance tests (optional, can be slow)
     if get(ENV, "KRAKEN_RUN_PERFORMANCE_TESTS", "false") == "true"

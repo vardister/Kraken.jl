@@ -92,6 +92,7 @@ of dependency precompilation on the first run after a `Manifest.toml` change.
 | `reverse_ad_tests.jl` | Test | The `ChainRulesCore` rules in `src/kraken_ad.jl` as gradients of compositions: each rule's content in isolation, then Zygote and Mooncake against ForwardDiff and central differences across three environments and three targets, every boundary condition and interpolation mode, attenuation, and the pressure field |
 | `rrule_tests.jl` | Test | The same rules through `ChainRulesTestUtils.test_rrule` — one pullback against finite differences over *every* argument at once. Split out of `reverse_ad_tests.jl` because its `solve_for_kr` case is 373 s of compilation on a cold session |
 | `fortran_reference_tests.jl` | Test | Cross-validation against unmodified `kraken.exe` and `field.exe`; self-skips when no binary resolves |
+| `readme_tests.jl` | Test | Runs every ```` ```julia ```` block of the top-level `README.md`, in order, in one sandbox module (~40 s, mostly Zygote compiling the reverse-mode block) |
 
 ### Optional Tests
 

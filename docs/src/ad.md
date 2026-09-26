@@ -384,11 +384,13 @@ refinement — never had to change:
 | [`bisection`](@ref) | Non-differentiable: mode counting is integer-valued and piecewise constant, so it correctly contributes zero |
 | [`acoustic_field`](@ref), [`transmission_loss`](@ref), [`broadband_field`](@ref) | **No rule.** The field is arithmetic over the wavenumbers and mode shapes, so it is traced, and the cotangent reaches the rules above unchanged. Its depth interpolation is a dozen lines of linear weights rather than an interpolant object, which is what makes tracing it viable |
 
-One consequence of the implicit-function rule is worth knowing because it is a genuine improvement
-over forward mode, not just parity: **the reverse-mode wavenumber derivative does not depend on how
-hard the root solver worked.** It differentiates the equation the root satisfies, not the arithmetic
-of the search. Forward mode differentiates the search and inherits its truncation error; at 250 Hz
-the two disagree by over 1% at default tolerances, and finite differences side with reverse mode.
+One consequence of the implicit-function rule is worth knowing: **the wavenumber derivative does not
+depend on how hard the root solver worked.** It differentiates the equation the root satisfies, not
+the arithmetic of the search. Forward mode gets the same rule from `ext/KrakenForwardDiffExt.jl`, which
+loads with ForwardDiff. After the plain solve, it takes one Newton step in `Dual` arithmetic, which
+sets the partials to ``-D_\theta/D_{k_r}`` and leaves the value unchanged. Before that extension
+existed, ForwardDiff differentiated the search itself, and at 250 Hz it was over 1% from finite
+differences. Now the two modes agree to rounding.
 
 Mooncake reaches the same rules through `ext/KrakenMooncakeExt.jl`, a package extension that loads
 only if you load Mooncake — it does not read `ChainRulesCore` rules directly, so the extension
