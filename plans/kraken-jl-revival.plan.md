@@ -2529,3 +2529,25 @@ a doctest.
   the existing CHANGELOG rather than writing one from scratch, and its "Known limitations" list is what
   mostly changes.
 - **Dependencies:** 8.3
+- **Progress (2026-09-25): local half done, GitHub half waiting on the maintainer.**
+  - **Done:**
+    - `deploydocs` in `docs/make.jl`, authenticating with the workflow's `GITHUB_TOKEN`, so there is no
+      deploy key.
+    - `.github/workflows/Docs.yml`, which builds on every push and PR, and deploys from master (`dev/`)
+      and from `v*` tags (`stable/`, `v0.4.0/`). CI.yml's build-only docs job is removed as redundant.
+    - The CHANGELOG `[0.4.0]` section, dated "unreleased" until registration.
+    - A local docs build: green, doctests included, and deployment skipped as it should be off CI.
+  - **Registry facts that settle this task's registration question:**
+    - General has Kraken 0.2.0–0.3.0 under this repo's UUID, so 0.4.0 is an ordinary minor bump and
+      there is no name collision to decide.
+    - The v0.3.0 tag and release were made by TagBot after JuliaRegistrator registered, so v0.4.0
+      should go the same way rather than being tagged by hand.
+    - There is a stale local-only `v1.2.0` tag (2025, never pushed, never registered). Never
+      `git push --tags` from this clone.
+  - **Remaining, each an explicit go-ahead from the maintainer:**
+    1. Run the full `Pkg.test()`. 8.3 and 8.4 were verified with targeted runs only.
+    2. Push `revival` and merge it into `master`.
+    3. Enable GitHub Pages on the `gh-pages` branch. It is currently off, and the first master build
+       creates the branch.
+    4. Date the CHANGELOG, then comment `@JuliaRegistrator register` on the release commit. TagBot
+       then tags v0.4.0 and writes the release.

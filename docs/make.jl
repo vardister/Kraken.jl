@@ -58,3 +58,10 @@ makedocs(;
     # adding an export without documenting it fails the build.
     checkdocs=:exports,
 )
+
+# Publishes to the `gh-pages` branch, from which GitHub Pages serves the site: `dev/` from every push
+# to master, and a versioned copy (`v0.4.0/`, `stable/`) from every release tag. Anywhere else,
+# including a local build and a push to any other branch, it logs why it is skipping and does nothing,
+# so running this file by hand is still just a build. On GitHub Actions it authenticates with the
+# workflow's own GITHUB_TOKEN (see .github/workflows/Docs.yml), so no deploy key is needed.
+deploydocs(; repo="github.com/vardister/Kraken.jl.git", devbranch="master", push_preview=false)

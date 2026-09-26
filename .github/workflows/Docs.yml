@@ -1,0 +1,38 @@
+name: Documentation
+
+# Builds the docs on every push and pull request, and deploys them to the gh-pages branch from master
+# and from release tags (`deploydocs` in docs/make.jl decides; on other refs it only builds). The
+# build runs Fortran KRAKEN through AcousticsToolbox_jll for the validation page and draws every
+# figure with CairoMakie, so it doubles as the test of the plotting extension.
+on:
+  push:
+    branches: [master, revival]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+permissions:
+  contents: write # push to gh-pages
+  statuses: write # Documenter reports the deployment as a commit status
+
+jobs:
+  docs:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1"
+      - uses: julia-actions/cache@v2
+      - name: Instantiate docs environment
+        run: julia --project=docs -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate()'
+      - name: Build and deploy
+        run: julia --project=docs docs/make.jl
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
