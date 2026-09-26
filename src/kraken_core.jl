@@ -1658,7 +1658,7 @@ function solve_for_kr(span, env, props, cache; method=ITP(), kwargs...)
     end
     prob = IntervalNonlinearProblem{false}(f, span)
     sol = solve(prob, method; kwargs...)
-    return sol.u
+    return implicit_root(sol.u, env, props, cache)
 end
 
 ### Inverse Iteration

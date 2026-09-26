@@ -240,11 +240,11 @@ end
         end
     end
 
-    @testset "the rule is tolerance-independent, ForwardDiff is not" begin
-        # 250 Hz, mode 1. ForwardDiff differentiates the arithmetic of the *last ITP iterate*, so its
-        # gradient carries the solver's truncation error; the rule differentiates the exact root and
-        # does not. Central differences on the primal settle the disagreement — see the plan's
-        # Architecture Decisions.
+    @testset "the rule is tolerance-independent, and ForwardDiff now uses it too" begin
+        # 250 Hz, mode 1. Until plan task 6.11 ForwardDiff differentiated the arithmetic of the *last
+        # ITP iterate*, and here it was 1.3% off `∂kr₁/∂cb`: this testset asserted that the rule was
+        # the closer of the two to central differences. 6.11 gave ForwardDiff the same implicit-function
+        # derivative (`ext/KrakenForwardDiffExt.jl`), so the two now agree to rounding.
         f = θ -> kr_at(θ; freq=250.0, mode=1)
         g_zy = Zygote.gradient(f, θ0)[1]
         g_fw = ForwardDiff.gradient(f, θ0)
@@ -255,11 +255,12 @@ end
         end
 
         @test relerr(g_zy, g_fd) < 1e-4
-        @test relerr(g_zy, g_fd) < relerr(g_fw, g_fd)   # the rule is the closer of the two
+        @test relerr(g_fw, g_zy) < 1e-9
 
-        # Tightening the root tolerance by four orders of magnitude must not move the rule's answer.
-        g_tight = Zygote.gradient(θ -> kr_at(θ; freq=250.0, mode=1, tol=1e-10), θ0)[1]
-        @test relerr(g_zy, g_tight) < 1e-9
+        # Tightening the root tolerance by four orders of magnitude must move neither answer.
+        tight = θ -> kr_at(θ; freq=250.0, mode=1, tol=1e-10)
+        @test relerr(g_zy, Zygote.gradient(tight, θ0)[1]) < 1e-9
+        @test relerr(g_fw, ForwardDiff.gradient(tight, θ0)) < 1e-9
     end
 
     @testset "eigenvector adjoint content — $name" for (name, envf, θ) in

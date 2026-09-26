@@ -369,4 +369,75 @@ using FiniteDiff
             @test rel_error < 0.01  # Less than 1% relative error
         end
     end
+
+    # Plan task 6.11. Before `ext/KrakenForwardDiffExt.jl`, a `Dual` wavenumber's partials were whatever
+    # ITP's last step left there: a secant across a bracket a few ulps wide. Measured by these sweeps
+    # with the extension's method overridden, group speed was off by up to 1.2e-3 on the shelf and
+    # 3.6e-4 on Pekeris, at scattered frequencies, with nothing to tell which. The rule brings both
+    # to 2.1e-7 and 3.4e-8. The single-frequency checks above happened to land on good frequencies.
+    #
+    # Two things the reference has to avoid, both properties of the primal rather than the rule:
+    #  * The sweeps pass `abstol = reltol = 1e-12`. At `kraken_jl`'s default 1e-6 the coarse-mesh root
+    #    is only converged that far, so the primal curve that central differences sample is itself
+    #    rough at that level. That is a separate knob (plan 4.4).
+    #  * A frequency where the mesh gains a point inside the stencil is skipped. The mesh is chosen
+    #    from the frequency, so `kr(f)` jumps there, and a central difference across the jump is off by
+    #    jump/2h. At Pekeris 184 Hz (Nz 230 → 231) that read as 1.8e-4 and grew tenfold per tenfold
+    #    smaller h, while ForwardDiff and Zygote agreed to 1e-15. The derivative is the one conditional
+    #    on the mesh, as `kraken_jl`'s docstring says. That skips 1 of 181 shelf frequencies and 48 of
+    #    191 Pekeris ones.
+    @testset "M6.11: the implicit-function rule for ForwardDiff" begin
+        shelf = UnderwaterEnv(
+            [
+                0.0 1468.3 0.0 1030.0 0.0 0.0
+                74.4 1468.3 0.0 1030.0 0.0 0.0
+                74.4 1445.0 0.0 1600.0 0.0 0.0
+                85.4 1555.0 0.0 1600.0 0.0 0.0
+            ],
+            [0.0 0.0 74.4; 0.0 0.0 85.4],
+            [0.0 343.0 0.0 1.21 0.0 0.0; 85.4 1830.0 0.0 2000.0 0.0 0.0],
+        )
+        pekeris = UnderwaterEnv(pekeris_env()...)
+        tight = (abstol=1e-12, reltol=1e-12)
+
+        # The largest relative error, over every frequency whose stencil stays on one mesh and every
+        # mode present at all three of f - h, f, f + h, between ForwardDiff's ∂kᵣ/∂f and a central
+        # difference.
+        function worst_group_speed_error(env, freqs; h=1e-3)
+            worst = 0.0
+            for f in freqs
+                meshes = unique(AcousticProblemProperties(env, F).Nz_vec for F in (f - h, f, f + h))
+                length(meshes) == 1 || continue
+                kr = F -> kraken_jl(env, F; tight...).kr
+                ad = ForwardDiff.derivative(kr, f)
+                lo, hi = kr(f - h), kr(f + h)
+                n = min(length(ad), length(lo), length(hi))
+                n == 0 && continue
+                fd = (hi[1:n] .- lo[1:n]) ./ 2h
+                worst = max(worst, maximum(abs.(ad[1:n] ./ fd .- 1)))
+            end
+            return worst
+        end
+
+        @test worst_group_speed_error(shelf, 10.0:0.5:100.0) < 1e-6
+        @test worst_group_speed_error(pekeris, 10.0:1.0:200.0) < 1e-6
+
+        # The primal is untouched: a Dual solve carries exactly the plain solve's wavenumbers.
+        for env in (shelf, pekeris), f in (24.0, 91.5, 184.0)
+            primal = Ref{Any}()
+            ForwardDiff.derivative(F -> (k=kraken_jl(env, F).kr; primal[]=ForwardDiff.value.(k); k), f)
+            @test primal[] == kraken_jl(env, f).kr
+        end
+
+        # A parameter that reaches the determinant only through the half-space term.
+        k_ρb = ρb -> kraken_jl(UnderwaterEnv(pekeris_env(; ρb=ρb)...), 100.0; tight...).kr[1]
+        @test ForwardDiff.derivative(k_ρb, 1500.0) ≈ (k_ρb(1500.1) - k_ρb(1499.9)) / 0.2 rtol = 1e-5
+
+        # Nested Duals, i.e. a second derivative. The rule takes one Newton step per nesting level;
+        # without the second step the second derivative would come out wrong.
+        dk = f -> ForwardDiff.derivative(F -> kraken_jl(pekeris, F; tight...).kr[1], f)
+        d2k_ad = ForwardDiff.derivative(dk, 100.0)
+        d2k_fd = (dk(100.01) - dk(99.99)) / 0.02
+        @test d2k_ad ≈ d2k_fd rtol = 1e-4
+    end
 end

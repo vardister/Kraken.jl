@@ -382,6 +382,10 @@ These are facts established by running the code, not assumptions. Tasks below re
   **tolerance-independent and ForwardDiff is not**, so `FiniteDiff` — not ForwardDiff — is the
   arbiter when the two differ; and this task's "matches ForwardDiff to 1e-9" is a statement about
   ForwardDiff's convergence, met at 50 and 100 Hz for every mode, not a bound on the rule.
+  **Superseded by 6.11 (2026-09-25).** ForwardDiff now gets the same implicit-function derivative
+  from `ext/KrakenForwardDiffExt.jl`, so the two modes agree by construction and the disagreement
+  described here no longer exists. The reason for reversing it: the docs recommend ForwardDiff for
+  group speeds, and there the same error reached 1.6% at scattered frequencies.
 
 - **Zygote's overhead is in constructing the SSP interpolant, not in the rules or the solver**
   (measured during 4.2 while writing `examples/reverse_ad.jl` — this is the number 4.8 has to move,
@@ -2069,7 +2073,7 @@ Why none of this was caught:
     floor from 4.4, reproduced in isolation: 2.8e-10 with the default tolerance), and both −5.7e-8
     through `kraken_jl`. Before 6.9 the same check was 5% and 15% off.
 
-### 6.11 [ ] Give ForwardDiff an implicit-function rule for `solve_for_kr`
+### 6.11 [x] Give ForwardDiff an implicit-function rule for `solve_for_kr` *(completed 2026-09-25)*
 - **Files:** `ext/KrakenForwardDiffExt.jl` (new), `Project.toml` (`[weakdeps]`/`[extensions]`),
   `test/automatic_differentiation_tests.jl`
 - **What:** When the problem carries `Dual`s, solve for the root on the primal values. Then set its
@@ -2086,6 +2090,37 @@ Why none of this was caught:
   cases are 1.6% and 0.18%, and the test pins at least one of them. The existing forward-mode and
   Fortran group-speed tests still pass.
 - **Dependencies:** None
+- **Outcome:** `solve_for_kr` now returns `implicit_root(root, env, props, cache)`. That is the
+  identity for plain numbers, and `ext/KrakenForwardDiffExt.jl` (ForwardDiff is a new weak dependency)
+  gives it a method for `Dual`s. The method takes one Newton step in `Dual` arithmetic per nesting level:
+  `k ← k - (D(k) - D₀)/D_k(k)`, with `D₀` the residual at the plain root. The first step sets the
+  first-order partials to exactly `-D_θ/D_k`, the reverse rule's formula at the reverse rule's point.
+  The innermost correction is `0/D_k`, so the primal is bit-identical. `D` and `D_k` come from a new
+  allocation-free `sturm_and_slope` in `src/kraken_ad.jl`, which carries ∂/∂kᵣ through the same
+  recurrence and scaling as `det_sturm`. The design needs no list of which fields carry `Dual`s:
+  `root_numtype` promotes over everything `det_sturm` reads.
+  - **Measured, with `abstol = reltol = 1e-12`**, against central differences over every mode:
+    - shelf, 10:0.5:100 Hz: 1.2e-3 before, 2.1e-7 after;
+    - Pekeris, 10:1:200 Hz: 3.6e-4 before, 3.4e-8 after.
+    The "before" column was measured by overriding the extension's method in a session.
+  - **Correction to the D3 row above:** the 1.6% and 0.18% worst cases were measured at frequencies
+    where the mesh gains a point inside the difference stencil (91.5 Hz shelf, Nz 11 → 12; 184 Hz
+    Pekeris, Nz 230 → 231). There the *primal* jumps, and the central difference is off by jump/2h:
+    it grew tenfold per tenfold smaller h, while ForwardDiff and Zygote agreed to 2e-15. So the real
+    pre-fix error was ~0.1%, not 1.6%. The new sweeps skip frequencies whose stencil crosses a mesh
+    change: 1 of 181 on the shelf, 48 of 191 on Pekeris. The derivative is the one conditional on the
+    mesh, as `kraken_jl`'s docstring already says.
+  - **Other checks in the new testset `"M6.11: the implicit-function rule for ForwardDiff"`:**
+    - the primal is bit-identical under `Dual`s;
+    - a `ρb`-only `Dual` is handled. That one required `sturm_sensitivities` to promote over `g`'s
+      type, a latent bug in the reverse rule's helper;
+    - a nested `Dual` second derivative matches differences of the first to 1e-4.
+  - **4.2's testset** is now "the rule is tolerance-independent, and ForwardDiff now uses it too".
+    ForwardDiff and Zygote agree to 1e-9 at 250 Hz, and both are unmoved by a 1e-10 root tolerance.
+    The 4.2 Architecture Decision is marked superseded.
+  - **Verified:** full `Pkg.test()` (run 13) passed everything except the two sweep assertions,
+    whose frequency-selection problem is described above. After fixing that, the forward AD file ran
+    on its own: 58 pass.
 
 ---
 

@@ -427,10 +427,12 @@ function sturm_sensitivities(kr, env, props, cache)
     e = cache.e_vec
     L = cache.λ_scaling
     N = sum(props.Nz_vec)
-    T = promote_type(typeof(kr), eltype(a), eltype(e), eltype(L))
 
     g = get_g(kr, env, props)             # zero unless the bottom is an acoustic half-space
     ζ = bottom_row_factor(env.bottom_bc)  # ½ where the bottom is a mesh point, 1 for a vacuum bottom
+    # `g` belongs in the promotion: a parameter that reaches `D` only through the half-space (`ρb`, say)
+    # makes `g` a `Dual` while the cache stays `Float64`.
+    T = promote_type(typeof(kr), eltype(a), eltype(e), eltype(L), typeof(g))
 
     # --- Forward sweep -------------------------------------------------------------------------
     # State at the start of step k is `v_k = (p0, p1)`; the step is `v_{k+1} = s_k * M_k * v_k` with
@@ -511,6 +513,72 @@ function half_space_sensitivities(::AcousticHalfspace, dg, kr, env, props)
         dcb=dg * q^2 / (env.cb * env.ρb * β),
         dρb=(-dg * g / env.ρb),
         dfreq=(-dg * q^2 / (props.freq * env.ρb * β)),
+    )
+end
+
+"""
+    sturm_and_slope(kr, env, props, cache) -> (D, dD_dkr)
+
+The rescaled Sturm determinant `D` at `kr`, as [`det_sturm`](@ref) computes it, together with its
+derivative with respect to `kr`, both in whatever arithmetic the arguments carry.
+
+The derivative rides along the three-term recurrence as a second sequence, so this is one pass with
+no allocation. That is what the ForwardDiff rule in `ext/KrakenForwardDiffExt.jl` needs: it takes a
+Newton step in `Dual` arithmetic per call. [`sturm_sensitivities`](@ref) gives the same `∂D/∂kr` but
+also every other partial, from a reverse sweep over stored intermediates. The rescaling factors are
+piecewise constant (see `scale_const`), so both sequences are scaled by the same factor and the
+ratio `D / dD_dkr` is unaffected.
+"""
+function sturm_and_slope(kr, env, props, cache)
+    a = cache.a_vec
+    e = cache.e_vec
+    L = cache.λ_scaling
+    N = sum(props.Nz_vec)
+    g = get_g(kr, env, props)
+    dg = half_space_sensitivities(one(kr), kr, env, props).dkr   # ∂g/∂kr, zero without a half-space
+    ζ = bottom_row_factor(env.bottom_bc)
+    T = promote_type(typeof(kr), eltype(a), eltype(e), eltype(L), typeof(g))
+
+    p0, p1 = zero(T), one(T)
+    d0, d1 = zero(T), zero(T)
+    p2, d2 = zero(T), zero(T)
+    for k in 1:N
+        α, dα = k == N ? (ζ * a[k] - g, -dg) : (a[k], zero(dg))
+        c = kr^2 * L[k] - α
+        p2 = c * p1 - e[k]^2 * p0
+        d2 = (2 * kr * L[k] - dα) * p1 + c * d1 - e[k]^2 * d0
+        s = scale_const(p1, p2)
+        p0, p1 = p1 * s, p2 * s
+        d0, d1 = d1 * s, d2 * s
+    end
+    return p1, d1
+end
+
+"""
+    implicit_root(kr, env, props, cache)
+
+The converged wavenumber `kr` from [`solve_for_kr`](@ref), with its derivatives taken from the implicit
+function theorem rather than from the bracketing solver's iterations.
+
+For plain numbers this returns `kr` unchanged. The method that does the work is in
+`ext/KrakenForwardDiffExt.jl`, for problems that carry ForwardDiff `Dual`s anywhere `det_sturm` reads
+them: the cache, `cb`, `ρb` or `freq`. Without it, a `Dual` wavenumber's partials are whatever
+ITP's last step left there. That is usually close, but it comes from a secant across a bracket a few
+ulps wide, and it was up to 1.6% off in group speed (plan task 6.11).
+"""
+implicit_root(kr, env, props, cache) = implicit_root(root_numtype(kr, env, props, cache), kr, env, props, cache)
+implicit_root(::Type, kr, env, props, cache) = kr
+
+# Every number `det_sturm` reads, so an extension can dispatch on whether any of them is a `Dual`.
+function root_numtype(kr, env, props, cache)
+    return promote_type(
+        typeof(kr),
+        eltype(cache.a_vec),
+        eltype(cache.e_vec),
+        eltype(cache.λ_scaling),
+        typeof(env.cb),
+        typeof(env.ρb),
+        typeof(props.freq),
     )
 end
 
