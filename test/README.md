@@ -48,13 +48,14 @@ obtainable through the MCP (see "Running the suite through the kaimon MCP" below
 Toolbox checkout present. (At the end of 5.3 it was 1558; 5.4 added 50 attenuation-AD assertions and
 5.5 added 37 for the lossy standard environments.)
 
-**Counting the TestItems files from a worktree needs a path filter.** `@run_package_tests` walks the
-whole package directory, and `.claude/worktrees/` is inside it — so a filter that only matches on
-`endswith(t.filename, "integration_tests.jl")` silently runs *every* sibling worktree's copy too and
-reports their sum. Add the worktree name:
+**Selecting TestItems by file needs a path prefix, not just a file name.** `@run_package_tests` walks
+the whole package directory, and `.claude/worktrees/` is inside it — so a filter that only matches on
+`endswith(t.filename, "integration_tests.jl")` silently runs *every* worktree's copy too and reports
+their sum. `runtests.jl` guards the full suite against this by keeping only items under its own
+`test/` directory; a single-file run needs the same prefix:
 
 ```julia
-@run_package_tests filter = t -> occursin("plan-5-attenuation", t.filename) &&
+@run_package_tests filter = t -> startswith(t.filename, joinpath(pwd(), "test", "")) &&
                                  endswith(t.filename, "integration_tests.jl")
 ```
 

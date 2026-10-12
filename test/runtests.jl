@@ -98,7 +98,13 @@ end
 
 @testset "Kraken.jl" begin
     # Run TestItems-based tests. These are the cheap ones (~40 s together) and always run.
-    @run_package_tests
+    #
+    # Only the items in this checkout's own test/ directory. `@run_package_tests` walks the whole
+    # package tree, and git worktrees live inside it under `.claude/worktrees/`, so unfiltered it also
+    # runs every worktree's copy of these files against this checkout's src/, inflating the count.
+    # A prefix match on this file's directory rather than excluding `.claude/`, because a run from
+    # *inside* a worktree has `.claude/` in every path.
+    @run_package_tests filter = t -> startswith(t.filename, joinpath(@__DIR__, ""))
 
     # Include standard @testset-based tests
     include_suite("numerical_methods_tests.jl")

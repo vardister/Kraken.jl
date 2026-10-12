@@ -2545,7 +2545,8 @@ a doctest.
     - There is a stale local-only `v1.2.0` tag (2025, never pushed, never registered). Never
       `git push --tags` from this clone.
   - **Remaining, each an explicit go-ahead from the maintainer:**
-    1. Run the full `Pkg.test()`. 8.3 and 8.4 were verified with targeted runs only.
+    1. ~~Run the full `Pkg.test()`.~~ Done 2026-10-12: 2533 pass, 0 fail, with the worktree filter
+       in `runtests.jl` in place.
     2. Push `revival` and merge it into `master`.
     3. Enable GitHub Pages on the `gh-pages` branch. It is currently off, and the first master build
        creates the branch.

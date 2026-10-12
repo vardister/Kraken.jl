@@ -366,7 +366,6 @@ julia> density(ρ, 25.0)
 ```
 """
 SampledDensity(depth, ρ) = SampledDensity1D(depth, ρ, DataInterpolations.LinearInterpolation)
-SampledDensity(depth, ρ, type::Symbol) = SampledDensity1D(depth, ρ, type)
 
 function Base.show(io::IO, ρint::SampledDensity1D{T1,T2,T3}) where {T1,T2,T3}
     # Mirrors the SampledSSP1D method above: the third slot is the interpolant, `f`. There is no
@@ -416,7 +415,6 @@ julia> attenuation(α, 50.0)
 ```
 """
 SampledAttenuation(depth, α) = SampledAttenuation1D(depth, α, DataInterpolations.LinearInterpolation)
-SampledAttenuation(depth, α, type::Symbol) = SampledAttenuation1D(depth, α, type)
 
 function Base.show(io::IO, αint::SampledAttenuation1D{T1,T2,T3}) where {T1,T2,T3}
     return print(io, "SampledAttenuation1D{", T1, ",", T2, ",", αint.f, "}(", length(αint.z), " points)")
