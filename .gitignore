@@ -29,6 +29,9 @@ plans/
 # Resolved environments. Kraken is a library, so manifests are not committed — see
 # test/README.md for why the test environment must be dev-linked by hand.
 Manifest.toml
+# Julia ≥ 1.10 also writes versioned manifests (e.g. Manifest-v1.12.toml) when several Julia
+# versions share an environment.
+Manifest-v*.toml
 
 # Figures written by the scripts in examples/
 examples/figures/
