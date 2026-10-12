@@ -798,7 +798,15 @@ end
     @test Base.get_extension(Kraken, :KrakenMakieExt) === nothing
     sol = kraken_jl(UnderwaterEnv(pekeris_env()...), 100.0)
     plotting = (
-        plot_modes, plot_ssp, plot_ssp!, plot_tl, plot_tl!, plot_tl_range, plot_tl_range!, plot_dispersion, plot_arrivals
+        plot_modes,
+        plot_ssp,
+        plot_ssp!,
+        plot_tl,
+        plot_tl!,
+        plot_tl_range,
+        plot_tl_range!,
+        plot_dispersion,
+        plot_arrivals,
     )
     for f in plotting
         err = try
