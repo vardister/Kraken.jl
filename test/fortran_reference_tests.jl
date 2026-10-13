@@ -1195,6 +1195,11 @@ const KR = KrakenReference
                         @test_skip false
                     else
                         @test KR.max_group_speed_reldiff(c) < 1e-3
+                        # Rows are paired by wavenumber, and an unmatched row is dropped rather than
+                        # failed, so check that the comparison did not quietly shrink: the .prt
+                        # prints at least min(M, 30) of the M modes, and all but a near-cutoff one or
+                        # two must match. Without this a pairing bug could pass by comparing nothing.
+                        @test length(c.group_speed_reldiff) >= min(c.n_compared, 30) - 2
                         @test all(isfinite, c.group_speed_julia)
                         # A trapped mode's group speed is bounded by the medium sound speeds.
                         @test all(1000.0 .< c.group_speed_julia .< 2000.0)

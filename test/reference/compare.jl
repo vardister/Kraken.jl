@@ -267,8 +267,21 @@ function compare_with_fortran(
             binary = second.binary
         end
         if grp !== nothing && has_group_speeds(grp)
-            rows = [i for (i, mode) in enumerate(grp.m) if 1 <= mode <= n]
-            modes = grp.m[rows]
+            # Pair each printed row with a Julia mode by *wavenumber*, not by mode number. The rows
+            # usually come from a second, krakenc.exe run, a different program from the one `n`
+            # counts, and nothing guarantees it numbers the modes the same way: near cutoff it can
+            # find a mode the others do not, which shifts every number after it. Index pairing
+            # then compares neighbouring modes. A row only counts if its kᵣ matches the Julia
+            # mode's to 1e-4, an order looser than any wavenumber tolerance asserted on these
+            # environments and orders tighter than the gap between adjacent modes.
+            kr_all = Float64.(real.(sol.kr))
+            matched = map(eachindex(grp.m)) do i
+                k = real(grp.kᵣ[i])
+                m = argmin(abs.(kr_all .- k))
+                return abs(kr_all[m] - k) <= 1e-4 * abs(k) ? m : 0
+            end
+            rows = [i for i in eachindex(matched) if matched[i] > 0]
+            modes = matched[rows]
             # Group speed is dω/dkᵣ; forward-mode AD straight through the solver gives it directly.
             dkr_dω = ForwardDiff.derivative(ω -> kraken_jl(env, ω / (2π); abstol=atol, reltol=rtol).kr, 2π * freq)
             vg_julia = [1 / dkr_dω[m] for m in modes]
