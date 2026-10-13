@@ -17,7 +17,13 @@ smallest mode-shape correlation.
 
 Fields: `freq`, `n_julia`, `n_fortran`, `n_compared`, `kr_julia`, `kr_fortran`, `kr_absdiff`,
 `kr_reldiff`, `alpha_julia`, `alpha_fortran`, `alpha_absdiff`, `alpha_reldiff`, `mode_corr`,
-`group_speed_julia`, `group_speed_fortran`, `group_speed_reldiff`, `depths`, `warnings`, `binary`.
+`group_speed_julia`, `group_speed_fortran`, `group_speed_reldiff`, `depths`, `warnings`, `binary`,
+`group_speed_detail`.
+
+`group_speed_detail` is, when group speeds were compared, one named tuple per compared row —
+`(julia_mode, fortran_mode, kr_julia, kr_fortran, vg_julia, vg_fortran, reldiff)` — plus the path of the
+binary that printed them in `group_speed_binary`. It exists so a group-speed disagreement can be traced
+to a mode from a CI log alone, where the Fortran binary cannot be rerun by hand.
 
 `alpha_*` are the **imaginary** parts of the wavenumbers — the modal attenuation. They are zero on
 both sides for a lossless environment; see [`max_alpha_reldiff`](@ref) for why they get a tolerance
@@ -43,6 +49,8 @@ struct FortranComparison
     depths::Vector{Float64}
     warnings::Vector{String}
     binary::String
+    group_speed_detail::Union{Nothing,Vector{NamedTuple}}
+    group_speed_binary::Union{Nothing,String}
 end
 
 max_kr_reldiff(c::FortranComparison) = isempty(c.kr_reldiff) ? NaN : maximum(c.kr_reldiff)
@@ -257,6 +265,8 @@ function compare_with_fortran(
     vg_julia = nothing
     vg_fortran = nothing
     vg_reldiff = nothing
+    vg_detail = nothing
+    vg_binary = nothing
     if group_speeds
         grp = ref.grp
         binary = ref.binary
@@ -287,6 +297,18 @@ function compare_with_fortran(
             vg_julia = [1 / dkr_dω[m] for m in modes]
             vg_fortran = grp.v[rows]
             vg_reldiff = abs.(vg_julia .- vg_fortran) ./ abs.(vg_fortran)
+            vg_detail = NamedTuple[
+                (
+                    julia_mode=modes[j],
+                    fortran_mode=grp.m[rows[j]],
+                    kr_julia=kr_all[modes[j]],
+                    kr_fortran=real(grp.kᵣ[rows[j]]),
+                    vg_julia=vg_julia[j],
+                    vg_fortran=vg_fortran[j],
+                    reldiff=vg_reldiff[j],
+                ) for j in eachindex(modes)
+            ]
+            vg_binary = binary
         end
     end
 
@@ -310,6 +332,8 @@ function compare_with_fortran(
         ref.depths,
         ref.warnings,
         ref.binary,
+        vg_detail,
+        vg_binary,
     )
 end
 

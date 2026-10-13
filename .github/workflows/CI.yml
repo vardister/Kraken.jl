@@ -20,8 +20,9 @@ jobs:
     name: Julia ${{ matrix.version }} - ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     # The full suite took 28-42 min on macOS runners by 2026-09 and outgrew 45 with Milestones 6-8;
-    # most of it is AD compilation (see test/README.md). 75 leaves room without hiding a hang.
-    timeout-minutes: 75
+    # most of it is AD compilation (see test/README.md). By 2026-10 macOS took ~49 min on Julia 1.10
+    # and lts, and over 75 on Julia 1 (killed at the limit). 120 is headroom, not a target.
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:

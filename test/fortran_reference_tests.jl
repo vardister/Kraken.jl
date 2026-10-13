@@ -1195,6 +1195,13 @@ const KR = KrakenReference
                         @test_skip false
                     else
                         @test KR.max_group_speed_reldiff(c) < 1e-3
+                        if KR.max_group_speed_reldiff(c) >= 1e-3
+                            # Only CI's Linux binary has disagreed, and it cannot be rerun by hand,
+                            # so leave the evidence in the log: every row, worst first.
+                            worst = sort(c.group_speed_detail; by=r -> -r.reldiff)
+                            @warn "group-speed disagreement for $(case.name) at 100 Hz" binary = c.group_speed_binary n_julia =
+                                c.n_julia n_fortran = c.n_fortran rows = join(string.(worst), "\n")
+                        end
                         # Rows are paired by wavenumber, and an unmatched row is dropped rather than
                         # failed, so check that the comparison did not quietly shrink: the .prt
                         # prints at least min(M, 30) of the M modes, and all but a near-cutoff one or
