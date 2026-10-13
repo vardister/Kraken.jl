@@ -324,10 +324,13 @@ Three caveats the suite encodes rather than hides:
   narrower and can miss a mode sitting right at the bottom cutoff. Seen on `munk_env` at 100 Hz
   (204 vs 205) and 400 Hz (817 vs 818), always with Julia one short. Only that environment is
   allowed any slack; anywhere else a count mismatch fails.
-- **`AcousticsToolbox_jll`'s `kraken.exe` reports every group speed as `0.00000`.** Wavenumbers and
-  mode shapes are correct and match the 2023 OALIB build digit for digit; only `VG` is lost, and the
-  same jll's `krakenc.exe` is unaffected. `compare_with_fortran(...; group_speeds=true)` therefore
-  re-runs with `krakenc.exe` to get a reference. Group speeds are off by default because obtaining
+- **`AcousticsToolbox_jll`'s `kraken.exe` does not compute group speeds.** Wavenumbers and mode shapes
+  are correct and match the 2023 OALIB build digit for digit; only `VG` is lost, and the same jll's
+  `krakenc.exe` is unaffected. What `kraken.exe` prints instead depends on the platform: `0.00000`
+  for every mode on macOS, and leftover memory on Linux, usually absurd but sometimes plausible.
+  Munk mode 199 came out 1500.15 m/s against a true 1452.6, which kept CI red from plan task 4.7
+  (2026-08-09) until 2026-10-13. `compare_with_fortran(...; group_speeds=true)` therefore *always*
+  takes the reference from a `krakenc.exe` run, never from the column `kraken.exe` printed. Group speeds are off by default because obtaining
   the Julia side means a ForwardDiff pass through the whole solver (~4 s).
 - **A record ends where Fortran stops reading it, not at end of line.** `READ( ENVFile, * ) BotOpt,
   Sigma` is a list-directed read of exactly two items and **discards the rest of the record**. The

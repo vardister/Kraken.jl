@@ -257,8 +257,11 @@ Whether a table returned by [`read_grp`](@ref) actually carries group speeds.
 column.** Its wavenumbers and mode shapes are correct and agree digit for digit with a local
 Acoustics Toolbox build; only `VG` is lost. What lands in the column is platform-dependent: the
 macOS binary prints `0.00000` for every mode, while the Linux one prints whatever was in the
-uninitialised array — denormals and huge values such as `0.968142-315` or `0.212024+162`. So the
-test cannot be "are they all zero"; it is whether every entry is a physically possible speed. The same jll's `krakenc.exe` is fine, and so is
+uninitialised array — denormals and huge values such as `0.968142-315` or `0.212024+162`, **but also,
+sometimes, a perfectly plausible speed**: Munk at 100 Hz printed 1500.15 m/s for mode 199, whose
+correct value is 1452.6 (CI, 2026-10-13). So the test cannot be "are they all zero"; it is whether every
+entry is a physically possible speed, and even that only catches the obvious cases. A `true` from this
+predicate on that binary is not evidence the values are right. The same jll's `krakenc.exe` is fine, and so is
 the 2023 OALIB build of both binaries — so this is a regression in that one binary, not a property
 of the format or of the environment.
 

@@ -218,9 +218,9 @@ Solve `env` at `freq` with both Kraken.jl and Fortran KRAKEN and report the diff
 - `atol`, `rtol` — root-finder tolerances forwarded to `kraken_jl`.
 - `group_speeds` — also compare group speeds. **Off by default**, for two reasons: Kraken.jl gets
   them by differentiating `kraken_jl` with ForwardDiff, which costs seconds rather than
-  milliseconds, and `AcousticsToolbox_jll`'s `kraken.exe` does not report them at all (see
-  [`has_group_speeds`](@ref)). When the primary run turns out to have none, a second run with
-  `complex=true` is made purely to obtain them.
+  milliseconds, and `AcousticsToolbox_jll`'s `kraken.exe` cannot be trusted for them (see
+  [`has_group_speeds`](@ref)). They always come from `krakenc.exe`: unless the primary run already
+  was one (`complex=true`), a second, complex run is made purely to obtain them.
 - `complex`, `bindir`, `keep_files` and any `write_env_file` keyword are forwarded to
   [`run_fortran_kraken`](@ref).
 
@@ -270,8 +270,14 @@ function compare_with_fortran(
     if group_speeds
         grp = ref.grp
         binary = ref.binary
-        if grp === nothing || !has_group_speeds(grp)
-            # The jll's kraken.exe zeroes the column; krakenc.exe on the same input does not.
+        if !complex
+            # Group speeds always come from krakenc.exe, never from AcousticsToolbox_jll v2025.9's
+            # kraken.exe, which gets them wrong differently on each platform: the macOS build prints
+            # 0.00000 for every mode, and the Linux build prints plausible values that are not all
+            # right -- Munk at 100 Hz, mode 199, wavenumber matching krakenc's and Kraken.jl's to 8
+            # digits: krakenc 1452.59 m/s, Kraken.jl 1452.47, Linux kraken.exe 1500.15 (CI,
+            # 2026-10-13). Falling back only when the column is all zeros let the Linux values
+            # through and made the comparison platform-dependent.
             second = run_fortran_kraken(env, freq; complex=true, kwargs...)
             grp = second.grp
             binary = second.binary

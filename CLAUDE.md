@@ -142,9 +142,12 @@ Things that will bite you here, all established by running the code and recorded
 
 - **`kraken.exe` exits 0 even on a fatal error.** Scan the generated `.prt` for `ERROR`; never trust
   the exit code.
-- **`AcousticsToolbox_jll` v2025.9's `kraken.exe` reports every group speed as `0.00000`.** Its
-  wavenumbers and mode shapes are correct; only `VG` is lost, and `krakenc.exe` is unaffected. Use
-  `complex=true` for anything needing group speeds.
+- **`AcousticsToolbox_jll` v2025.9's `kraken.exe` does not compute group speeds.** Its wavenumbers and
+  mode shapes are correct; only `VG` is lost, and `krakenc.exe` is unaffected. macOS prints `0.00000`;
+  Linux prints uninitialised memory, which can look plausible (Munk mode 199: 1500.15 m/s against a
+  true 1452.6) and passes `has_group_speeds`. Take group speeds from `complex=true`, always, never
+  from a `kraken.exe` column that merely looks filled in. This kept Linux CI red from 2026-08-09 to
+  2026-10-13 while macOS passed.
 - **Neither output file dominates on precision.** The `.mod` is single precision throughout; the
   `.prt` prints `Re(kᵣ)` with 10 digits but `alpha` with 2. Wavenumber comparisons want the `.prt`,
   attenuation work wants the `.mod`.

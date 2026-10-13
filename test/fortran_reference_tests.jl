@@ -1188,19 +1188,24 @@ const KR = KrakenReference
                     c = KR.compare_with_fortran(case.build(), 100.0; group_speeds=true, nmesh=fine_mesh)
 
                     if c.group_speed_reldiff === nothing
-                        # No binary here reports group speeds (AcousticsToolbox_jll's kraken.exe
-                        # writes 0.00000 for every VG). compare_with_fortran already retries with
-                        # krakenc; if that also fails there is nothing to compare against.
+                        # krakenc.exe reported none either (compare_with_fortran always takes group
+                        # speeds from it -- the jll's kraken.exe column is unreliable on every
+                        # platform, see has_group_speeds), so there is nothing to compare against.
                         @info "no group speeds reported for $(case.name); skipping" maxlog = 5
                         @test_skip false
                     else
                         @test KR.max_group_speed_reldiff(c) < 1e-3
                         if KR.max_group_speed_reldiff(c) >= 1e-3
                             # Only CI's Linux binary has disagreed, and it cannot be rerun by hand,
-                            # so leave the evidence in the log: every row, worst first.
+                            # so leave the evidence in the log: the worst rows, each on its own line.
                             worst = sort(c.group_speed_detail; by=r -> -r.reldiff)
+                            # The 8 worst only: a longer string is elided in the middle by the
+                            # logger, which is where the interesting rows would be.
                             @warn "group-speed disagreement for $(case.name) at 100 Hz" binary = c.group_speed_binary n_julia =
-                                c.n_julia n_fortran = c.n_fortran rows = join(string.(worst), "\n")
+                                c.n_julia n_fortran = c.n_fortran
+                            for r in worst[1:min(8, end)]
+                                @warn "  mode $(r.julia_mode) (Fortran $(r.fortran_mode)): kr $(r.kr_julia) vs $(r.kr_fortran), vg $(r.vg_julia) vs $(r.vg_fortran), rel $(r.reldiff)"
+                            end
                         end
                         # Rows are paired by wavenumber, and an unmatched row is dropped rather than
                         # failed, so check that the comparison did not quietly shrink: the .prt
