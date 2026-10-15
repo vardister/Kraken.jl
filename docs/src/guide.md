@@ -100,8 +100,8 @@ plot_tl_range(sol, 50.0:5.0:10_000.0, 36.0, 55.0)
 ```
 
 The phase convention is KRAKEN's, `exp(i(ωt − kᵣr))`, and the amplitude is normalized to a source of
-unit pressure at 1 m. That is why `field.exe`'s output can be compared with no rescaling, and the
-[Validation](@ref validation) page does exactly that.
+unit pressure at 1 m, so `field.exe`'s output can be compared with no rescaling. The
+[Validation](@ref validation) page makes that comparison.
 
 ## A pulse
 
@@ -145,10 +145,10 @@ dkr_df = ForwardDiff.derivative(f -> kraken_jl(env, f).kr, 100.0)
 group_speeds = 2π ./ dkr_df
 ```
 
-The group speeds lie *below* the water sound speed, as they should: in this waveguide, energy
-travels more slowly than the sound speed of the water.
+The group speeds lie *below* the water's 1500 m/s: in this waveguide, energy travels more slowly than
+sound in the water does.
 
-Where these speeds come from is clearest across frequency. [`plot_dispersion`](@ref) solves at each
+The dispersion behind these speeds shows across frequency. [`plot_dispersion`](@ref) solves at each
 frequency and draws each mode's phase speed. A mode appears at its cutoff, where its phase speed is
 the seabed's 1600 m/s, and falls towards the water's 1500 m/s as frequency rises. The steeper the
 curve, the more its group speed differs from its phase speed:

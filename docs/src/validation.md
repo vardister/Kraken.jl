@@ -1,8 +1,7 @@
 # [Validation against Fortran KRAKEN](@id validation)
 
-Kraken.jl is a reimplementation, so the question that matters is whether it gives the answers the
-original gives. This page answers it with numbers, and **every number on it is computed when the
-documentation is built**. The page runs Kraken.jl and unmodified Fortran `kraken.exe` and `field.exe`
+Kraken.jl reimplements KRAKEN, and this page measures how far its answers are from the original's.
+**Every number on it is computed when the documentation is built.** The page runs Kraken.jl and unmodified Fortran `kraken.exe` and `field.exe`
 on the same environments and tabulates how far apart they are. Nothing below is copied in by hand,
 so the page cannot claim an agreement the current code does not have.
 
@@ -22,7 +21,7 @@ const KR = KrakenReference
 # A page of empty tables would be worse than no page, so a missing binary stops the build.
 KR.fortran_available() || error("Fortran KRAKEN is not available: ", KR.describe())
 
-sci(x) = isnan(x) ? "—" : iszero(x) ? "0" : @sprintf("%.1e", x)
+sci(x) = isnan(x) ? "n/a" : iszero(x) ? "0" : @sprintf("%.1e", x)
 corr(x) = @sprintf("%.7f", x)
 table(header, rows) = Markdown.parse(join(vcat(
     "| " * join(header, " | ") * " |",
@@ -68,7 +67,7 @@ cutoff is found by one solver's mesh and not the other's.
 
 A lossy environment gives complex wavenumbers. Both programs solve the real problem and add the loss
 as a first-order perturbation, so the imaginary part `Im(kᵣ)`, the modal attenuation, is compared
-separately. It warrants a looser tolerance: it is the smallest part of the number, and Fortran writes
+separately, with a looser tolerance: it is the smallest part of the number, and Fortran writes
 it only to the single-precision `.mod` file. The Pekeris cases are at 100 Hz, in dB per wavelength.
 
 ```@example validation
@@ -86,13 +85,13 @@ end
 table(["Case", "Modes", "max rel Δ Re(kᵣ)", "max rel Δ Im(kᵣ)"], rows)
 ```
 
-The half-space rows show the method's own limit, not a discrepancy between the two programs. The
+The half-space rows measure a limit of the perturbation method, which both programs use. The
 perturbation is first order in `2ωα_b/(c_b γ²)`, where `γ` is the mode's decay rate in the bottom,
 and `γ` goes to zero at the bottom cutoff. So a strongly attenuating half-space degrades the
 least-trapped mode first. Ten times the half-space loss costs about a hundred times the agreement.
 The two programs agree exactly to first order and keep different second-order terms. Loss in the water
-column or a sediment layer has no such problem. [Environments](@ref env-attenuation) has more on where each
-approximation runs out.
+column or a sediment layer does not degrade this way. [Environments](@ref env-attenuation) describes
+the accuracy limit of each approximation.
 
 ## Boundary conditions
 
@@ -120,14 +119,13 @@ push!(rows, ["`munk_env`, n²-linear, `PressureRelease()` / `RigidBoundary()`", 
 table(["Top / bottom", "Hz", "Modes", "max rel Δkᵣ", "min corr"], rows)
 ```
 
-The 50 Hz rigid-bottom row is looser than the rest for a mundane reason: its last mode is close to
-grazing, at `kᵣ` ≈ 0.046 against `ω/c` ≈ 0.209, so a tiny absolute error in `kᵣ²` looks large
+The 50 Hz rigid-bottom row is looser than the rest because its last mode is close to grazing, at `kᵣ` ≈ 0.046 against `ω/c` ≈ 0.209, so a tiny absolute error in `kᵣ²` looks large
 relative to `kᵣ`.
 
 ## Sound-speed interpolation
 
-The three interpolations KRAKEN offers give genuinely different answers from the same table, so
-matching the right one matters. The test profile is a coarse, strongly curved duct: five samples
+The three interpolations KRAKEN offers give different wavenumbers from the same table, so this
+section checks that each Kraken.jl option matches its Fortran counterpart. The test profile is a coarse, strongly curved duct: five samples
 50 m apart over a 1700 m/s half-space, so the interpolants disagree between samples. Each row is a
 Kraken.jl interpolation, each column a Fortran one, and each cell the max relative Δkᵣ between them
 at 50 Hz.
@@ -152,14 +150,14 @@ The diagonal is the agreement. The off-diagonal entries show how far apart the i
 themselves are. They are at least three orders of magnitude larger, so a solve that used the wrong
 interpolation could not pass.
 
-## A field worth looking at: the Munk sound channel
+## Munk sound channel transmission loss
 
-The tables below reduce each comparison to a number. This section shows one in full, for a case
-chosen to be hard: the Munk deep-water profile at 50 Hz, with the source at 1000 m, just above the
-sound-channel axis, out to 100 km. The field has everything a normal-mode model can get wrong. There
-are 102 modes. There is a near-surface shadow zone where they cancel to 110 dB and more. And there
-are convergence zones about 60 km apart, where refracted energy returns to the surface, which depend
-on the relative phases of all the modes staying right across 100 km. Both programs compute the field
+The tables on this page reduce each comparison to a number. This section shows one field in full:
+the Munk deep-water profile at 50 Hz, with the source at 1000 m, just above the sound-channel axis,
+out to 100 km. The case is hard for three reasons. There are 102 modes. There is a near-surface
+shadow zone where they cancel to 110 dB and more. And there are convergence zones about 60 km apart,
+where refracted energy returns to the surface, which appear only if the relative phases of all the
+modes stay right across 100 km. Both programs compute the field
 on the same 201-depth × 397-range grid.
 
 ```@example validation
@@ -188,7 +186,7 @@ Markdown.parse(@sprintf("RMS difference over the grid: **%.3f dB**, over %d poin
 ```
 
 The difference panel is on a ±0.5 dB scale and is nearly blank. What structure it has is where the
-field is weakest. In the shadow zone, TL is above 110 dB because a hundred modes very nearly cancel,
+field is weakest. In the shadow zone, TL is above 110 dB because a hundred modes nearly cancel,
 so any small difference in the individual modes survives the sum at full size. The two programs'
 meshes differ, and Fortran passes its modes to `field.exe` through a `.mod` file in single
 precision. The individual specks are interference nulls, where TL changes by tens of dB within one
@@ -213,8 +211,8 @@ plain TL matrix, so `field.exe`'s output is drawn exactly as Kraken.jl's is.
 ## Pressure field and transmission loss
 
 The field from [`acoustic_field`](@ref) against `field.exe`, each computed from its own program's
-modes for the same environment. The grid is 19 ranges from 1 to 10 km by 9 receiver depths, with the source at 36% of the water depth.
-The differences are in transmission loss, in dB.
+modes for the same environment. The grid is 19 ranges from 1 to 10 km by 9 receiver depths, with
+the source at 36% of the water depth. The differences are in transmission loss, in dB.
 
 ```@example validation
 field_envs = ["`pekeris_env`" => UnderwaterEnv(pekeris_env()...), "`one_layer_env`" => UnderwaterEnv(one_layer_env()...)]
@@ -243,7 +241,7 @@ the toolbox's `tests/` directory) and keeps it out of this build. The latest cou
 features block the remaining files, are in
 [`test/README.md`](https://github.com/vardister/Kraken.jl/blob/master/test/README.md).
 
-## What is not validated, because it is not implemented
+## Unimplemented features
 
 - **Leaky modes.** Modes with phase speed above the bottom sound speed need a complex root finder
   (`krakenc.exe`). Kraken.jl finds trapped modes only.
@@ -257,7 +255,7 @@ features block the remaining files, are in
 To compare against a particular Acoustics Toolbox build rather than the packaged one, point
 `KRAKEN_FORTRAN_BIN` at a directory containing `kraken.exe` and rebuild these docs or rerun the tests.
 
-!!! note "KrakenFortran.jl is a different thing"
+!!! note "KrakenFortran.jl is a separate package"
     [KrakenFortran.jl](https://github.com/vardister/KrakenFortran.jl) is a separate, optional package
     that calls Fortran KRAKEN *in process* through `ccall`. Kraken.jl does not depend on it and does
     not use it for validation: its sources are a MEX-adapted fork of an older KRAKEN, so it is a

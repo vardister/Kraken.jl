@@ -2,14 +2,14 @@
 
 Kraken.jl is differentiable end to end, in **both** modes. You can take the derivative of a
 wavenumber, of a mode shape, or of any scalar built from them, with respect to any environment
-parameter — sound speeds, densities, layer thicknesses, frequency.
+parameter: sound speeds, densities, layer thicknesses, frequency.
 
-Which mode you want depends on how many parameters you are differentiating with respect to:
+Which mode to use depends on how many parameters you are differentiating with respect to:
 
 | | Cost | Use it for |
 |---|---|---|
-| **Forward** ([ForwardDiff.jl](https://github.com/JuliaDiff/ForwardDiff.jl)) | one solve *per parameter* | a handful of parameters — group speeds, a sensitivity to bottom speed |
-| **Reverse** ([Zygote.jl](https://github.com/FluxML/Zygote.jl), [Mooncake.jl](https://github.com/chalk-lab/Mooncake.jl)) | a fixed multiple of one solve, *independent of parameter count* | many parameters — fitting a whole sound-speed profile |
+| **Forward** ([ForwardDiff.jl](https://github.com/JuliaDiff/ForwardDiff.jl)) | one solve *per parameter* | a handful of parameters, such as group speeds or a sensitivity to bottom speed |
+| **Reverse** ([Zygote.jl](https://github.com/FluxML/Zygote.jl), [Mooncake.jl](https://github.com/chalk-lab/Mooncake.jl)) | a fixed multiple of one solve, *independent of parameter count* | many parameters, such as a whole sound-speed profile |
 
 Nothing needs to be enabled. Kraken.jl depends on
 [ChainRulesCore.jl](https://github.com/JuliaDiff/ChainRulesCore.jl), which carries the reverse-mode
@@ -18,8 +18,8 @@ rules; Zygote, ForwardDiff and Mooncake are yours to add.
 ## Forward mode: group speeds
 
 Group speed is the derivative of angular frequency ``\omega = 2\pi f`` with respect to the horizontal
-wavenumber ``k_{r,m}``, so it is a derivative with respect to a *single* parameter — forward mode's
-home ground.
+wavenumber ``k_{r,m}``, so it is a derivative with respect to a *single* parameter, which forward mode
+computes in one pass.
 
 ```julia
 using Kraken, ForwardDiff
@@ -50,7 +50,7 @@ depth = 100.0
 # Build an environment from an N-point sound-speed profile on a fixed depth grid.
 function profile_env(cvec, z)
     N = length(z)
-    # Columns are [z, cp, cs, ρ, αp, αs] — the KRAKEN .env SSP record layout.
+    # Columns are [z, cp, cs, ρ, αp, αs], the KRAKEN .env SSP record layout.
     ssp = hcat(z, cvec, zero(cvec), fill(1000.0, N), zero(cvec), zero(cvec))
     layers = [0.0 0.0 depth]
     sspHS = [
@@ -71,7 +71,7 @@ g = Zygote.gradient(cc -> modal_sum(cc, z), c)[1]
 
 !!! note "Build the depth grid outside the differentiated function"
     `z` is constructed before the gradient is taken. It does not depend on the unknowns, and `range`
-    is one of the few things reverse mode cannot trace — it stores its endpoints in an
+    is one of the few things reverse mode cannot trace: it stores its endpoints in an
     extended-precision form that has no derivative rule. `collect` it once, outside.
 
 Forward mode agrees, which is how the rules are tested:
@@ -83,12 +83,11 @@ g_fwd = ForwardDiff.gradient(cc -> modal_sum(cc, z), c)
 
 ## Cost against parameter count
 
-This is the whole reason reverse mode exists here. Timings below are from
-`test/performance_tests.jl` on a 2021 M1 laptop — differentiating the sum of the wavenumbers of a
-Pekeris-like waveguide at 100 Hz with respect to an `N`-point profile — `N` inputs and a single
-output, `M = 1` (throughout, `N` counts inputs and `M` outputs). They use the single-mesh
-[`bisection`](@ref)/[`solve_for_kr`](@ref) path rather than [`kraken_jl`](@ref), so the ratios
-isolate the cost of differentiation from the mesh-refinement loop:
+The timings below are from `test/performance_tests.jl` on a 2021 M1 laptop. The benchmark
+differentiates the sum of the wavenumbers of a Pekeris-like waveguide at 100 Hz with respect to an
+`N`-point profile: `N` inputs and a single output, `M = 1` (throughout, `N` counts inputs and `M`
+outputs). It uses the single-mesh [`bisection`](@ref)/[`solve_for_kr`](@ref) path rather than
+[`kraken_jl`](@ref), so the ratios isolate the cost of differentiation from the mesh-refinement loop:
 
 | `N` | primal | forward | reverse | forward / primal | reverse / primal |
 |---:|---:|---:|---:|---:|---:|
@@ -101,15 +100,14 @@ isolate the cost of differentiation from the mesh-refinement loop:
 
 (The test asserts the first four rows; the last two are the same benchmark run out further.)
 
-Forward mode's multiple of the primal grows linearly with `N`, exactly as the theory says; reverse
-mode's sits flat at about 6×. The two cross near a dozen parameters, and past that the gap widens
-without limit — at `N = 50` reverse mode is already 4.4× faster, at `N = 500` it is **47×** faster,
-and nothing about that trend turns around.
+Forward mode's multiple of the primal grows linearly with `N`. Reverse mode's stays between 5.3× and
+6.5× across a 500-fold range of `N`. The two cross between 10 and 50 parameters. At `N = 50` reverse
+mode is 4.4× faster than forward mode, and at `N = 500` it is **47×** faster.
 
-That 6× is not a floor on reverse mode's cost, it is a floor on reverse mode's *overhead*: Zygote
-spends about 0.3 ms building and replaying the tape whatever the problem is, and the 100 Hz Pekeris
-solve above is small enough (5 modes, 0.07 ms) that the overhead dominates the ratio. Hold the
-parameter count at 50 and make the physics bigger instead, and the multiple falls away:
+Most of that 6× is fixed overhead. Zygote spends about 0.3 ms building and replaying the tape
+regardless of problem size, and the 100 Hz Pekeris solve above takes 0.07 ms for 5 modes, so the
+overhead dominates the ratio. Holding the parameter count at 50 and raising the frequency instead,
+the multiple drops from 46× to 1.9×:
 
 | Frequency | Modes | primal | reverse | reverse / primal |
 |---:|---:|---:|---:|---:|
@@ -119,8 +117,8 @@ parameter count at 50 and make the physics bigger instead, and the multiple fall
 | 200 Hz | 9 | 0.214 ms | 0.667 ms | 3.1× |
 | 400 Hz | 18 | 0.835 ms | 1.60 ms | 1.9× |
 
-So the rule of thumb is the usual reverse-mode one — a gradient costs a small multiple of a solve —
-and the multiple gets *better*, not worse, on the problems big enough for it to matter.
+A gradient costs a small multiple of a solve, and the multiple shrinks as the solve grows: at 400 Hz,
+with 18 modes, the gradient of all 50 inputs costs less than two solves.
 
 The benchmark runs as part of the optional performance suite and asserts the *shape* of this
 scaling, so a regression that reintroduced per-parameter cost fails CI:
@@ -131,10 +129,9 @@ KRAKEN_RUN_PERFORMANCE_TESTS=true julia --project=. -e 'using Pkg; Pkg.test()'
 
 ## Worked example: recovering a sound-speed profile
 
-This is the use case the reverse-mode work exists for. We generate synthetic wavenumbers from a known
-profile, throw the profile away, and recover it from the wavenumbers alone by gradient descent.
-
-The data are the lowest few modal wavenumbers at three frequencies — 14 numbers for 8 unknowns.
+This example generates synthetic wavenumbers from a known profile, discards the profile, and
+recovers it from the wavenumbers alone by gradient descent. The data are the lowest few modal
+wavenumbers at three frequencies: 14 numbers for 8 unknowns.
 
 ```@example ad
 z_inv = collect(range(0.0, depth, 8))
@@ -151,8 +148,8 @@ data = [model_kr(c_true, f, n) for (f, n) in zip(freqs, nmodes)]
 nothing # hide
 ```
 
-The misfit is the squared wavenumber residual. The `1e-12` divisor is cosmetic — it puts the loss in
-units of "how many parts in ``10^{-6}`` of ``k_r`` are we off by", which is easier to read than
+The misfit is the squared wavenumber residual. The `1e-12` divisor only rescales: it measures the
+residual in units of ``10^{-6}\,\mathrm{m}^{-1}``, so the printed misfit is not a column of
 ``10^{-8}``-sized numbers:
 
 ```@example ad
@@ -160,9 +157,8 @@ misfit(cvec) = sum(sum(abs2, model_kr(cvec, f, n) .- d) for (f, n, d) in zip(fre
 nothing # hide
 ```
 
-We start from a prior that has the linear trend right and misses the structure entirely — which is
-the realistic situation, since a climatological profile gets you the trend and nothing else. Adam is
-written out in full here rather than pulled from a package, because the point is that the *only*
+The starting prior has the linear trend and none of the sinusoidal structure, as a climatological
+profile would. Adam is written out in full rather than taken from a package, to show that the *only*
 thing Kraken.jl supplies is `Zygote.gradient(misfit, cvec)`:
 
 ```@example ad
@@ -216,26 +212,24 @@ plot_ssp([
 ])
 ```
 
-Every iteration of that loop cost one gradient — and one gradient costs about what one forward solve
-costs, whether the profile has 8 points or 500. With forward mode the same loop would have cost 8
-solves per iteration, and 500 solves per iteration for a finely sampled profile. That is the
-difference between an inversion you run and one you describe.
+Each iteration of that loop costs one gradient, which the benchmark above puts at 5 to 7 solves
+whether the profile has 8 points or 500. Forward mode's cost per iteration grows with the point
+count, to 253 solves at 500 points.
 
-!!! warning "Starting point matters — this is a non-convex problem"
+!!! warning "The misfit is non-convex, so the starting point matters"
     Modal inversion has local minima, and reverse-mode AD does not remove them. Starting the same
     loop from a flat 1500 m/s profile instead of the linear prior gets stuck about 18 m/s away from
-    the truth with a misfit that has stopped falling. That is a property of the physics, not of the
-    gradients: from a start within a few m/s of the truth the same optimizer converges to
-    ``10^{-3}`` m/s. Real inversions handle this with a decent prior, multiple restarts, or a global
-    search on top — all of which are still cheaper with reverse-mode gradients driving them.
+    the truth with a misfit that has stopped falling. The minimum belongs to the misfit, and exact
+    gradients do not change it: from a start within a few m/s of the truth the same optimizer
+    converges to ``10^{-3}`` m/s. Real inversions handle this with a prior, multiple restarts, or a
+    global search on top, and each of those still runs on the same gradients.
 
 ## Worked example: a seabed sound speed from transmission loss
 
 The inversion above fits *wavenumbers*, and no hydrophone measures a wavenumber. This one fits
 transmission loss, which is what a hydrophone does measure, and solves for the quantity a survey
-usually wants out of it: the sound speed of the seabed. Everything the field adds on top of the
-solver — the mode sum and the depth interpolation — is differentiated here, and none of it needed a
-rule of its own to be.
+usually wants out of it: the sound speed of the seabed. What the field adds on top of the solver,
+the mode sum and the depth interpolation, is differentiated here without a rule of its own.
 
 The water column is taken as known and the seabed sound speed is the unknown:
 
@@ -272,23 +266,22 @@ tl_misfit(cb) = sum(sum(abs2, tl_of(cb, f, n) .- d) for (f, n, d) in zip(tl_freq
 nothing # hide
 ```
 
-Two choices in there are the difference between an inversion and a random walk, and both are about
-keeping the misfit a function a gradient can descend.
+Two choices in that code keep the misfit smooth enough for gradient descent to work.
 
 !!! note "Fit incoherent TL, not coherent"
     A coherent mode sum has the interference nulls in it, and a null moves in range as `cb` changes,
-    so the squared residual between two coherent TL curves is violently multimodal: scanned at 5 m/s
+    so the squared residual between two coherent TL curves is multimodal: scanned at 5 m/s
     over 1560–1760 m/s it shows eight local minima, 15 to 35 m/s apart, and its value at 1600 m/s
     (1205) is *lower* than at 1605 (1347) even though 1605 is closer to the truth. Gradient descent on that
     lands wherever it started. The incoherent sum has thrown the phase away, so what is left is the
-    smooth mean level, and the misfit falls monotonically to zero from both sides. This is the
-    same reason real matched-field work smooths or averages before it optimizes — it is not a
-    limitation of the gradients.
+    smooth mean level, and the misfit falls monotonically to zero from both sides. Matched-field
+    inversion smooths or averages before it optimizes for the same reason. The gradients of the
+    coherent misfit are correct; the function they describe is the problem.
 
 !!! note "Fix `nmodes`, for the same reason the mesh schedule is fixed"
     The *number* of trapped modes is an integer function of `cb`: over the same span the 150 Hz solve
     goes from 5 modes to 10, one at a time. Each new mode arrives with a finite amount of energy, so
-    a misfit summed over "however many modes there were" is a step function — it jumps by a factor of
+    a misfit summed over whatever number of modes each solve returns is a step function: it jumps by a factor of
     four at 1600→1605 m/s and again at 1675→1680. Summing a *fixed* number of modes is the
     derivative that is well defined, and it is the same integer-valued discontinuity already
     documented for the mesh schedule under [Caveats](@ref).
@@ -313,7 +306,7 @@ function invert_cb(cb0; iters=200, α=3.0, decay=0.995)
     for t in 1:iters
         g = Zygote.gradient(tl_misfit, cb)[1]    # <- the whole of the Kraken.jl side
         m = 0.9 * m + 0.1 * g
-        v = 0.9 * v + 0.1 * g^2                  # β₂ = 0.9, not 0.999 — see below
+        v = 0.9 * v + 0.1 * g^2                  # β₂ = 0.9, not 0.999; see below
         cb -= (α * decay^t) * (m / (1 - 0.9^t)) / (sqrt(v / (1 - 0.9^t)) + 1e-12)
         iszero(t % 50) && push!(history, (t, tl_misfit(cb), cb))
     end
@@ -346,35 +339,34 @@ axislegend(ax; position=:rt)
 fig
 ```
 
-Ninety m/s of error in the starting guess comes back as a fraction of one. Starting from the other
-side converges harder still — 1750 m/s reaches 1650.0001 m/s, with the misfit down at ``10^{-11}``.
+The 90 m/s error in the starting guess ends as a fraction of 1 m/s. Starting from the other side,
+at 1750 m/s, the inversion reaches 1650.0001 m/s with the misfit at ``10^{-11}``.
 
 !!! tip "Adam's β₂ has to be shortened here"
-    The textbook ``\beta_2 = 0.999`` does not work on this misfit, and the failure is quiet rather
-    than loud. The gradient falls by about four orders of magnitude between the starting point and
-    the minimum, and a second-moment memory a thousand steps long keeps the large early gradients in
-    `v` long after they are gone — so `m / √v` collapses to a small fraction of 1 and the step size
-    collapses with it. The search still descends monotonically, it just crawls: the same 200
-    iterations reach 1622 m/s instead of 1650. ``\beta_2 = 0.9`` forgets fast enough to follow the
-    gradient's own scale. Worth knowing generally, because any misfit built from a solver output
-    spans decades like this one.
+    The textbook ``\beta_2 = 0.999`` fails on this misfit without raising an error. The gradient
+    falls by about four orders of magnitude between the starting point and the minimum, and a
+    second-moment memory a thousand steps long keeps the large early gradients in `v` long after
+    they are gone. `m / √v` collapses to a small fraction of 1, and the step size collapses with it.
+    The search still descends monotonically, but the same 200 iterations reach 1622 m/s instead of
+    1650. ``\beta_2 = 0.9`` forgets fast enough to follow the gradient's own scale. The same applies
+    to any misfit whose gradient spans several decades between the start and the minimum.
 
 !!! warning "Transmission loss does not determine the whole environment"
-    Open the water-column profile up as an unknown alongside `cb` — nine parameters instead of one,
-    on the same data — and the optimizer drives the misfit from 143 down to ``1.6\times10^{-8}``,
-    a fit ten orders of magnitude better than anything above, while landing on `cb = 1593` m/s and a
-    profile whose RMS error is *worse* than the prior it started from (12.0 m/s against 5.3). It has
-    not failed; it has found a genuinely different environment that reproduces the data to
-    round-off. Adding a nine-depth vertical array and four frequencies narrows it but does not close
-    it. That is non-uniqueness in the physics, and no amount of gradient accuracy touches it — it is
-    what priors, regularization and joint inversion of independent data are for. The gradients make
-    each attempt cheap; they do not make the problem well posed.
+    Open the water-column profile up as an unknown alongside `cb` (nine parameters instead of one,
+    on the same data) and the optimizer drives the misfit from 143 down to ``1.6\times10^{-8}``,
+    a fit ten orders of magnitude better than anything above. It lands on `cb = 1593` m/s and a
+    profile whose RMS error is *worse* than the prior it started from: 12.0 m/s against 5.3. The
+    optimizer did its job. It found a different environment that reproduces the data to round-off.
+    Adding a nine-depth vertical array and four frequencies narrows the gap but does not close it.
+    This is non-uniqueness in the physics, which more accurate gradients cannot fix; priors,
+    regularization and joint inversion of independent data address it. The gradients make each
+    attempt cheap. They do not make the problem well posed.
 
-## What actually carries the derivatives
+## Where the derivative rules attach
 
-The solver is not traced. Reverse mode enters through explicit rules attached at four seams, which is
-why the internals — in-place cache mutation, an `argmax`, a sign-fixing branch, an iterative
-refinement — never had to change:
+The solver is not traced. Reverse mode enters through explicit rules attached at four seams, so the
+internals (in-place cache mutation, an `argmax`, a sign-fixing branch, an iterative refinement)
+never had to change:
 
 | Seam | Rule |
 |---|---|
@@ -384,8 +376,8 @@ refinement — never had to change:
 | [`bisection`](@ref) | Non-differentiable: mode counting is integer-valued and piecewise constant, so it correctly contributes zero |
 | [`acoustic_field`](@ref), [`transmission_loss`](@ref), [`broadband_field`](@ref) | **No rule.** The field is arithmetic over the wavenumbers and mode shapes, so it is traced, and the cotangent reaches the rules above unchanged. Its depth interpolation is a dozen lines of linear weights rather than an interpolant object, which is what makes tracing it viable |
 
-One consequence of the implicit-function rule is worth knowing: **the wavenumber derivative does not
-depend on how hard the root solver worked.** It differentiates the equation the root satisfies, not
+Because of the implicit-function rule, **the wavenumber derivative does not depend on how hard the
+root solver worked.** It differentiates the equation the root satisfies, not
 the arithmetic of the search. Forward mode gets the same rule from `ext/KrakenForwardDiffExt.jl`, which
 loads with ForwardDiff. After the plain solve, it takes one Newton step in `Dual` arithmetic, which
 sets the partials to ``-D_\theta/D_{k_r}`` and leaves the value unchanged. Before that extension
@@ -393,7 +385,7 @@ existed, ForwardDiff differentiated the search itself, and at 250 Hz it was over
 differences. Now the two modes agree to rounding.
 
 Mooncake reaches the same rules through `ext/KrakenMooncakeExt.jl`, a package extension that loads
-only if you load Mooncake — it does not read `ChainRulesCore` rules directly, so the extension
+only if you load Mooncake. Mooncake does not read `ChainRulesCore` rules directly, so the extension
 declares each one a Mooncake primitive.
 
 ## Caveats
@@ -402,12 +394,13 @@ declares each one a Mooncake primitive.
   depth mesh until the wavenumbers converge, and how many levels that takes is an integer decision in
   the parameters. It is held fixed, which is the standard treatment, but it makes the gradient
   discontinuous at parameter values where the level count changes. Finite differences taken across
-  such a point measure the jump rather than the slope — if you see AD and finite differences disagree
-  on a thickness or a bottom speed, check whether the mesh moved. `dont_break=true` fixes the
-  schedule by construction.
-* **A field summed over "all" modes is a step function of the parameters.** The number of trapped
-  modes is an integer that changes as a parameter crosses a cutoff, and the mode arriving at that
-  cutoff carries a finite amount of energy — so the field jumps, exactly as the mesh schedule does.
+  such a point measure the jump rather than the slope. If AD and finite differences disagree on a
+  thickness or a bottom speed, check whether the mesh moved. `dont_break=true` fixes the schedule by
+  construction.
+* **A field summed over every trapped mode is a step function of the parameters.** The number of
+  trapped modes is an integer that changes as a parameter crosses a cutoff, and the mode arriving at
+  that cutoff carries a finite amount of energy, so the field jumps the way it does when the mesh
+  schedule changes.
   Pass an explicit `nmodes` when you differentiate a field, low enough that the solve returns at
   least that many everywhere the search goes. The worked example above measures the size of the jump
   it avoids.
@@ -421,31 +414,30 @@ declares each one a Mooncake primitive.
 * **A lossy environment makes `kr` complex, which narrows what you may differentiate.** The rule is
   the standard one: real parameters in, real loss out, complex only in between. `sum(imag, sol.kr)`,
   `sum(real, sol.kr)` and `sum(abs2, sol.kr)` are all fine and every backend agrees on them. A
-  *complex-valued* loss is not — Zygote raises `"Output is complex, so the gradient is not defined."`
-  rather than silently picking a conjugation convention, which is correct: take `real`, `imag` or
-  `abs2` first. (ForwardDiff will happily hand back a `Complex` derivative for the same function, so
-  the two backends disagree about whether the question is even well posed.)
+  *complex-valued* loss is not: Zygote raises `"Output is complex, so the gradient is not defined."`
+  rather than picking a conjugation convention. Take `real`, `imag` or `abs2` first. (ForwardDiff
+  returns a `Complex` derivative for the same function, so the two backends disagree about whether
+  the question is well posed.)
 * **Do not differentiate attenuation at ``\alpha = 0``.** ``\mathrm{Im}(k_r)`` is identically zero
-  below zero attenuation and linear above it, so that point is a kink with no two-sided derivative —
-  and the two modes silently take *opposite sides*. ForwardDiff sees the perturbation through
-  `is_lossy` and returns the right-hand derivative; Zygote evaluates `is_lossy` on the primal and
-  returns the left-hand one, which is zero. One hair above zero they agree to ``10^{-15}``.
-  Differentiate at a nonzero attenuation, which is the only place the derivative means anything.
+  below zero attenuation and linear above it, so that point is a kink with no two-sided derivative,
+  and the two modes take *opposite sides* without a warning. ForwardDiff sees the perturbation
+  through `is_lossy` and returns the right-hand derivative; Zygote evaluates `is_lossy` on the primal
+  and returns the left-hand one, which is zero. Just above zero they agree to ``10^{-15}``.
+  Differentiate at a nonzero attenuation, where the derivative is two-sided.
 * **Reverse mode over a lossy environment means Zygote.** Mooncake cannot trace the complex
   arithmetic that attenuation introduces and fails with
   `"It is not permissible to bitcast to a differentiable type during AD"`. The failing call is inside
   Mooncake's own `Complex` support, so there is no rule Kraken.jl could add to fix it. Lossless
   solves are unaffected and both backends handle them.
 
-## Going further
+## Example script and derivations
 
 [`examples/reverse_ad.jl`](https://github.com/vardister/Kraken.jl/blob/master/examples/reverse_ad.jl)
-in the repository is a runnable script covering all of the above in more depth, including the
+in the repository is a runnable script that covers this page in more depth. It includes the
 tolerance-independence demonstration, mode-shape functionals, and a case where the layer-thickness
 derivatives were validated against central differences of unmodified Fortran `kraken.exe`.
 
-For the derivations themselves — where each rule comes from, why the Sturm rescaling cancels, why the
-eigenvector solve has to be projected, and what the dropped interpolant term actually costs — see
-[`docs/notebooks/implicit-differentiation.nb`](https://github.com/vardister/Kraken.jl/blob/master/docs/notebooks/implicit-differentiation.nb),
-a Wolfram notebook that derives each rule symbolically and checks it numerically against this
-implementation.
+[`docs/notebooks/implicit-differentiation.nb`](https://github.com/vardister/Kraken.jl/blob/master/docs/notebooks/implicit-differentiation.nb)
+is a Wolfram notebook that derives each rule symbolically and checks it numerically against this
+implementation. It shows where each rule comes from, why the Sturm rescaling cancels, why the
+eigenvector solve has to be projected, and what dropping the interpolant term costs.
