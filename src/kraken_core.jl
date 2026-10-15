@@ -56,7 +56,7 @@ export modal_attenuation, complex_soundspeed, add_attenuation
 #   * `mode_eigenvector`                                   — rrule: eigenvector adjoint
 #
 # The mesh is only *half* discrete, and getting that wrong loses a gradient silently. `Nz_vec` is an
-# integer point count and is genuinely piecewise constant in the parameters. But `Δz_vec = h ./ Nz_vec`
+# integer point count and is piecewise constant in the parameters. But `Δz_vec = h ./ Nz_vec`
 # is linear in the layer thickness, and `zn_vec` is built from it — so both carry real derivative
 # information with respect to layer depths, and the discretization-error part of `∂kr/∂depth` flows
 # through them. `AcousticProblemProperties` is therefore *on* the seam and its construction must stay
@@ -105,8 +105,8 @@ const SSP_INTERPOLATION_CHARS = Dict('C' => :c_linear, 'N' => :n2_linear, 'S' =>
 """
     DEFAULT_SSP_INTERPOLATION::Symbol
 
-The SSP interpolation used when an environment does not name one: `:c_linear`, which is what every
-result in this package predates the option and was computed with.
+The SSP interpolation used when an environment does not name one: `:c_linear`. Every result this
+package computed before the option existed used it.
 
 # Example
 ```jldoctest
@@ -256,7 +256,7 @@ end
 """
 Sound speed profile based on measurements at discrete depths `z` in meters and sound speed `c` in m/s.
 
-`mode` is the interpolation between samples — see [`SampledSSP`](@ref). `f` interpolates whatever that
+`mode` is the interpolation between samples; see [`SampledSSP`](@ref). `f` interpolates whatever that
 mode interpolates, which for `:n2_linear` is `1/c²` rather than `c`; [`soundspeed`](@ref) is the only
 thing that should read it.
 """
@@ -281,12 +281,12 @@ SampledSSP1D(depth, c, f) = SampledSSP1D(depth, c, f, DEFAULT_SSP_INTERPOLATION)
 Create a sound speed profile from measurements at discrete depths `depth` in meters (positive
 downwards, from the surface) and sound speeds `c` in m/s. Query it with [`soundspeed`](@ref).
 
-`mode` is one of `:c_linear` (the default — `c` linear in depth), `:n2_linear` (`1/c²` linear in
+`mode` is one of `:c_linear` (the default, `c` linear in depth), `:n2_linear` (`1/c²` linear in
 depth) or `:cubic_spline`. All three agree at the sample depths and differ between them.
 
 `:cubic_spline` requires strictly increasing depths, so it is limited to a single medium: this package
 spells a layer interface as two samples at (numerically) the same depth, and one spline through the
-whole column would be wildly wrong there rather than merely inexact. KRAKEN splines each medium
+whole column would have a near-infinite slope there and oscillate on both sides. KRAKEN splines each medium
 separately; doing the same here needs a per-medium profile this type does not have yet.
 
 # Example
@@ -313,7 +313,7 @@ function SampledSSP(depth, c, mode::Symbol)
         k === nothing || throw(
             ArgumentError(
                 "Cubic-spline interpolation needs strictly increasing depths, but this profile repeats " *
-                "$(depth[k]) m — the layer interface between media. KRAKEN splines each medium separately; " *
+                "$(depth[k]) m, the layer interface between media. KRAKEN splines each medium separately; " *
                 "Kraken.jl builds one interpolant for the whole column, so :cubic_spline is limited to " *
                 "single-medium profiles.",
             ),
@@ -381,7 +381,7 @@ abstract type SampledAttenuation <: AttenuationProfile end
 $(TYPEDEF)
 Attenuation profile based on measurements at discrete depths `z` in meters and attenuation `α`.
 
-`α` is stored in **whatever units the environment declared** — the sixth column of a KRAKEN `.env`
+`α` is stored in **whatever units the environment declared**. The sixth column of a KRAKEN `.env`
 SSP record means six different things depending on the third character of the top-option string, and
 four of the six conversions need the frequency, which an environment does not know. The conversion
 happens at solve time; see [`attenuation_nepers_per_m`](@ref) and `UnderwaterEnv`'s `atten_units`.
@@ -402,7 +402,7 @@ end
 
 Create an attenuation profile from values `α` sampled at discrete depths `depth` in meters (positive
 downwards). `α` is in whatever units the enclosing [`UnderwaterEnv`](@ref) declares as `atten_units`.
-Interpolation is linear, to match [`SampledSSP`](@ref) and [`SampledDensity`](@ref) — the three
+Interpolation is linear, to match [`SampledSSP`](@ref) and [`SampledDensity`](@ref): the three
 profiles are evaluated on the same mesh and a different interpolator here would put the attenuation
 somewhere the sound speed is not. Query it with [`attenuation`](@ref).
 
@@ -527,7 +527,7 @@ Convert an attenuation `α` given in `units` into nepers per metre, at sound spe
 frequency `freq` (Hz).
 
 `units` is one of `:nepers_per_m`, `:dB_per_m`, `:dB_per_kmHz`, `:dB_per_wavelength`, `:Q`,
-`:loss_parameter` — the six conventions `CRCI` implements, keyed off `TopOpt(3:3)` (see
+`:loss_parameter`, the six conventions `CRCI` implements, keyed off `TopOpt(3:3)` (see
 [`ATTENUATION_UNIT_CHARS`](@ref)).
 
 | symbol | char | meaning | conversion |
@@ -541,7 +541,7 @@ frequency `freq` (Hz).
 
 Four of the six depend on frequency, which is why an environment stores the raw values and this
 conversion happens inside the solve. The degenerate guards (`c == 0`, `c·α == 0`) are KRAKEN's own
-and return zero rather than a division by zero — `Q = 0` in particular is how a lossless medium is
+and return zero rather than a division by zero. `Q = 0` in particular is how a lossless medium is
 spelled under that convention, so it has to mean "no loss" and not `Inf`.
 
 # Example
@@ -639,7 +639,7 @@ A homogeneous fluid half-space beyond the boundary: KRAKEN's `A` option. This is
 boundary of an [`UnderwaterEnv`](@ref), whose half-space sound speed, density and attenuation are its
 `cb`, `ρb` and `αb`.
 
-Supported at the bottom only. Above the surface it describes no modal problem — see
+Supported at the bottom only. Above the surface it describes no modal problem; see
 [`assert_supported_boundaries`](@ref).
 
 # Example
@@ -718,8 +718,7 @@ solver reads.
 
 `α` and `αb` are the water-column and half-space attenuations in the units named by `atten_units`;
 nothing converts them until a frequency is known. An environment whose attenuations are all zero is
-lossless and [`kraken_jl`](@ref) then returns real wavenumbers, exactly as it did before attenuation
-existed — see [`is_lossy`](@ref).
+lossless and [`kraken_jl`](@ref) then returns real `Float64` wavenumbers; see [`is_lossy`](@ref).
 
 `top_bc` and `bottom_bc` are the [`BoundaryCondition`](@ref)s closing the problem above the water
 column and below the last medium.
@@ -750,7 +749,7 @@ Build an environment from the three matrices of a KRAKEN `.env` file. Every
 is the usual way in.
 
 # Arguments
-- `ssp`: the sound-speed table, one row per sample, columns `[z, cp, cs, ρ, αp, αs]` — depth (m,
+- `ssp`: the sound-speed table, one row per sample, columns `[z, cp, cs, ρ, αp, αs]`: depth (m,
   positive downwards), compressional and shear speed (m/s; shear is unused), density (**kg/m³**, not
   the g/cm³ of a `.env` file), compressional and shear attenuation. A layer interface is written as
   two rows at the same depth (or `z` and `z + eps(z)`), one for each side.
@@ -765,7 +764,7 @@ is the usual way in.
 - `ssp_interp`: `:c_linear`, `:n2_linear` or `:cubic_spline`; see [`SampledSSP`](@ref).
 - `top_bc`, `bottom_bc`: the [`BoundaryCondition`](@ref)s.
 
-`depth` — the interface with the bottom half-space — is taken from `layers[end, 3]` in both this
+`depth`, the interface with the bottom half-space, is taken from `layers[end, 3]` in both this
 constructor and the `UnderwaterEnvFORTRAN` one. `layers` is what defines the media boundaries (it is
 already the sole input to `get_thickness`, which sizes the finite-difference mesh); the `ssp` table
 is only samples *within* those media. They coincide in every well-formed environment, but when they
@@ -862,12 +861,12 @@ end
 Whether `env` declares any attenuation at all, in the water column or in the bottom half-space.
 
 This is the switch that decides whether [`kraken_jl`](@ref) returns complex wavenumbers or real ones.
-It is deliberately a test on the *stored* values rather than on the converted ones: `Q = 0` converts
+It tests the *stored* values rather than the converted ones, on purpose: `Q = 0` converts
 to zero nepers/m and `α = 0` does too, so both spellings of "lossless" take the same branch.
 
 Under AD this is a discrete decision on a parameter value, in the same family as the mesh-schedule
-choice in `kraken_jl`, and `α = 0` is a genuine kink: `imag(kr)` is identically zero below it and
-linear above. The two AD modes therefore take **opposite sides** there and neither complains —
+choice in `kraken_jl`, and `α = 0` is a kink: `imag(kr)` is identically zero below it and
+linear above. The two AD modes therefore take **opposite sides** there and neither warns.
 ForwardDiff's `iszero` on a `Dual` sees the seed and takes the lossy branch (right-hand derivative),
 while Zygote evaluates this on the primal and takes the lossless one (zero). Differentiate at a
 nonzero attenuation. See the note at the end of `src/kraken_ad.jl`.
@@ -982,8 +981,8 @@ close_bottom(::BoundaryCondition, tail, x) = x
     close_medium(i, n, env, head, tail, x)
 
 Medium `i` of `n`'s samples `x`, extended up to the medium's top interface with `head` and, for the
-last medium, down to the bottom with `tail` — except at an end where the boundary is itself a mesh
-point and `x` already reaches it.
+last medium, down to the bottom with `tail`. At an end where the boundary is itself a mesh point,
+`x` already reaches it and is not extended.
 """
 function close_medium(i, n, env, head, tail, x)
     x = i == 1 ? close_top(env.top_bc, head, x) : vcat(head, x)
@@ -1115,7 +1114,7 @@ Number of mesh points for a layer of thickness `h` at target spacing `Δz`, neve
 
 Split out as its own function only so the AD rules can mark it non-differentiable in one place:
 `ceil` has no derivative and reverse mode refuses to trace it, even though the result is an `Int` and
-is genuinely piecewise constant in the parameters.
+is piecewise constant in the parameters.
 """
 n_mesh_points(h, Δz, factor) = max(10, ceil(Int, h / Δz) * factor)
 
@@ -1145,15 +1144,15 @@ end
 """
     layer_mesh(z_top, z_bot, Nz)
 
-`Nz` equally spaced depths from `z_top` to `z_bot` inclusive — `collect(range(z_top, z_bot, Nz))`,
-no more.
+`Nz` equally spaced depths from `z_top` to `z_bot` inclusive: `collect(range(z_top, z_bot, Nz))` and
+nothing else.
 
-It exists as a named function purely so `src/kraken_ad.jl` can hang an `rrule` on it. `range` builds
-a `StepRangeLen` whose fields are `Base.TwicePrecision`, which reverse-mode AD cannot construct, and
-the obvious workaround — open-coding the interpolation as a broadcast — is **not** acceptable here:
-it moves interior mesh points by up to ~13 ulp, and that is enough to push `two_layer_slope` past the
-1e-4 wavenumber tolerance it is cross-validated against. `range` stays; the derivative (which is just
-linear interpolation, exactly) is supplied by the rule instead.
+It exists as a named function so `src/kraken_ad.jl` can hang an `rrule` on it. `range` builds a
+`StepRangeLen` whose fields are `Base.TwicePrecision`, which reverse-mode AD cannot construct.
+Open-coding the interpolation as a broadcast, the obvious workaround, is **not** acceptable here: it
+moves interior mesh points by up to ~13 ulp, and that is enough to push `two_layer_slope` past the
+1e-4 wavenumber tolerance it is cross-validated against. `range` stays, and the rule supplies the
+derivative, which is exact linear interpolation.
 """
 layer_mesh(z_top, z_bot, Nz) = collect(range(z_top, z_bot, Nz))
 
@@ -1184,7 +1183,7 @@ end
 Choose the mesh for `env` at frequency `freq` (Hz).
 
 The target spacing is `n_per_wavelength` points per wavelength at the fastest speed that bounds the
-problem — the half-space's `cb`, or the column's own maximum over a rigid or vacuum bottom — and every
+problem (the half-space's `cb`, or the column's own maximum over a rigid or vacuum bottom), and every
 medium gets at least 10 intervals. `factor` multiplies the interval count; [`kraken_jl`](@ref) passes
 `1, 2, 4, …` to build the successively finer meshes it Richardson-extrapolates across.
 
@@ -1229,7 +1228,7 @@ or zero when the bottom is a [`RigidBoundary`](@ref) or [`PressureRelease`](@ref
 half-space.
 
 With a half-space, only defined for `kr >= 2π * freq / cb`, i.e. for modes that are evanescent in the
-bottom half-space — below that cutoff the vertical wavenumber in the bottom is real (a radiating,
+bottom half-space. Below that cutoff the vertical wavenumber in the bottom is real (a radiating,
 leaky mode) and this real-valued formulation has no solution. `bisection` therefore only ever
 searches `kr ∈ [ω/cb, max(ω/c)]`; calling `get_g` (or `det_sturm`) below the cutoff throws a
 `DomainError` from `sqrt`.
@@ -1263,8 +1262,8 @@ bottom_admittance(::BoundaryCondition, kr, env, props) = zero(kr)
     AcousticProblemCache{T}
 
 The assembled finite-difference system for one mesh: step 3 of the solve. Root finding and inverse
-iteration evaluate the system at many trial wavenumbers, and the cache is what they reuse — and
-mutate in place, restoring it before they return.
+iteration evaluate the system at many trial wavenumbers, and the cache is what they reuse and mutate
+in place, restoring it before they return.
 
 # Fields
 - `a_vec`: main diagonal, which `A` shares rather than copies.
@@ -1288,21 +1287,21 @@ Assemble the finite-difference coefficients for `env` on the mesh described by `
 `(a_vec, e_vec, λ_scaling)`, the three vectors [`AcousticProblemCache`](@ref) stores.
 
 This is the whole dependence of the discretized problem on the environment parameters, isolated as a
-pure function: it allocates its results and mutates nothing — not its arguments, not a cache, not
-even a locally allocated buffer. That is what puts it *on the differentiable seam* (see the note at
+pure function: it allocates its results and mutates nothing, neither its arguments, nor a cache,
+nor a locally allocated buffer. That is what puts it *on the differentiable seam* (see the note at
 the top of this file). Reverse-mode AD traces this function, so keep it free of `setindex!`,
 `push!`, and in-place broadcasts; the mutating hot path lives behind the rules in
 `create_finite_diff_matrix!` and never needs to be traced.
 
-- `a_vec` — main diagonal, from `a_element`; at each interface between two media the value
+- `a_vec`: main diagonal, from `a_element`; at each interface between two media the value
   is the average of the coefficients on either side.
-- `e_vec` — off-diagonals, from `e_element`.
-- `λ_scaling` — the factor multiplying `kr²` in the Sturm sequence: a two-point moving average of
+- `e_vec`: off-diagonals, from `e_element`.
+- `λ_scaling`: the factor multiplying `kr²` in the Sturm sequence: a two-point moving average of
   `e_vec * Δz²`, with the final entry halved when the bottom is a mesh point (a half-space or rigid
   bottom) and the first entry halved, along with `a_vec[1]`, for a rigid surface.
 
 The mesh (`Nz_vec`, `Δz_vec`, `zn_vec`) is piecewise constant in the parameters and is treated as a
-constant here — only `env` carries derivative information.
+constant here; only `env` carries derivative information.
 
 # Example
 ```jldoctest
@@ -1410,7 +1409,7 @@ rescales the sequence whenever it would overflow or underflow; the factor is pie
 both `kr` and the environment parameters, so it cancels in any derivative of the root and does not
 affect the mode count.
 
-With a half-space bottom, only defined for `kr >= 2π * freq / cb` — see [`get_g`](@ref).
+With a half-space bottom, only defined for `kr >= 2π * freq / cb`; see [`get_g`](@ref).
 
 # Arguments
 - `kr`: trial horizontal wavenumber (1/m).
@@ -1483,7 +1482,7 @@ end
 
 Bisection method to find the intervals where the roots (wavenumbers) lie.
 
-Searches `kr ∈ [ω/(0.9999 cb), max(ω/c)]`, the band in which modes are trapped — or down to `kr = 0`
+Searches `kr ∈ [ω/(0.9999 cb), max(ω/c)]`, the band in which modes are trapped, or down to `kr = 0`
 when the bottom is rigid or vacuum and nothing can leak out of the column. Returns an
 `n_modes × 2` matrix of `[left right]` brackets, or `nothing` when the environment supports no
 trapped modes at this frequency (e.g. water too shallow relative to the wavelength).
@@ -1667,7 +1666,7 @@ end
 Trapezoidal integral of samples `y` taken at (not necessarily uniform) abscissae `x`.
 
 Written out rather than delegated to `Integrals.SampledIntegralProblem` because it sits *on the
-differentiable seam* — [`normalize_mode`](@ref) calls it, and reverse mode has to trace through it
+differentiable seam*: [`normalize_mode`](@ref) calls it, and reverse mode has to trace through it
 to reach the density profile and the mesh coordinates. The formula is the same one the package's
 `TrapezoidalRule` applies, and the two agree to the last bit on the mode normalizations here.
 """
@@ -1712,8 +1711,8 @@ Each medium's depth mesh, extended *upwards* to its own top interface.
 
 [`get_z_vec`](@ref) starts every layer one step below its top boundary, so the raw meshes leave a
 `Δz`-wide hole at each interface. Prepending the interface depth closes it and gives each medium a
-mesh spanning its full thickness — which is what makes a per-medium trapezoid the whole integral
-rather than most of it. The boundaries follow [`close_medium`](@ref): a rigid surface is already
+mesh spanning its full thickness, so a per-medium trapezoid covers the whole integral rather than
+most of it. The boundaries follow [`close_medium`](@ref): a rigid surface is already
 sampled at `z = 0`, and a vacuum bottom's mesh is extended *down* to `D`.
 """
 function medium_mesh(env::UnderwaterEnv, props::AcousticProblemProperties)
@@ -1727,9 +1726,9 @@ end
 
 Each medium's slice of the mode shape, extended to its top interface.
 
-The mode function is *continuous* across an interface, so a medium's value there is simply the last
-sample of the medium above — and zero at a pressure-release surface or bottom, which is where the
-mesh leaves those points out. This is the one quantity that needs no special treatment at an
+The mode function is *continuous* across an interface, so a medium's value there is the last sample
+of the medium above. At a pressure-release surface or bottom it is zero, which is why the mesh leaves
+those points out. This is the one quantity that needs no special treatment at an
 interface; the profiles are the ones that jump.
 """
 function medium_mode(ψ, env::UnderwaterEnv, props::AcousticProblemProperties)
@@ -1748,15 +1747,15 @@ Each medium's samples of `profile` (via `sample`, one of [`soundspeed`](@ref), [
 [`attenuation`](@ref)), extended to its top interface **from inside that medium**.
 
 This is the part a flat integral gets wrong. The value of `ρ` or `α` *at* an interface depends on
-which side you approach from, and the interpolant cannot be asked — querying exactly on the knot
-returns the medium above (see `linear_interp_partials` in `src/kraken_ad.jl`, where that convention
-is chosen deliberately and for good reasons of its own). So the top value is obtained by linear
+which side you approach from, and the interpolant cannot be asked: querying exactly on the knot
+returns the medium above (see `linear_interp_partials` in `src/kraken_ad.jl`, which explains why that
+convention was chosen). So the top value is obtained by linear
 extrapolation from the medium's own first two samples, `2p₁ - p₂`.
 
 That is **exact**, not an approximation: the profiles are piecewise linear, the augmented mesh is
 uniform (a layer's first sample sits exactly `Δz` below its top, and its interior spacing is also
-`Δz`), and both samples lie strictly inside the medium. It is also traceable, which `nextfloat` —
-the obvious alternative — is not, having no method for a `Dual`.
+`Δz`), and both samples lie strictly inside the medium. It is also traceable. `nextfloat`, the
+obvious alternative, is not: it has no method for a `Dual`.
 
 A vacuum bottom's value at `D` is extrapolated the same way, `2pₙ - pₙ₋₁`, from the last two samples
 of the bottom medium; a rigid surface needs no extrapolation, being sampled at `z = 0` already.
@@ -1819,7 +1818,7 @@ eigenvector, scaled to `‖v‖₂ = 1` and sign-fixed so that `v[1] ≥ 0`. Phy
 
 This is the second of the two functions *behind the differentiable seam* (see the note at the top of
 this file): it mutates the cache, branches on `argmax`, and iterates, and reverse mode never traces
-any of it — `src/kraken_ad.jl` states the eigenvector adjoint directly instead. The cache is left
+any of it; `src/kraken_ad.jl` states the eigenvector adjoint directly instead. The cache is left
 exactly as it was found.
 
 # Arguments
@@ -1891,7 +1890,7 @@ end
 """
     normalize_mode(v, kr, env::UnderwaterEnv, props::AcousticProblemProperties)
 
-Scale a mode shape so that its total energy — water column plus bottom half-space — is one:
+Scale a mode shape so that its total energy, water column plus bottom half-space, is one:
 
     ∫ v(z)² / ρ(z) dz  +  v(D)² / (2 ρb √(kr² - (ω/cb)²))  =  1
 
@@ -1899,7 +1898,7 @@ Scale a mode shape so that its total energy — water column plus bottom half-sp
 mode function the field sum expects. With a rigid or vacuum bottom there is no half-space and the
 second term is zero.
 
-Kept *on the differentiable seam* deliberately. The normalization is the only part of a mode shape
+Kept *on the differentiable seam* on purpose. The normalization is the only part of a mode shape
 that depends on the density profile and the mesh coordinates other than through the finite-difference
 coefficients, and leaving it traced means the backend reaches `env.ρ` through the same
 [`density`](@ref) call it already differentiates in [`finite_difference_coefficients`](@ref), rather
@@ -1983,7 +1982,7 @@ KRAKEN's complex sound speed: `c + i α c² / ω`, for an attenuation `α` alrea
 
 This is the last line of `CRCI` (`alphaT = alphaT * c * c / omega; CRCI = CMPLX( c, alphaT )`). The
 imaginary part is arranged so that `ω / c̃ ≈ ω/c - iα`, i.e. so a plane wave in a homogeneous medium
-loses exactly `α` nepers per metre — which is what makes `α` mean what its units say.
+loses `α` nepers per metre, as its units say.
 
 # Arguments
 - `c`: the real sound speed (m/s).
@@ -2007,7 +2006,7 @@ complex_soundspeed(c, α_nepers, ω) = complex(c, α_nepers * c^2 / ω)
 
 First-order perturbation `δ(kᵣ²)` of a mode's squared wavenumber due to material absorption.
 
-`ψ` is a mode shape already normalized by [`normalize_mode`](@ref) — the perturbation formula assumes
+`ψ` is a mode shape already normalized by [`normalize_mode`](@ref). The perturbation formula assumes
 `∫ψ²/ρ + ψ(D)²/(2ρ_b γ) = 1`, so passing an unnormalized eigenvector gives an answer wrong by that
 factor. `kr` is the real wavenumber the lossless solve converged to.
 
@@ -2018,17 +2017,17 @@ are `env.atten_units` and are converted here, where the frequency is finally kno
 # Accuracy
 
 Two independent limits, measured against `kraken.exe` and recorded in `test/README.md`. They hit
-opposite ends of the mode spectrum, which is a useful way to tell which one you are looking at.
+opposite ends of the mode spectrum, so the affected modes tell you which one you are looking at.
 
   * **The half-space term is first order in `2ω a_b/(c_b γ²)`, not in `a_b`.** Since `γ → 0` at the
-    bottom cutoff, a strongly attenuating half-space degrades the *least*-trapped mode first — 10%
-    for a near-cutoff mode over a 0.5 dB/λ seabed. Inherent to perturbation theory; only a full
-    complex solve (`krakenc.exe`) fixes it.
+    bottom cutoff, a strongly attenuating half-space degrades the *least*-trapped mode first: 10%
+    for a near-cutoff mode over a 0.5 dB/λ seabed. The error comes from perturbation theory itself;
+    only a full complex solve (`krakenc.exe`) removes it.
   * **Everything else is ordinary discretization, at second order.** The volume integral is taken
     medium by medium (see [`mode_energy`](@ref) and the note above it), so a jump in `ρ` or `α` at a
     layer interface is resolved exactly rather than averaged across by a straddling trapezoid. That
-    is worth 27x on `one_layer_env(; α1=0.4)` — 8.1e-2 against `kraken.exe` with one flat trapezoid,
-    2.9e-3 medium by medium — and it is what keeps a lossy sediment layer usable at the default mesh.
+    is worth 27x on `one_layer_env(; α1=0.4)` (8.1e-2 against `kraken.exe` with one flat trapezoid,
+    2.9e-3 medium by medium), and it is what keeps a lossy sediment layer usable at the default mesh.
     Observed convergence order on that case: 2.00.
 
 Calibrating against Fortran below about 1e-3 on a layered case measures `kraken.exe`'s mesh rather
@@ -2172,7 +2171,7 @@ How many of the extrapolated `kr²` (in the solver's descending order) belong to
 
 Over a vacuum or rigid bottom the search runs down to `kr = 0`, and at a mode's cutoff frequency that
 mode's `kr` shrinks with the mesh spacing, converging on zero. Its extrapolated `kr²` is then roundoff
-— measured ±2e-14 on a 100 m Pekeris column at 75 Hz — and `sqrt` throws when the sign comes out
+(measured ±2e-14 on a 100 m Pekeris column at 75 Hz), and `sqrt` throws when the sign comes out
 negative. KRAKEN keeps only `kr² > ω²/cHigh²` (`kraken.f90`). This keeps `kr²` above a floor of
 `√eps · max(ω/c)²`, which is roundoff for a trapped mode and far below any half-space cutoff, so a
 half-space solve never reaches it. A mode below the floor has no horizontal propagation to speak of,
@@ -2195,12 +2194,12 @@ with [`inverse_iteration`](@ref), and Richardson-extrapolates the squared wavenu
 levels until they converge.
 
 Returns a `NormalModeSolution` with fields `kr` (horizontal wavenumbers, descending), `modes` (one
-column per mode, sampled on the first and coarsest mesh, which is `props`), `env`, and `props`. Returns an empty solution when the
-environment supports no trapped modes at this frequency.
+column per mode, sampled on the first and coarsest mesh, which is `props`), `env`, and `props`.
+Returns an empty solution when the environment supports no trapped modes at this frequency.
 
 # Keyword arguments
 - `n_meshes`: maximum number of mesh refinement levels to extrapolate across.
-- `rmax`: maximum range of interest (m). Sets the convergence criterion — refinement stops once the
+- `rmax`: maximum range of interest (m). Sets the convergence criterion: refinement stops once the
   wavenumber change would shift phase by less than one radian over `rmax`.
 - `method`: bracketing solver passed to `IntervalNonlinearProblem`.
 - `dont_break`: run all `n_meshes` levels even after convergence. Useful for studying mesh error.
@@ -2208,18 +2207,18 @@ environment supports no trapped modes at this frequency.
 
 # Differentiability
 
-`kraken_jl` is differentiable end to end in both directions — forward mode straight through, reverse
-mode via the rules in `kraken_ad.jl`. Two things about the returned gradient are worth being explicit
-about, because neither is an approximation that can be tightened away:
+`kraken_jl` is differentiable end to end in both directions: forward mode straight through, reverse
+mode via the rules in `kraken_ad.jl`. Two properties of the returned gradient are structural, and no
+tolerance setting changes them:
 
   * **It is conditional on the mesh schedule this call selected.** The number of refinement levels is
     chosen by the convergence test above, which is an integer decision in the parameters; it is
-    wrapped in `ignore_derivatives` so the gradient is taken at *fixed* schedule. That is the correct
-    and standard treatment, but it means the gradient is discontinuous at parameter values where the
-    level count changes — approach such a point from either side and the two one-sided gradients
-    differ by the extrapolation's own error term. Pass `dont_break=true` for a schedule that is fixed
-    by construction if a smooth objective matters more than the cost.
-  * **The mode shapes come from the coarsest mesh**, as they do in the primal — only the wavenumbers
+    wrapped in `ignore_derivatives` so the gradient is taken at *fixed* schedule. That is the standard
+    treatment, but it makes the gradient discontinuous at parameter values where the level count
+    changes. Approach such a point from either side and the two one-sided gradients differ by the
+    extrapolation's own error term. Pass `dont_break=true` for a schedule that is fixed by
+    construction if a smooth objective matters more than the cost.
+  * **The mode shapes come from the coarsest mesh**, as they do in the primal; only the wavenumbers
     are extrapolated. So `∂modes/∂θ` is the derivative of the level-1 solve.
 
 # Arguments
@@ -2326,8 +2325,8 @@ end
 Turn converged real wavenumbers into complex ones by adding the first-order attenuation perturbation
 of [`modal_attenuation`](@ref) to each `kᵣ²`.
 
-**Returns `krs` unchanged, and still real, when `env` declares no attenuation.** That is the point of
-the `is_lossy` guard rather than adding a zero: a lossless environment goes through the same
+**Returns `krs` unchanged, and still real, when `env` declares no attenuation.** The `is_lossy` guard
+exists for this, instead of adding a zero: a lossless environment goes through the same
 arithmetic it always did and every existing result stays bit-identical, instead of acquiring a
 `0.0im` that changes the element type of `NormalModeSolution.kr` and of everything downstream of it.
 

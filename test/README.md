@@ -23,16 +23,16 @@ Julia 1.12.6, macOS arm64 (M1), 1 thread inside `Pkg.test()`. Every run below is
 | `Pkg.test()` | **258** / 2m05s | **380** / 2m05s | **925** / 2m53s |
 | `KRAKEN_RUN_PERFORMANCE_TESTS=true Pkg.test()` | **282** / 2m25s | **404** / 2m20s | **949** / 3m10s |
 
-The M3 numbers are with an Acoustics Toolbox checkout present. Without one — which is the CI case —
+The M3 numbers are with an Acoustics Toolbox checkout present. Without one, which is the CI case,
 the toolbox cases skip and `Pkg.test()` reports **898**, still green.
 
-There is no single M4/M5 figure in that table on purpose: since Milestone 4 the whole suite in one
-call exceeds every limit the MCP imposes (see the bottom of this file), so it is measured per file
-instead. CI still runs it as one `Pkg.test()` — that path has no such limit.
+That table has no M4/M5 column because since Milestone 4 the whole suite in one call exceeds every
+limit the MCP imposes (see the bottom of this file), so it is measured per file instead. CI still
+runs it as one `Pkg.test()`, and that path has no such limit.
 
 Per file, so a silent drop in coverage is visible in a diff. The M5 column is after task 5.3, with an
-Acoustics Toolbox checkout present, and was measured **per file** — the whole suite in one call is not
-obtainable through the MCP (see "Running the suite through the kaimon MCP" below):
+Acoustics Toolbox checkout present, and was measured **per file**, because the whole suite in one call
+cannot be run through the MCP (see "Running the suite through the kaimon MCP" below):
 
 | File | End of M1 | End of M2 | End of M3 | End of M5.5 |
 |---|---|---|---|---|
@@ -40,8 +40,8 @@ obtainable through the MCP (see "Running the suite through the kaimon MCP" below
 | `integration_tests.jl` | 98 | 98 | 98 | 134 |
 | `numerical_methods_tests.jl` | 73 | 73 | 73 | 96 |
 | `automatic_differentiation_tests.jl` | 48 | 48 | 48 | 48 |
-| `reverse_ad_tests.jl` | — | — | — | 359 |
-| `fortran_reference_tests.jl` | — | — | 545 | 793 |
+| `reverse_ad_tests.jl` | n/a | n/a | n/a | 359 |
+| `fortran_reference_tests.jl` | n/a | n/a | 545 | 793 |
 | `performance_tests.jl` (opt-in) | 24 | 24 | 24 | 24 |
 
 **1645 in total at the end of Milestone 5.5**, all green, measured file by file with an Acoustics
@@ -49,7 +49,7 @@ Toolbox checkout present. (At the end of 5.3 it was 1558; 5.4 added 50 attenuati
 5.5 added 37 for the lossy standard environments.)
 
 **Selecting TestItems by file needs a path prefix, not just a file name.** `@run_package_tests` walks
-the whole package directory, and `.claude/worktrees/` is inside it — so a filter that only matches on
+the whole package directory, and `.claude/worktrees/` is inside it, so a filter that only matches on
 `endswith(t.filename, "integration_tests.jl")` silently runs *every* worktree's copy too and reports
 their sum. `runtests.jl` guards the full suite against this by keeping only items under its own
 `test/` directory; a single-file run needs the same prefix:
@@ -64,10 +64,10 @@ that is not there.
 
 The M2 jump is the B1–B5 regression tests added in task 2.5; the B4 bisection sweep (8 environments
 × 4 frequencies) is 82 of the 122 new assertions on its own. The M3 jump is the Fortran
-cross-validation harness, which also accounts for the ~50 s of added wall time — two thirds of it in
+cross-validation harness, which also accounts for the ~50 s of added wall time, two thirds of it in
 the `munk` sweep alone, which solves for up to 817 modes at 400 Hz.
 
-The suite also runs on Julia 1.10, the declared compat lower bound — verified directly, not assumed
+The suite also runs on Julia 1.10, the declared compat lower bound. That was verified by running it
 (see the note in the plan's Architecture Decisions).
 
 The suite time is dominated by `automatic_differentiation_tests.jl` (~70 s: it runs `kraken_jl`
@@ -76,7 +76,7 @@ of dependency precompilation on the first run after a `Manifest.toml` change.
 
 > **Do not use `--project=test` with `Pkg.test()`.** Pkg would then treat the test environment as the
 > package under test and fail with `The Project.toml of the package being tested must have a name and
-> a UUID entry`. `test/Project.toml` has no `name`/`uuid` on purpose — that is what makes it a test
+> a UUID entry`. `test/Project.toml` has no `name`/`uuid` on purpose; that is what makes it a test
 > environment rather than a package. Correspondingly, the root `Project.toml` has no
 > `[extras]`/`[targets]`: the two testing mechanisms are mutually exclusive and `test/Project.toml` wins.
 
@@ -91,7 +91,7 @@ of dependency precompilation on the first run after a `Manifest.toml` change.
 | `numerical_methods_tests.jl` | Test | Core algorithms: `det_sturm`, `bisection`, `find_kr`, `inverse_iteration` |
 | `automatic_differentiation_tests.jl` | Test | ForwardDiff compatibility, group speed calculations |
 | `reverse_ad_tests.jl` | Test | The `ChainRulesCore` rules in `src/kraken_ad.jl` as gradients of compositions: each rule's content in isolation, then Zygote and Mooncake against ForwardDiff and central differences across three environments and three targets, every boundary condition and interpolation mode, attenuation, and the pressure field |
-| `rrule_tests.jl` | Test | The same rules through `ChainRulesTestUtils.test_rrule` — one pullback against finite differences over *every* argument at once. Split out of `reverse_ad_tests.jl` because its `solve_for_kr` case is 373 s of compilation on a cold session |
+| `rrule_tests.jl` | Test | The same rules through `ChainRulesTestUtils.test_rrule`: one pullback against finite differences over *every* argument at once. Split out of `reverse_ad_tests.jl` because its `solve_for_kr` case is 373 s of compilation on a cold session |
 | `fortran_reference_tests.jl` | Test | Cross-validation against unmodified `kraken.exe` and `field.exe`; self-skips when no binary resolves |
 | `readme_tests.jl` | Test | Runs every ```` ```julia ```` block of the top-level `README.md`, in order, in one sandbox module (~40 s, mostly Zygote compiling the reverse-mode block) |
 
@@ -100,7 +100,7 @@ of dependency precompilation on the first run after a `Manifest.toml` change.
 | File | Env Variable | Description |
 |------|--------------|-------------|
 | `performance_tests.jl` | `KRAKEN_RUN_PERFORMANCE_TESTS=true` | Benchmarks, memory usage, scaling |
-| one testset in `reverse_ad_tests.jl` | `KRAKEN_RUN_KNOWN_LIMITATIONS=true` | Tripwires that assert a *current* limitation still holds — today only Mooncake's refusal to trace complex arithmetic. ~45 s to confirm nothing changed, so it is skipped by default and CI sets the variable |
+| one testset in `reverse_ad_tests.jl` | `KRAKEN_RUN_KNOWN_LIMITATIONS=true` | Tripwires that assert a *current* limitation still holds; today only Mooncake's refusal to trace complex arithmetic. ~45 s to confirm nothing changed, so it is skipped by default and CI sets the variable |
 
 ### Making the suite fast enough to iterate on
 
@@ -128,8 +128,8 @@ Two things measured on 2026-09-23 sharpen that, and both are why `rrule_tests.jl
   `KRAKEN_SKIP_TESTS` can leave it out.
 - **Cold AD-backend compilation is paid once, not per case.** The first entry of the backend table
   (`pekeris / wavenumbers`) costs ~117 s and the other eight combinations 5–20 s each, because they
-  reuse its derivations. So adding or removing *cases* from that table barely moves the clock —
-  a tempting optimization that does not work.
+  reuse its derivations. So adding or removing *cases* from that table barely moves the clock, and
+  trimming cases does not speed the file up.
 
 Beware measuring a single file in a REPL that is doing anything else: a per-testset timing pass run
 alongside other evals reported 1598 s for `reverse_ad_tests.jl` alone, more than the entire suite
@@ -138,13 +138,13 @@ takes. Use an idle session, or the relative shares rather than the absolute seco
 `KRAKEN_SKIP_TESTS` takes a comma-separated list of those file names and leaves them out:
 
 ```bash
-# 7.3 min instead of 22 — measured 2026-09-23 at 438.6 s
+# 7.3 min instead of 22: measured 2026-09-23 at 438.6 s
 KRAKEN_SKIP_TESTS=reverse_ad_tests.jl julia --project=. -e 'using Pkg; Pkg.test()'
 
-# 5.4 min — measured at 321.7 s. Both AD files out; this is the tight edit/test loop
+# 5.4 min: measured at 321.7 s. Both AD files out; this is the tight edit/test loop
 KRAKEN_SKIP_TESTS=reverse_ad_tests.jl,rrule_tests.jl julia --project=. -e 'using Pkg; Pkg.test()'
 
-# ~2.5 min — measured at 2m40s for 1003 tests, before the suite grew
+# ~2.5 min: measured at 2m40s for 1003 tests, before the suite grew
 KRAKEN_SKIP_TESTS=reverse_ad_tests.jl,fortran_reference_tests.jl \
   julia --project=. -e 'using Pkg; Pkg.test()'
 
@@ -152,15 +152,15 @@ KRAKEN_SKIP_TESTS=reverse_ad_tests.jl,fortran_reference_tests.jl \
 KRAKEN_SKIP_TESTS=rrule_tests.jl julia --project=. -e 'using Pkg; Pkg.test()'
 ```
 
-The `rrule_tests.jl` line is worth 116.9 s of the 438.6 s above, and the split of that is the
-interesting part: only 36.7 s of it is the testsets running (351.4 s against 314.7 s of reported
-`Test Summary` time). The other ~80 s is Julia loading and precompiling `ChainRulesTestUtils` and
-`FiniteDifferences`, which no other test file needs — which is why the `using` lines for them came
-out of `reverse_ad_tests.jl` when the block moved, and why skipping the file skips more than the
-file. The pass count drops by exactly 42, the assertion count of `rrule_tests.jl`, which is the
-check that the skip is doing what it says.
+The `rrule_tests.jl` line is worth 116.9 s of the 438.6 s above, and only 36.7 s of that is the
+testsets running (351.4 s against 314.7 s of reported `Test Summary` time). The other ~80 s is Julia
+loading and precompiling `ChainRulesTestUtils` and `FiniteDifferences`, which no other test file
+needs. That is why the `using` lines for them came out of `reverse_ad_tests.jl` when the block moved,
+and why skipping the file skips more than the file. The pass count drops by exactly 42, the
+assertion count of `rrule_tests.jl`, which is the check that the skip is doing what it says.
 
-That 116.9 s is also a **lower bound** on what it saves in a full run: both of those runs skip `reverse_ad_tests.jl`, so
+That 116.9 s is also a **lower bound** on what it saves in a full run: both of those runs skip
+`reverse_ad_tests.jl`, so
 `ChainRulesTestUtils` compiles in a world where Zygote and Mooncake were never loaded. In a full run
 it compiles after those have invalidated a large part of the method table, which is the difference
 between the 116.9 s here and the 373 s the same testset took when it lived inside
@@ -171,14 +171,14 @@ It defaults to skipping nothing, CI never sets it, an unrecognized file name is 
 than a silent no-op, and each skip prints a warning saying the run does not show the suite is green.
 **Run it unset before pushing.**
 
-For a tighter loop still, run one TestItems file directly — `integration_tests.jl` on its own is 13
+For a tighter loop still, run one TestItems file directly: `integration_tests.jl` on its own is 13
 seconds. See the single-file invocations in `CLAUDE.md`.
 
 Every timing in `performance_tests.jl` is measured after a warm-up call, so compilation is excluded.
 Thresholds are set several times above the measured value so they catch order-of-magnitude
 regressions without flaking on slower CI runners. The frequency- and depth-scaling ratios are
-*reported*, not asserted — wall-clock ratios between sub-second runs are dominated by timer noise —
-and those testsets assert a generous absolute ceiling plus the mode counts instead.
+*reported*, not asserted, because wall-clock ratios between sub-second runs are dominated by timer
+noise, and those testsets assert a generous absolute ceiling plus the mode counts instead.
 
 ### Script Files (manual execution)
 
@@ -188,35 +188,8 @@ and those testsets assert a generous absolute ceiling plus the mode counts inste
 
 ### Fortran cross-validation
 
-### The field against `field.exe` (M7.4)
-
-`field.exe` is a second binary: it reads the `.mod` that `kraken.exe` wrote plus a `.flp` saying
-where to evaluate, and writes a `.shd`. `KrakenReference.run_fortran_field` drives both in sequence
-and `compare_field_with_fortran` reports max and RMS dB difference.
-
-Measured RMS |ΔTL| over a 9-depth × 19-range grid, 1-10 km. The plan's bound is 0.5 dB RMS:
-
-| env | 50 Hz | 100 Hz | 200 Hz |
-|---|---|---|---|
-| pekeris, coherent | 0.0026 | 0.0242 | 0.0156 |
-| pekeris, incoherent | 0.0021 | 0.0136 | 0.0099 |
-| one_layer, coherent | 0.0020 | 0.0346 | 0.0148 |
-| one_layer, incoherent | 0.0018 | 0.0083 | 0.0087 |
-
-The worst pointwise difference is 0.42 dB, on an interference null. The **complex** fields also
-agree — magnitude ratio within ±2%, phase within 1.8° — with no conjugation or rescaling, because
-task 7.1 adopted `Evaluate`'s own prefactor and KRAKEN's phase convention rather than Jensen's.
-
-Two things about the file formats that cost time and are asserted rather than left as folklore:
-
-- **`field.exe` writes a blank `PlotType`.** `KrakenField/field.f90` declares
-  `PlotType = '          '` and never assigns it, so a reader that insisted on `'rectilin  '` would
-  reject every shade file it produces. Blank means rectilinear.
-- **`field.exe` overwrites `kraken.exe`'s `.prt`.** Both open `<root>.prt`. The runner reads and
-  scans KRAKEN's report before invoking `field.exe`, or its diagnostics are lost.
-
 `fortran_reference_tests.jl` runs the suite against **unmodified** Fortran KRAKEN. The harness lives
-in `test/reference/KrakenReference.jl` — test-only, deliberately not part of the package, because
+in `test/reference/KrakenReference.jl`. It is test-only and not part of the package, because
 validation machinery is not public API.
 
 Binaries come from `AcousticsToolbox_jll`, which ships prebuilt `kraken.exe`/`krakenc.exe` for every
@@ -236,11 +209,39 @@ unconditionally from `runtests.jl`.
 > for details` to stderr and stops with a zero status. Anything driving it must scan the generated
 > `.prt` file for `ERROR`, never trust the exit code.
 
+#### The field against `field.exe`
+
+Plan task 7.4. `field.exe` is a second binary: it reads the `.mod` that `kraken.exe` wrote plus a
+`.flp` saying where to evaluate, and writes a `.shd`. `KrakenReference.run_fortran_field` drives both
+in sequence and `compare_field_with_fortran` reports max and RMS dB difference.
+
+Measured RMS |ΔTL| over a 9-depth × 19-range grid, 1-10 km. The plan's bound is 0.5 dB RMS:
+
+| env | 50 Hz | 100 Hz | 200 Hz |
+|---|---|---|---|
+| pekeris, coherent | 0.0026 | 0.0242 | 0.0156 |
+| pekeris, incoherent | 0.0021 | 0.0136 | 0.0099 |
+| one_layer, coherent | 0.0020 | 0.0346 | 0.0148 |
+| one_layer, incoherent | 0.0018 | 0.0083 | 0.0087 |
+
+The worst pointwise difference is 0.42 dB, on an interference null. The **complex** fields also
+agree (magnitude ratio within ±2%, phase within 1.8°) with no conjugation or rescaling, because task
+7.1 adopted `Evaluate`'s own prefactor and KRAKEN's phase convention rather than Jensen's.
+
+Two properties of the file formats cost debugging time, and both are now asserted:
+
+- **`field.exe` writes a blank `PlotType`.** `KrakenField/field.f90` declares
+  `PlotType = '          '` and never assigns it, so a reader that insisted on `'rectilin  '` would
+  reject every shade file it produces. Blank means rectilinear.
+- **`field.exe` overwrites `kraken.exe`'s `.prt`.** Both open `<root>.prt`. The runner reads and
+  scans KRAKEN's report before invoking `field.exe`, or its diagnostics are lost.
+
 #### Measured agreement
 
 The numbers the cross-validation suite asserts against. Measured 2026-08-08 on macOS arm64, five
-standard environments at 25 / 50 / 100 / 200 / 400 Hz — **identical against `AcousticsToolbox_jll`
-and against a local 2023 OALIB build**, so these are properties of the solver, not of one binary.
+standard environments at 25 / 50 / 100 / 200 / 400 Hz, with **identical results against
+`AcousticsToolbox_jll` and against a local 2023 OALIB build**, so these are properties of the solver,
+not of one binary.
 
 `max rel Δkᵣ` is the largest relative wavenumber difference over all modes and all five frequencies;
 `min corr` is the smallest mode-shape correlation. Update this table when the tolerances in
@@ -254,7 +255,7 @@ and against a local 2023 OALIB build**, so these are properties of the solver, n
 | `two_layer_slope_env` | 2, 5, 10, 19, 39 | 2.7e-5 | 0.9999484 | 1e-4 / 0.9995 |
 | `munk_env` | 51, 102, 204, 409, 817 | 6.4e-6 | 0.9999720 | 5e-5 / 0.9999 |
 
-Error grows with the number of gradient layers, not with frequency — `two_layer_slope_env` is the
+Error grows with the number of gradient layers, not with frequency: `two_layer_slope_env` is the
 worst case at its *lowest* frequency, where the mesh is coarsest relative to the mode structure.
 
 #### Acoustics Toolbox test cases
@@ -270,27 +271,27 @@ KRAKEN_OALIB_TESTS=~/programs/AcousticsToolboxOALIB/tests julia --project=. -e '
 Without that tree the toolbox cases skip; the reader itself stays covered by round-tripping this
 repo's own `test/standard_envs/` files through `write_env_file` → `read_env_file`.
 
-Coverage as of 2026-09-16, after Milestone 6.4 — **211 of 402 `.env` files parse, up from 167** after
+Coverage as of 2026-09-16, after Milestone 6.4: **211 of 402 `.env` files parse, up from 167** after
 Milestone 5.1. Milestone 6 lifted the rigid and vacuum boundaries and the n²-linear and cubic-spline
 interpolators:
 
 | Blocker | after 5.1 | after 6.4 | Status |
 |---|---|---|---|
 | **parses** | **167** | **211** | |
-| top boundary | 65 | 65 | all `A` (acousto-elastic half-space above) — out of scope, plan task 6.1 |
+| top boundary | 65 | 65 | all `A` (acousto-elastic half-space above); out of scope, plan task 6.1 |
 | bottom half-space is not the fastest medium | 31 | 34 | leaky modes (M5 stretch) |
 | added volume attenuation (THORP / Francois-Garrison / biological) | 27 | 27 | `TopOpt(4:4)`, a separate feature |
-| profile does not start at the surface | 1 | 21 | — |
+| profile does not start at the surface | 1 | 21 | |
 | elastic layer | 7 | 9 | out of scope |
 | interfacial roughness | 4 | 6 | out of scope |
 | bottom boundary | 50 | 6 | all `F` (reflection-coefficient file), which `kraken.f90` itself rejects |
 | SSP interpolation over a varying profile | 28 | 1 | a cubic spline over several media (`Munk/MunkB_ray.env`) |
 | power-law attenuation (`TopOpt(3:3) == 'm'`) | 1 | 1 | needs per-medium β and f_T records |
-| analytic SSP | 1 | 1 | — |
+| analytic SSP | 1 | 1 | |
 | not a KRAKEN deck (BELLHOP3D `'H'`/`'Q'` SSP options, malformed) | 20 | 20 | n/a |
 
-Some blockers *rose*. That is files the reader used to reject early, for their bottom option or
-interpolator, now getting far enough to be judged on something else — mostly BELLHOP decks whose
+Some blockers *rose*. Those are files the reader used to reject early, for their bottom option or
+interpolator, now getting far enough to be judged on something else: mostly BELLHOP decks whose
 profile starts below the surface.
 
 **Parsing is not reproducing**, so the milestone was also measured the way its success criterion is
@@ -307,14 +308,13 @@ The three new decks that do not reproduce are all perfect bottoms, and are the t
 under "Boundary conditions and SSP interpolation validated against Fortran" below: `wedge/wedge.env`
 (vacuum, 4.2e-3 on its grazing modes) and `Dickins/Precalc/DickinsK.env` and
 `Bellhop3DTests/DoubleSeamount/DoubleSeamount3D_ray.env` (the mode-cutoff crash). Mode-shape
-correlation was deliberately left out of that count: at a thousand modes the writer's receiver grid,
+correlation was left out of that count: at a thousand modes the writer's receiver grid,
 capped at 2001 points, cannot resolve the mode shapes, so `MunkS_500Hz.env` and the `DoubleSeamount`
 decks read ~0 on both branches.
 
 Regenerate this with `KrakenReference.categorize_env_tree` and `print_env_tree_report`. A file that
-uses an unsupported feature is *named*, never approximated — the whole point is that a case Kraken.jl
-cannot model fails with "unsupported feature: top boundary (acousto-elastic halfspace)" rather than
-silently mis-parsing into a plausible environment that then disagrees with Fortran for reasons nobody
+uses an unsupported feature is *named*, never approximated: a case Kraken.jl cannot model fails with
+"unsupported feature: top boundary (acousto-elastic halfspace)" rather than silently mis-parsing into a plausible environment that then disagrees with Fortran for reasons nobody
 can find.
 
 Three caveats the suite encodes rather than hides:
@@ -330,21 +330,22 @@ Three caveats the suite encodes rather than hides:
   for every mode on macOS, and leftover memory on Linux, usually absurd but sometimes plausible.
   Munk mode 199 came out 1500.15 m/s against a true 1452.6, which kept CI red from plan task 4.7
   (2026-08-09) until 2026-10-13. `compare_with_fortran(...; group_speeds=true)` therefore *always*
-  takes the reference from a `krakenc.exe` run, never from the column `kraken.exe` printed. Group speeds are off by default because obtaining
-  the Julia side means a ForwardDiff pass through the whole solver (~4 s).
+  takes the reference from a `krakenc.exe` run, never from the column `kraken.exe` printed. Group
+  speeds are off by default because obtaining the Julia side means a ForwardDiff pass through the
+  whole solver (~4 s).
 - **A record ends where Fortran stops reading it, not at end of line.** `READ( ENVFile, * ) BotOpt,
   Sigma` is a list-directed read of exactly two items and **discards the rest of the record**. The
   reader used to take the *last* number on the line as SIGMA, so `SedAtten/calibS_0.6dB.env`'s
-  `'A'  0.0 2.5 2000` — whose trailing pair only a `'m'` attenuation unit would go back for — read as
+  `'A'  0.0 2.5 2000`, whose trailing pair only a `'m'` attenuation unit would go back for, read as
   2 km of interfacial roughness and the file was rejected. Fixed in 5.1 and pinned by
   `"M5.1: the bottom-option record ends after SIGMA"`. The same rule applies to any record where the
   toolbox files carry optional trailing parameters.
 
-### Attenuation validated against Fortran (plan task 5.3)
+### Attenuation validated against Fortran
 
-Milestone 5 makes `kraken_jl` return **complex** wavenumbers when an environment declares
-attenuation. `Im(kᵣ)` is compared separately from `Re(kᵣ)` and gets its own, looser tolerance —
-`KrakenReference.max_alpha_reldiff` alongside `max_kr_reldiff`.
+Plan task 5.3. Milestone 5 makes `kraken_jl` return **complex** wavenumbers when an environment
+declares attenuation. `Im(kᵣ)` is compared separately from `Re(kᵣ)` and gets its own, looser
+tolerance: `KrakenReference.max_alpha_reldiff` alongside `max_kr_reldiff`.
 
 Max relative difference over all modes, measured 2026-08-09. The first four rows are `pekeris_env` at
 100 Hz with attenuation added; the rest are read from the toolbox tree.
@@ -360,32 +361,32 @@ Max relative difference over all modes, measured 2026-08-09. The first four rows
 | `SedAtten/calibK.env`, 250 Hz, 0.5 dB/λ | 11 | 1.8e-4 | 1.1e-2 | 1e-3 / 5e-2 |
 | `SedAtten/calibS_0.6dB.env`, 250 Hz, 0.6 dB/λ | 11 | 2.3e-4 | 1.5e-2 | 1e-3 / 8e-2 |
 
-Three things about that spread are worth understanding before changing any of these numbers.
+Read these three points before changing any of the numbers in that table.
 
 - **`Im(kᵣ)` is a harder quantity than `Re(kᵣ)` on both sides.** It is the small part of the complex
   number; the only usable Fortran source for it is the single-precision `.mod` (the `.prt` prints it
-  with `G10.2`, i.e. two digits); and *neither* solver Richardson-extrapolates it — both evaluate the
+  with `G10.2`, i.e. two digits); and *neither* solver Richardson-extrapolates it. Both evaluate the
   perturbation on their own coarsest mesh, which is what `kraken.f90` does by calling `Vector` only
   when `iSet == 1`.
 - **The two solvers agree to first order in α exactly.** Shrinking the half-space attenuation drives
   the disagreement down as α², not α: 7.1e-3 at 0.5 dB/λ → 6.9e-5 at 0.05 → 1.9e-6 at 0.005, where it
   hits the `.mod`'s single-precision floor. A formula error would leave a floor proportional to α.
-  `"M5.3: the two solvers agree to first order in α"` asserts exactly this, and it is the strongest
-  correctness statement in this section — much stronger than any single tolerance.
-- **What is left is second order, and it is a limit of the method, not of the implementation.** The
+  `"M5.3: the two solvers agree to first order in α"` asserts this scaling. It rules out a formula
+  error, which no single tolerance can do.
+- **What is left is second order, and comes from the method, which both codes share.** The
   half-space term goes as `Im √(γ² + 2iω α_b/c_b)`, whose expansion parameter is
   `v = 2ω α_b/(c_b γ²)` with `γ² = kᵣ² − (ω/c_b)²`. `γ → 0` at the bottom cutoff, so `v` is large
   exactly where the mode is least trapped: it is 1.5e-1 for `calibK` mode 1 and **3.2** for
   `pekeris` mode 5. Both codes are first-order methods keeping different second-order terms, so at
-  `v ≈ 3` neither is more right — the full complex solve (`krakenc.exe`, plan task 5.6) is the tool
+  `v ≈ 3` neither is more right; the full complex solve (`krakenc.exe`, plan task 5.6) is the tool
   for that regime. The volume term has no `γ` in it, which is why moving the same 0.5 dB/λ from the
   half-space into the water improves agreement by a factor of 12 on the same waveguide.
 
-#### A second, unrelated limit: quadrature at a discontinuity (task 5.5)
+#### Quadrature at a material discontinuity
 
-The lossy *standard environments* added in 5.5 are in the suite too. One of them — the only case with
-a lossy *interior* medium — exposed an accuracy limit unrelated to the half-space cutoff above, which
-task 5.7 then fixed. Both columns are kept because the contrast is the evidence:
+The lossy *standard environments* added in task 5.5 are in the suite too. One of them, the only case
+with a lossy *interior* medium, exposed an accuracy limit unrelated to the half-space cutoff above,
+which task 5.7 then fixed. The table keeps both columns to show the before and after:
 
 | environment | max rel Δ Re(kᵣ) | Im(kᵣ) before 5.7 | Im(kᵣ) after 5.7 | tolerance asserted |
 |---|---|---|---|---|
@@ -394,15 +395,15 @@ task 5.7 then fixed. Both columns are kept because the contrast is the evidence:
 | `one_layer_env(; α1=0.4)` | 3.0e-5 | **8.1e-2** | **2.9e-3** | 1e-4 / 1e-2 |
 | `one_layer_env(; α0=0.1, α1=0.4, αb=0.1)` | 4.3e-5 | 8.7e-3 | 7.5e-4 | 1e-4 / 5e-3 |
 
-Exactly the pattern the fix predicts: the two `pekeris` rows are a single water medium over a
-half-space, have no interior interface to straddle, and are untouched — their residual is the
+This is the pattern the fix predicts. The two `pekeris` rows are a single water medium over a
+half-space, have no interior interface to straddle, and are untouched; their residual is the
 bottom-cutoff limit above. The two `one_layer` rows improve 27x and 12x.
 
 **What was wrong.** `ρ` jumps at every interface, and `α` jumps wherever the loss is confined to a
 layer, so the integrands of *both* the energy normalization and the attenuation perturbation are
 discontinuous. Both ran a single `integral_trapz` over the whole flattened mesh, and one straddled
 interval per interface is enough to drop the entire quadrature from second order to first. The
-resulting error pattern was **inverted** from the half-space cases — worst on the *best*-trapped
+resulting error pattern was **inverted** from the half-space cases: worst on the *best*-trapped
 mode, whose loss comes entirely from an exponentially small tail inside the sediment, sampled exactly
 where the quadrature was weakest.
 
@@ -410,7 +411,7 @@ where the quadrature was weakest.
 `Normalize` does. `medium_mesh` / `medium_mode` / `medium_property` in `src/kraken_core.jl` extend
 each medium's samples up to its own top interface: the mode is continuous there so its value carries
 over from the medium above, while the *profiles* are extrapolated from inside the medium as
-`2p₁ - p₂` — exact, because the profiles are piecewise linear and the augmented mesh is uniform. The
+`2p₁ - p₂`, which is exact because the profiles are piecewise linear and the augmented mesh is uniform. The
 two functions had to move together, since the perturbation is a ratio against the normalization and
 they must stay weighted alike.
 
@@ -425,20 +426,20 @@ they must stay weighted alike.
 `kraken.exe`'s automatic mesh carries about **1.6e-3** of its own discretization error, and that is a
 floor rather than a slope: measured against Fortran the apparent order collapses to 0.57, 0.19, 0.05
 as our error drops below its. `"M5.7: the perturbation integral converges at second order"` uses a
-self-reference for exactly this reason, and says so in a comment.
+self-reference for this reason, and says so in a comment.
 
-`VolAtt`, named in the plan, is deliberately **not** in the table: every file in it puts an
-acousto-elastic half-space *above* the surface and gives the bottom the water's own sound speed, so
-there is no trapped spectrum to compare — they are free-space TL cases, not modal ones, and two of
-them additionally use `TopOpt(4:4)` volume-attenuation laws. `TLslices/atten.env` takes their place
-and is a better test anyway: 44 modes, loss in *both* media, and the only case exercising dB/(km·Hz).
+`VolAtt`, named in the plan, is **not** in the table: every file in it puts an acousto-elastic
+half-space *above* the surface and gives the bottom the water's own sound speed, so there is no
+trapped spectrum to compare. They are free-space TL cases, not modal ones, and two of them also use
+`TopOpt(4:4)` volume-attenuation laws. `TLslices/atten.env` takes their place, with 44 modes, loss in
+*both* media, and the only use of dB/(km·Hz).
 
-### Boundary conditions and SSP interpolation validated against Fortran (plan task 6.5)
+### Boundary conditions and SSP interpolation validated against Fortran
 
-Each option Milestone 6 added is compared against `kraken.exe` in `fortran_reference_tests.jl`.
-Measured 2026-09-16.
+Plan task 6.5. Each option Milestone 6 added is compared against `kraken.exe` in
+`fortran_reference_tests.jl`. Measured 2026-09-16.
 
-**Boundary conditions** — `pekeris_env`, which isolates the boundary rows because the column is
+**Boundary conditions**, on `pekeris_env`, which isolates the boundary rows because the column is
 isovelocity:
 
 | top / bottom | Hz | modes | max rel Δkᵣ | min corr | tolerance asserted |
@@ -455,7 +456,7 @@ isovelocity:
 The 50 Hz rigid-bottom outlier is mode 7, which grazes at `kᵣ = 0.046` against `ω/c = 0.209`. A
 small absolute error in `kᵣ²` reads large relative to a small `kᵣ`.
 
-**SSP interpolation** — `munk_env` cannot test this. Its 100 m sampling of a smooth profile barely
+**SSP interpolation.** `munk_env` cannot test this. Its 100 m sampling of a smooth profile barely
 separates the interpolators: at 25 Hz the n²-linear solve matched Fortran's n²-linear run to 6.4e-6 and
 its *C-linear* run to 6.8e-6. The suite uses a coarse duct instead, five samples 50 m apart
 (1540, 1500, 1480, 1500, 1530 m/s over a 1700 m/s half-space), and checks the whole matrix. Max rel
@@ -470,7 +471,7 @@ its *C-linear* run to 6.8e-6. The suite uses a coarse duct instead, five samples
 C-linear and n²-linear are told apart by three orders of magnitude, so a wrong interpolator fails.
 100 Hz is within 4× of every entry (the spline diagonal is 9.6e-9 there). Asserted: diagonal < 1e-6 for
 all three, off-diagonal > 1e-5 for C and N and > 1e-3 for the spline. The spline diagonal was 3.1e-4
-until task 6.8 — see below.
+until task 6.8; see below.
 
 **The toolbox's newly readable decks** (CLOW/CHIGH from the file; asserted in
 `"M6.5: the toolbox's newly readable options against kraken.exe"`):
@@ -485,8 +486,8 @@ until task 6.8 — see below.
 | `Munk/MunkS.env` | S | 50 | 102 | 6.1e-5 | 0.9944935 | 2e-4 / 0.99 |
 | `wedge/wedge.env` | vacuum bottom | 25 | 59 | 4.2e-3 | 0.9998710 | 1e-2 / 0.999 |
 
-The Munk decks' worst modes are 99–102, the last trapped modes at the half-space cutoff, and **it is
-not the interpolator**: the same decks forced to C-linear on both sides give the same 6.1e-5 and
+The Munk decks' worst modes are 99–102, the last trapped modes at the half-space cutoff, and **the
+interpolator does not cause it**: the same decks forced to C-linear on both sides give the same 6.1e-5 and
 0.9944. `wedge.env`'s worst modes are its grazing ones near `kᵣ = 0` (mode 59: `kᵣ = 0.0147` at
 `ω/c = 0.105`). `MunkK1525` and `gulf_rd` narrow CHIGH to 1525 m/s, so Fortran reports only their
 slow modes while Kraken.jl finds every trapped one; the leading modes are what is compared.
@@ -496,15 +497,16 @@ slow modes while Kraken.jl finds every trapped one; the leading modes are what i
 Both were in `src/`, outside a test task's reach, and became plan tasks 6.7 and 6.8. Both are fixed,
 and the `@test_broken` that pinned them are now plain `@test`.
 
-- **Fixed in 6.7 — a perfect bottom could crash the solve when a mode sat at `kᵣ = 0`.** `richard_extrap` takes the
-  square root of an extrapolated `kᵣ²` that has crossed zero (`DomainError`); KRAKEN discards such a
-  mode (`kraken.f90` keeps only `kᵣ² > ω²/cHigh²`). For the 100 m Pekeris column the cutoffs are the
+- **Fixed in 6.7: a perfect bottom could crash the solve when a mode sat at `kᵣ = 0`.**
+  `richard_extrap` takes the square root of an extrapolated `kᵣ²` that has crossed zero
+  (`DomainError`); KRAKEN discards such a mode (`kraken.f90` keeps only `kᵣ² > ω²/cHigh²`). For the 100 m Pekeris column the cutoffs are the
   multiples of `c/2D = 7.5 Hz` with a vacuum bottom and the odd multiples of 3.75 Hz with a rigid one.
   Swept over 20–200 Hz in 0.25 Hz steps: 10 of 721 frequencies fail for vacuum (75, 90, 120, 127.5,
-  … Hz — 10 of the 24 cutoffs in range) and 6 for rigid (93.75, 168.75 and 198.75 Hz, plus a
+  … Hz; 10 of the 24 cutoffs in range) and 6 for rigid (93.75, 168.75 and 198.75 Hz, plus a
   `SingularException` in inverse iteration's LU at 183.25–183.75 Hz, next to the 183.75 Hz cutoff).
-  Every failure is at or beside a cutoff, and round frequencies are the likely ones to be asked for. `Dickins/Precalc/DickinsK.env` (rigid, 230 Hz)
-  and `Bellhop3DTests/DoubleSeamount/DoubleSeamount3D_ray.env` hit it in the toolbox tree.
+  Every failure is at or beside a cutoff, and cutoffs fall on round frequencies, which are the ones
+  people ask for. `Dickins/Precalc/DickinsK.env` (rigid, 230 Hz) and
+  `Bellhop3DTests/DoubleSeamount/DoubleSeamount3D_ray.env` hit it in the toolbox tree.
 
   After 6.7 the same sweep has **no failures** for either bottom, and at all 14 former failure
   frequencies Kraken.jl and `kraken.exe` agree on the mode count exactly and on `kᵣ` to ≤ 3.6e-9. A
@@ -516,8 +518,8 @@ and the `@test_broken` that pinned them are now plain `@test`.
   `CHIGH = 10000` cuts off `kᵣ < 0.1445`). Its modes 1–264, trapped above the sediment, agree to
   3e-8; beyond, they reach into 1000 m of 0.5 dB/λ sediment and drift to 1.6e-3 in `kᵣ`. That is the
   lossy-medium limit of 5.3/5.5, not this: with the attenuation zeroed, all 1212 agree to 2.6e-6.
-- **Fixed in 6.8 — `:cubic_spline` was a different spline from KRAKEN's.** Kraken.jl used DataInterpolations'
-  *natural* spline; `cCubic` calls `CSPLINE` with `IBCBEG = IBCEND = 0`, which `misc/splinec.f90`
+- **Fixed in 6.8: `:cubic_spline` was a different spline from KRAKEN's.** Kraken.jl used
+  DataInterpolations' *natural* spline; `cCubic` calls `CSPLINE` with `IBCBEG = IBCEND = 0`, which `misc/splinec.f90`
   documents as *not-a-knot*. On the duct that is the whole 3.1e-4. Sampling each end condition's
   spline at 0.5 m and solving it as a C-linear profile, the not-a-knot one matches Fortran's spline
   run to 2.1e-7 and the natural one matches Kraken.jl's to 2.0e-7. `"the spline gap is the end
@@ -530,24 +532,24 @@ and the `@test_broken` that pinned them are now plain `@test`.
   spline solve as well as Fortran's. `MunkS.env` reads 6.1e-5 / 0.99449, the same as its C-linear
   control, so what remains there is the cutoff modes, not the interpolator.
 
-### AD through a lossy solve (plan task 5.4)
+### AD through a lossy solve
 
-`modal_attenuation` needed no rule of its own — it is traced arithmetic downstream of the two
-functions that carry rules — and Zygote agrees with ForwardDiff to ~1e-11 on the full parameter
+Plan task 5.4. `modal_attenuation` needed no rule of its own (it is traced arithmetic downstream of
+the two functions that carry rules), and Zygote agrees with ForwardDiff to ~1e-11 on the full parameter
 gradient of a lossy Pekeris solve, `∂/∂α` included. `"Reverse-mode AD through attenuation"` in
 `test/reverse_ad_tests.jl` is the 50 assertions that make that checkable. Two limits it pins:
 
-- **At `α = 0` the two AD modes return opposite one-sided derivatives, silently.** `imag(kᵣ)` is
+- **At `α = 0` the two AD modes return opposite one-sided derivatives, without a warning.** `imag(kᵣ)` is
   identically zero below zero attenuation and linear above, so the point is a kink. ForwardDiff's
   `iszero` on a `Dual` sees the seed, `is_lossy` takes the lossy branch, and it reports the
   right-hand derivative (-0.0372 on the Pekeris case). Zygote evaluates `is_lossy` on the primal,
   gets `false`, the attenuation path never reaches the tape, and it reports the left-hand one, zero.
-  One hair above zero they agree to 1e-15. **Differentiate at a nonzero attenuation.** If you are
+  Just above zero they agree to 1e-15. **Differentiate at a nonzero attenuation.** If you are
   chasing a "broken rule" because two backends disagree on an attenuation derivative, check this
   first.
 - **Mooncake cannot trace the complex path.** `add_attenuation`'s `sqrt` of a `Complex` trips
   `ArgumentError: It is not permissible to bitcast to a differentiable type during AD`. The failing
-  call is inside Mooncake's own `Complex` handling, so no rule in `src/kraken_ad.jl` fixes it —
+  call is inside Mooncake's own `Complex` handling, so no rule in `src/kraken_ad.jl` fixes it, and
   reverse mode over a lossy environment means Zygote today. Pinned as a *specific* expected failure
   matching on `"bitcast"`, so Mooncake gaining complex support shows up as that test going green.
 
@@ -556,13 +558,14 @@ between.** `sum(imag, kr)`, `sum(real, kr)` and `sum(abs2, kr)` all work on ever
 complex-valued loss is refused by Zygote rather than resolved by picking a conjugation convention,
 and that refusal is asserted.
 
-### AD validated against Fortran (plan task 4.7)
+### AD validated against Fortran
 
-`test/reverse_ad_tests.jl` checks the Milestone 4 rules against ForwardDiff and FiniteDiff, but all of
-those differentiate the same `det_sturm` — an error in the determinant moves every one of them
-together. Two checks in `fortran_reference_tests.jl` use `kraken.exe` as the oracle instead.
+Plan task 4.7. `test/reverse_ad_tests.jl` checks the Milestone 4 rules against ForwardDiff and
+FiniteDiff, but all of those differentiate the same `det_sturm`, so an error in the determinant moves
+every one of them together. Two checks in `fortran_reference_tests.jl` use `kraken.exe` as the oracle
+instead.
 
-**Group speeds** — KRAKEN computes them numerically and prints them; Kraken.jl differentiates for
+**Group speeds.** KRAKEN computes them numerically and prints them; Kraken.jl differentiates for
 them. Max relative difference at 100 Hz, on a pinned `nmesh = 4000` (measured 2026-08-09):
 
 | environment | max rel. difference |
@@ -574,13 +577,13 @@ them. Max relative difference at 100 Hz, on a pinned `nmesh = 4000` (measured 20
 | `munk` | 8.8e-5 |
 
 **Pinning the Fortran mesh matters here and nowhere else so far.** On KRAKEN's automatic mesh
-(`NMESH = 0`) `two_layer_slope` disagrees by 3.4e-3 — above the 0.1% bound — because the auto mesh is
+(`NMESH = 0`) `two_layer_slope` disagrees by 3.4e-3, above the 0.1% bound, because the auto mesh is
 too coarse across its 20 m layers to give an accurate numerical `dω/dkᵣ`. Tightening Kraken.jl's own
 tolerances changes that number in the sixth digit; refining Fortran's mesh drops it 29×. The error was
 Fortran's discretization, not Kraken.jl's.
 
-**Gradients against a finite-differenced `kraken.exe`** — the sharper check, since it works for *any*
-parameter rather than only frequency. Perturb one parameter, write two `.env` files, run the binary on
+**Gradients against a finite-differenced `kraken.exe`.** This is the sharper check, since it works for
+*any* parameter rather than only frequency. Perturb one parameter, write two `.env` files, run the binary on
 each, central-difference `Re(kᵣ)`. Zygote vs that oracle, mode 1 at 100 Hz:
 
 | environment | parameter | step | rel. difference |
@@ -596,13 +599,13 @@ each, central-difference `Re(kᵣ)`. Zygote vs that oracle, mode 1 at 100 Hz:
 
 The step is per-parameter because the right one is set by the size of the derivative, not the
 parameter. The `.prt` prints ten digits of `kᵣ ≈ 0.42`, so a difference below ~1e-10 is quantization:
-`∂kᵣ/∂h1` is 3.7e-8, and at `h = 1e-3` the two runs differ by ~14 units in the last printed place —
+`∂kᵣ/∂h1` is 3.7e-8, and at `h = 1e-3` the two runs differ by ~14 units in the last printed place,
 a 4.6% error that falls to 0.21% at `h = 1e-2`. Stepping larger is not free either: `cb` at `h = 1e-1`
 puts the half-space below the water column and the writer rejects the environment.
 
 Reverse mode is separately required to reproduce forward mode, measured **against the gradient's own
 scale** rather than entrywise (pekeris 9.6e-12, one_layer 2.1e-11). These gradients span four orders
-of magnitude — `∂kᵣ/∂h1` is 1.3e-4 of the largest entry — so an entrywise bound on the smallest
+of magnitude (`∂kᵣ/∂h1` is 1.3e-4 of the largest entry), so an entrywise bound on the smallest
 components demands agreement finer than either method achieves. An entrywise `rtol = 1e-8` fails on
 `h1` at 1.3e-7 while the two agree to 2.1e-11 on scale. Same reasoning as `relerr_norm` in
 `reverse_ad_tests.jl`.
@@ -615,7 +618,7 @@ recoverable if Milestone 4 wants them: `git show 580649c:test/ad_tests.jl`.
 
 ## Running Individual Test Files
 
-These run *inside* the test environment (`--project=test`), which is fine — the restriction above
+These run *inside* the test environment (`--project=test`), which is fine: the restriction above
 applies only to `Pkg.test()`. They do require a one-time setup step:
 
 ```bash
@@ -627,15 +630,15 @@ julia --project=test -e 'using Kraken; println(pathof(Kraken))'
 ```
 
 > **Why this is required, and not optional.** `Kraken` is registered in the General registry, and
-> `test/Manifest.toml` is gitignored — `.gitignore` carries a bare `Manifest.toml` pattern, which
+> `test/Manifest.toml` is gitignored: `.gitignore` carries a bare `Manifest.toml` pattern, which
 > matches at *every* depth, so the rule aimed at the root manifest catches the test one too. On a
-> fresh clone — **or in a new git worktree**, which is the easy case to forget, since ignored files
-> are not carried over — `--project=test` therefore resolves `Kraken` from the *registry*. You would
-> be testing the last released version instead of your working tree, silently and with no error; it
-> surfaces as `UndefVarError` on every symbol added since that release. The `Pkg.develop` call above
-> overrides that with a path entry. `Pkg.test()` from the root environment is immune: it always uses
-> the local package, which is why the two run modes can disagree — and the immune one is not the one
-> to trust when they do.
+> fresh clone, **or in a new git worktree** (the easy case to forget, since ignored files are not
+> carried over), `--project=test` therefore resolves `Kraken` from the *registry*. You would be
+> testing the last released version instead of your working tree, with no error; it surfaces as
+> `UndefVarError` on every symbol added since that release. The `Pkg.develop` call above overrides
+> that with a path entry. `Pkg.test()` from the root environment is immune: it always uses the local
+> package, which is why the two run modes can disagree, and the immune one is not the one to trust
+> when they do.
 >
 > `test/runtests.jl` guards this on startup: `check_testing_this_checkout()` compares
 > `pkgdir(Kraken)` against the directory `test/` lives in and aborts with the fix command if they
@@ -645,15 +648,15 @@ julia --project=test -e 'using Kraken; println(pathof(Kraken))'
 > clone, but Kraken.jl is a library: an un-pinned test environment is what makes CI re-resolve and
 > tell you when a new `DataInterpolations`/`NonlinearSolve` release breaks the package. A committed
 > manifest also couples the tree to one Julia version (CI runs a 1.10 leg) and only works while the
-> `[[deps.Kraken]]` entry stays relative — `Pkg.develop` from outside the repo writes an *absolute*
+> `[[deps.Kraken]]` entry stays relative; `Pkg.develop` from outside the repo writes an *absolute*
 > path, which would hard-code one developer's machine into the repo. The startup guard is the fix
 > that has none of those costs. (Once the `julia = "1.10"` bound is dropped, a `[sources]` entry in
-> `test/Project.toml` — Pkg 1.11+ — would make the dev-link declarative and tracked; it is not
+> `test/Project.toml`, available from Pkg 1.11, would make the dev-link declarative and tracked; it is not
 > usable while the LTS is supported.)
 
 ```bash
-# Run a single TestItems file. `t.filename` is an ABSOLUTE path, so match with `endswith`
-# — a `==` against "test/environment_tests.jl" silently selects zero test items and reports
+# Run a single TestItems file. `t.filename` is an ABSOLUTE path, so match with `endswith`;
+# a `==` against "test/environment_tests.jl" silently selects zero test items and reports
 # a green "Package | 0 total".
 julia --project=test -e 'using TestItemRunner; @run_package_tests filter=t->endswith(t.filename, "environment_tests.jl")'
 
@@ -670,10 +673,10 @@ Since Milestone 4 the full run is past six minutes, and both whole-suite routes 
 
 | Route | What happens |
 |---|---|
-| `run_tests(project_path=…)` | The MCP **transport drops mid-call** — "response for tool run_tests was lost". Three times out of three. The server itself stays up; `ping` answers normally straight afterwards. |
+| `run_tests(project_path=…)` | The MCP **transport drops mid-call**: "response for tool run_tests was lost". Three times out of three. The server itself stays up; `ping` answers normally straight afterwards. |
 | `ex(e="using Pkg; Pkg.test()")` | Killed by the gate's **10-minute inactivity timeout**, at exactly 10m00s. `ex` strips stdout, so the gate sees no output and concludes the session is stuck. |
 
-Neither is the suite hanging. Run the files individually instead, from a session rooted at `test/` —
+Neither is the suite hanging. Run the files individually instead, from a session rooted at `test/`;
 each `include` returns its own `Test Summary`, and none of them is long enough to trip either limit:
 
 ```julia
@@ -686,7 +689,7 @@ using TestItemRunner
 ```
 
 A **subprocess launched from inside `ex`**, with its output read back as a value, is how to get a
-`Test Summary` out of a run at all — `ex` strips stdout, so a `Test Summary` printed by an `include`
+`Test Summary` out of a run at all: `ex` strips stdout, so a `Test Summary` printed by an `include`
 goes into the void, and a TestItems file run with `@run_package_tests` otherwise reports nothing:
 
 ```julia
@@ -695,19 +698,19 @@ out = read(pipeline(ignorestatus(cmd), stderr=devnull), String)
 filter(l -> occursin("Test Summary", l) || occursin("Fail", l), split(out, '\n'))
 ```
 
-**It does not lift the 10-minute limit** — tried on the whole suite on 2026-08-09 and killed at
+**It does not lift the 10-minute limit.** Tried on the whole suite on 2026-08-09, it was killed at
 exactly 10m00s, same as a direct `Pkg.test()`. Capturing the subprocess's stdout with `read` is
-precisely what keeps the gate from seeing any activity. So the per-file rule above stands: use the
+what keeps the gate from seeing any activity. So the per-file rule above stands: use the
 subprocess to *see* results, and still run one file at a time. `ex` promotes anything past 30 s to a
 background job; poll `check_eval` sparingly.
 
 Two things to watch. A TestItems filter that matches nothing still reports green, so confirm it
-selected something before believing the result — `filter = t -> (push!(items, t.filename); false)`
+selected something before believing the result: `filter = t -> (push!(items, t.filename); false)`
 counts the items it would have run (22 across `environment_tests.jl` and `integration_tests.jl`).
 And per-file runs are weaker evidence than `Pkg.test()`: they resolve against `test/Manifest.toml`,
 so they cannot catch an undeclared dependency (see the stdlib note below). Say which one you ran.
 
-Wall-clock times above vary by a factor of three depending on how many Julia sessions are live —
+Wall-clock times above vary by a factor of three depending on how many Julia sessions are live:
 the same `fortran_reference_tests.jl` took 1m07 on an idle machine and 3m03 with three sessions and
 background jobs competing. Shut down sessions you are not using (`manage_repl(command="shutdown")`)
 before reading anything into a timing.
