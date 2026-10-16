@@ -529,6 +529,14 @@ also every other partial, from a reverse sweep over stored intermediates. The re
 piecewise constant (see `scale_const`), so both sequences are scaled by the same factor and the
 ratio `D / dD_dkr` is unaffected.
 """
+# One step's rescaling for `sturm_and_slope`: the new `(p0, p1, d0, d1)` from `(p1, p2, d1, d2)`.
+# It multiplies only when `scale_const` asks for a factor other than 1, which is exact either way.
+@inline function rescaled_step(p1, p2, d1, d2)
+    s = scale_const(p1, p2)
+    s != 1 && return (p1 * s, p2 * s, d1 * s, d2 * s)
+    return (p1, p2, d1, d2)
+end
+
 function sturm_and_slope(kr, env, props, cache)
     a = cache.a_vec
     e = cache.e_vec
@@ -539,18 +547,25 @@ function sturm_and_slope(kr, env, props, cache)
     ζ = bottom_row_factor(env.bottom_bc)
     T = promote_type(typeof(kr), eltype(a), eltype(e), eltype(L), typeof(g))
 
+    kr2 = kr^2
+    two_kr = 2 * kr
     p0, p1 = zero(T), one(T)
     d0, d1 = zero(T), zero(T)
-    p2, d2 = zero(T), zero(T)
-    for k in 1:N
-        α, dα = k == N ? (ζ * a[k] - g, -dg) : (a[k], zero(dg))
-        c = kr^2 * L[k] - α
+    # Interior rows in one loop and the bottom row, which carries the boundary condition, after it,
+    # as in `det_sturm`. The arithmetic of every step is unchanged, so the result is bit for bit the
+    # same; on Munk's 6250-point mesh this took a call from 38.3 to 21.9 µs.
+    @inbounds for k in 1:(N - 1)
+        c = kr2 * L[k] - a[k]
         p2 = c * p1 - e[k]^2 * p0
-        d2 = (2 * kr * L[k] - dα) * p1 + c * d1 - e[k]^2 * d0
-        s = scale_const(p1, p2)
-        p0, p1 = p1 * s, p2 * s
-        d0, d1 = d1 * s, d2 * s
+        d2 = (two_kr * L[k]) * p1 + c * d1 - e[k]^2 * d0
+        p0, p1, d0, d1 = rescaled_step(p1, p2, d1, d2)
     end
+    @inbounds begin
+        c = kr2 * L[N] - (ζ * a[N] - g)
+        p2 = c * p1 - e[N]^2 * p0
+        d2 = (two_kr * L[N] - (-dg)) * p1 + c * d1 - e[N]^2 * d0
+    end
+    _, p1, _, d1 = rescaled_step(p1, p2, d1, d2)
     return p1, d1
 end
 
@@ -563,7 +578,7 @@ function theorem rather than from the bracketing solver's iterations.
 For plain numbers this returns `kr` unchanged. The method that does the work is in
 `ext/KrakenForwardDiffExt.jl`, for problems that carry ForwardDiff `Dual`s anywhere `det_sturm` reads
 them: the cache, `cb`, `ρb` or `freq`. Without it, a `Dual` wavenumber's partials are whatever the
-bracketing solver's last step left there. With `ITP()`, the default before `Brent()`, that step was a
+bracketing solver's last step left there. With `ITP()`, the default before 0.5, that step was a
 secant across a bracket a few ulps wide, and it was up to 1.6% off in group speed (plan task 6.11).
 """
 implicit_root(kr, env, props, cache) = implicit_root(root_numtype(kr, env, props, cache), kr, env, props, cache)
@@ -606,7 +621,18 @@ solver, and its cost is one extra pass over the mesh rather than a tape of the i
 
 `span` gets a `ZeroTangent`: it selects *which* root is found, not where that root sits.
 """
-function ChainRulesCore.rrule(::typeof(solve_for_kr), span, env, props, cache; method=Brent(), kwargs...)
+# `mode_energy(ψ, w) = Σ wᵢ ψᵢ²` is a loop, so Zygote, which would trace it element by element, gets
+# its derivative here: ∂/∂ψ = 2 w .* ψ and ∂/∂w = ψ.^2. ForwardDiff and Mooncake differentiate the loop.
+function ChainRulesCore.rrule(::typeof(mode_energy), ψ::AbstractVector{<:Real}, w::AbstractVector{<:Real})
+    E = mode_energy(ψ, w)
+    function mode_energy_pullback(ΔE)
+        Δ = unthunk(ΔE)
+        return (NoTangent(), @thunk(2 .* Δ .* w .* ψ), @thunk(Δ .* abs2.(ψ)))
+    end
+    return E, mode_energy_pullback
+end
+
+function ChainRulesCore.rrule(::typeof(solve_for_kr), span, env, props, cache; method=SafeguardedNewton(), kwargs...)
     kr = solve_for_kr(span, env, props, cache; method=method, kwargs...)
     s = sturm_sensitivities(kr, env, props, cache)
 

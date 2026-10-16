@@ -1575,7 +1575,7 @@ function bisection(env::UnderwaterEnv, props::AcousticProblemProperties, cache::
 end
 
 """
-    find_kr(env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; method=Brent(), kwargs...)
+    find_kr(env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; method=SafeguardedNewton(), kwargs...)
 
 Find every trapped-mode wavenumber of the finite-difference system on one mesh, in descending order:
 [`bisection`](@ref) brackets them and [`solve_for_kr`](@ref) refines each bracket. Returns an empty
@@ -1586,10 +1586,14 @@ calls this on several meshes and extrapolates.
 
 # Arguments
 - `env`, `props`, `cache`: the environment, its mesh, and the system assembled on it.
-- `method`: any bracketing solver from NonlinearSolve.jl accepted by `IntervalNonlinearProblem`.
-  The default `Brent()` takes 12.1 determinant evaluations per mode on the second Munk mesh at 50 Hz;
-  `ITP()` takes 28.5 there and plain bisection 31.2, because the determinant is a high-degree
-  polynomial across these brackets and ITP's interpolation steps rarely beat its bisection steps.
+- `method`: [`SafeguardedNewton`](@ref) (the default), or any bracketing solver from
+  NonlinearSolve.jl accepted by `IntervalNonlinearProblem`. On the second Munk mesh at 50 Hz, with
+  no starting guesses, `SafeguardedNewton()` takes 7.4 determinant evaluations per mode, `Brent()`
+  12.1, `ITP()` 28.5 and plain bisection 31.2. The determinant is a high-degree polynomial across
+  these brackets, and ITP's interpolation steps rarely beat its bisection steps.
+- `guesses`: optional starting points, one per mode in the same descending order as the result,
+  passed to [`solve_for_kr`](@ref) as `guess`. [`kraken_jl`](@ref) passes each mesh's wavenumbers to
+  the next, finer mesh. A mode with no entry is bracketed and solved as usual.
 - `kwargs...`: passed to `solve`, e.g. `abstol` and `reltol`.
 
 For the closed-form Pekeris model, see `find_kr(::PekerisUnderwaterEnv, freq)`.
@@ -1610,20 +1614,29 @@ julia> round.(find_kr(env, props, AcousticProblemCache(env, props)); digits=4)
 ```
 """
 function find_kr(
-    env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; method=Brent(), kwargs...
+    env::UnderwaterEnv,
+    props::AcousticProblemProperties,
+    cache::AcousticProblemCache;
+    method=SafeguardedNewton(),
+    guesses=nothing,
+    kwargs...,
 )
     kr_spans = bisection(env, props, cache)
     if isnothing(kr_spans)
         return Vector{eltype(props.freq)}()
     end
+    guess_for(i) = (guesses === nothing || i > length(guesses)) ? nothing : guesses[i]
     # `map` rather than filling a preallocated vector: this function is on the seam, and the
     # `setindex!` the loop used to do is exactly what reverse mode cannot follow. `bisection` is
     # `@non_differentiable`, so indexing its result carries no derivative either way.
-    return map(i -> solve_for_kr(kr_spans[i, :], env, props, cache; method=method, kwargs...), axes(kr_spans, 1))
+    return map(
+        i -> solve_for_kr(kr_spans[i, :], env, props, cache; method=method, guess=guess_for(i), kwargs...),
+        axes(kr_spans, 1),
+    )
 end
 
 """
-    solve_for_kr(span, env, props, cache; method=Brent(), kwargs...)
+    solve_for_kr(span, env, props, cache; method=SafeguardedNewton(), kwargs...)
 
 Refine one mode's wavenumber: the root of [`det_sturm`](@ref) inside the bracket `span`.
 
@@ -1631,11 +1644,16 @@ Refine one mode's wavenumber: the root of [`det_sturm`](@ref) inside the bracket
 - `span`: a two-element `[left, right]` bracket containing exactly one root, i.e. one row of
   [`bisection`](@ref)'s result.
 - `env`, `props`, `cache`: the environment, its mesh, and the system assembled on it.
-- `method`: a bracketing solver accepted by `IntervalNonlinearProblem`.
-- `kwargs...`: passed to `solve`.
+- `method`: [`SafeguardedNewton`](@ref) (the default), or a bracketing solver accepted by
+  `IntervalNonlinearProblem`, whose result then gets one Newton step ([`newton_polish`](@ref)).
+- `guess`: an optional starting point near the root, used by `SafeguardedNewton()` and ignored by
+  other methods. On Munk's second mesh at 50 Hz, started from the first mesh's roots, it takes 3.9
+  steps a mode (at most 5), against 12.1 `det_sturm` calls for `Brent()`; the roots agree to 5.3e-15.
+- `kwargs...`: passed to `solve` when `method` is a NonlinearSolve solver.
 
 This is one of the two functions carrying a reverse-mode rule: its derivative comes from the implicit
-function theorem applied to `det_sturm`, not from differentiating the solver's iterations.
+function theorem applied to `det_sturm`, not from differentiating the solver's iterations. The root
+does not depend on `guess`, so neither does the derivative.
 
 # Example
 ```jldoctest
@@ -1651,7 +1669,10 @@ julia> round(solve_for_kr(spans[1, :], env, props, cache); digits=4)
 0.4179
 ```
 """
-function solve_for_kr(span, env, props, cache; method=Brent(), kwargs...)
+function solve_for_kr(span, env, props, cache; method=SafeguardedNewton(), guess=nothing, kwargs...)
+    if method isa SafeguardedNewton
+        return implicit_root(bracketed_newton(span, env, props, cache; guess=guess), env, props, cache)
+    end
     function f(u, p)
         return first(det_sturm(u, env, props, cache))
     end
@@ -1675,7 +1696,73 @@ function newton_polish(kr, span, env, props, cache)
     D, dD = sturm_and_slope(kr, env, props, cache)
     kr_new = kr - D / dD
     lo, hi = minmax(span[1], span[2])
-    return isfinite(kr_new) && lo <= kr_new <= hi ? kr_new : kr
+    pv = primal_value
+    return isfinite(pv(kr_new)) && pv(lo) <= pv(kr_new) <= pv(hi) ? kr_new : kr
+end
+
+"""
+    SafeguardedNewton()
+
+The default root solver for [`solve_for_kr`](@ref), [`find_kr`](@ref) and [`kraken_jl`](@ref):
+Newton's method on [`det_sturm`](@ref) inside the bracket, bisecting whenever a Newton step would
+leave it. It starts from the bracket's midpoint, or from `guess` when one is given, and stops once a
+step moves the root by less than 16 ulps, so `abstol` and `reltol` do not apply to it.
+
+`sturm_and_slope` gives the determinant and its `kr`-derivative in one pass that costs the same as
+a `det_sturm` call (10 µs on Munk's 3125-point mesh at 50 Hz), so a Newton step costs what one
+`Brent()` evaluation does. On that mesh this takes 7.6 evaluations a mode against `Brent()`'s 10.4
+(9.4 to reach `1e-10`, then a Newton step), and from the first mesh's roots it takes 3.9 on the
+second mesh. The bracket holds exactly one root, so the iteration cannot converge to another mode,
+and bisection guarantees it converges.
+"""
+struct SafeguardedNewton end
+
+"""
+    primal_value(x)
+
+The plain number inside `x`: `x` itself here, the innermost value of a ForwardDiff `Dual` in
+`ext/KrakenForwardDiffExt.jl`. The solver's branches compare these, never `Dual`s, because
+ForwardDiff's `<` breaks a tie between equal values by comparing the partials. On Pekeris at 184 Hz
+a Newton iterate landed exactly on the bracket end; the plain solve saw it outside the bracket and
+bisected, the `Dual` solve saw it inside and stopped, and mode 9 came out 3e-15 apart, breaking
+the guarantee that a `Dual` solve carries exactly the plain solve's wavenumbers.
+"""
+primal_value(x) = x
+
+function bracketed_newton(span, env, props, cache; guess=nothing, maxiter=200)
+    pv = primal_value
+    lo, hi = pv(span[1]) <= pv(span[2]) ? (span[1], span[2]) : (span[2], span[1])
+    kr = guess === nothing ? (lo + hi) / 2 : (
+        if pv(guess) < pv(lo)
+            lo
+        elseif pv(guess) > pv(hi)
+            hi
+        else
+            guess
+        end
+    )
+    # Whether the determinant is negative at `lo`, which says which end each iterate replaces. It
+    # costs a `det_sturm` call, 18.8 µs a mode on Munk's second mesh at 50 Hz, so it is only looked
+    # up once a Newton step leaves the bracket. Started from the first mesh's roots, none did there;
+    # from the midpoint on the first mesh, 37 of 102 modes needed it.
+    # The rescaling in `det_sturm` multiplies by positive factors only, so the sign is the true one.
+    lo_negative = nothing
+    for _ in 1:maxiter
+        D, dD = sturm_and_slope(kr, env, props, cache)
+        iszero(pv(D)) && return kr
+        lo_negative === nothing || ((pv(D) < 0) == lo_negative ? (lo = kr) : (hi = kr))
+        kr_next = kr - D / dD
+        if !(isfinite(pv(kr_next)) && pv(lo) < pv(kr_next) < pv(hi))
+            if lo_negative === nothing
+                lo_negative = pv(first(det_sturm(lo, env, props, cache))) < 0
+                (pv(D) < 0) == lo_negative ? (lo = kr) : (hi = kr)
+            end
+            kr_next = (lo + hi) / 2
+        end
+        abs(pv(kr_next) - pv(kr)) <= 16 * eps(Float64) * abs(pv(kr)) && return kr_next
+        kr = kr_next
+    end
+    return kr
 end
 
 ### Inverse Iteration
@@ -1794,11 +1881,61 @@ end
 `∫ ψ(z)² / ρ(z) dz` over the water column and every sediment layer, integrated medium by medium so
 the density discontinuities at the interfaces are resolved exactly rather than averaged across.
 """
-function mode_energy(ψ, env::UnderwaterEnv, props::AcousticProblemProperties)
+mode_energy(ψ, env::UnderwaterEnv, props::AcousticProblemProperties) = mode_energy(ψ, mode_energy_weights(env, props))
+"""
+    mode_energy(ψ, w::AbstractVector)
+
+`sum(w .* abs2.(ψ))`, as a loop that allocates nothing. It runs once per mode, and the temporary
+array the broadcast built was 24 KiB a mode on Munk at 50 Hz. Zygote gets the derivative from the
+rule in `src/kraken_ad.jl`; ForwardDiff and Mooncake differentiate the loop.
+"""
+function mode_energy(ψ, w::AbstractVector)
+    acc = zero(promote_type(eltype(w), real(eltype(ψ))))
+    @inbounds for i in eachindex(ψ, w)
+        acc += w[i] * abs2(ψ[i])
+    end
+    return acc
+end
+
+"""
+    mode_energy_weights(env::UnderwaterEnv, props::AcousticProblemProperties)
+
+The vector `w` with `mode_energy(ψ, env, props) == sum(w .* abs2.(ψ))`, one entry per mesh point.
+
+[`mode_energy`](@ref) is a trapezoid rule over each medium's closed mesh ([`medium_mesh`](@ref)) of
+`ψ²/ρ`, and every sample of the closed mode ([`medium_mode`](@ref)) is either a sample of `ψ` or a
+boundary zero. So the integral is a fixed weighted sum of the `ψ_k²`: node `j` of medium `i` carries
+its trapezoid weight over `ρ` there, and a medium's top-interface node, which repeats the last sample
+of the medium above, adds its weight to that sample. The weights depend on the mesh and the density
+and not on the mode, so [`inverse_iteration`](@ref) computes them once per mesh rather than once per
+mode. On Munk at 50 Hz that took normalization from 107 to 9.6 µs a mode, and its allocation from
+36.4 to 5.9 MiB per solve. The two forms agree to rounding (2.5e-16 relative, measured on seven
+boundary and layer combinations); they sum in a different order.
+"""
+function mode_energy_weights(env::UnderwaterEnv, props::AcousticProblemProperties)
     zz = medium_mesh(env, props)
-    vv = medium_mode(ψ, env, props)
     ρρ = medium_property(density, env.ρ, env, props)
-    return sum(i -> integral_trapz(abs2.(vv[i]) ./ ρρ[i], zz[i]), eachindex(zz))
+    ranges = layer_ranges(props)
+    n = length(ranges)
+    q = [trapezoid_weights(zz[i]) ./ ρρ[i] for i in 1:n]
+    # Where a medium's own samples start in its closed mesh: after the top-interface node, if any.
+    # That node exists below every interface and at a pressure-release surface, as in `close_medium`.
+    head(i) = (i > 1 || has_top_node(env.top_bc)) ? 1 : 0
+    medium_weights(i) = begin
+        inner = q[i][(head(i) + 1):(head(i) + length(ranges[i]))]
+        i < n ? vcat(inner[1:(end - 1)], inner[end] + q[i + 1][1]) : inner
+    end
+    return reduce(vcat, map(medium_weights, 1:n))
+end
+
+# Whether `close_top` prepends a node to the first medium's mesh.
+has_top_node(::PressureRelease) = true
+has_top_node(::RigidBoundary) = false
+
+# Weights of the trapezoid rule on the nodes `x`: `integral_trapz(y, x) == sum(weights .* y)`.
+function trapezoid_weights(x)
+    Δ = x[2:end] .- x[1:(end - 1)]
+    return vcat(Δ[1], Δ[1:(end - 1)] .+ Δ[2:end], Δ[end]) ./ 2
 end
 
 function create_finite_diff_matrix!(kr, env, props, cache)
@@ -1880,39 +2017,192 @@ function mode_eigenvector(
         δ = 1e3 * eps(Float64) * maximum(abs, cache.a_vec) / minimum(cache.λ_scaling)
         iterate_eigenvector(sqrt(kr^2 > δ ? kr^2 - δ : kr^2 + δ), env, props, cache, N, reltol)
     end
-    w0 = ifelse(w0[1] < 0, w0 .* -1, w0) # Ensure the first element is positive for consistency between modes
+    primal_value(w0[1]) < 0 && (w0 .*= -1) # Ensure the first element is positive for consistency between modes
     return kr_new, w0
 end
 
 # Inverse iteration at shift `kr_try`. Leaves the cache as it found it, including when the solve throws.
+# Returns a freshly allocated eigenvector; everything else lives in the task's `eigen_workspace`.
 function iterate_eigenvector(kr_try, env, props, cache, N, reltol)
     local kr_new
-    w0 = initial_mode_guess(env.top_bc, env.bottom_bc, typeof(kr_try), N)
-    w1 = similar(w0)
+    ws = eigen_workspace(promote_type(typeof(kr_try), eltype(cache.a_vec)), N)
+    w0, w1 = ws.w0, ws.w1
+    initial_mode_guess!(w0, env.top_bc, env.bottom_bc)
     create_finite_diff_matrix!(kr_try, env, props, cache) # Generate the tridigonal finite-diff matrix with the new kr
     try
-        # Factor once: the shift is fixed, so every iteration solves against the same matrix. `lu`
-        # copies, leaving `cache.A` for `return_finite_diff_matrix!` to restore. A singular matrix
-        # throws `SingularException` here, as `\` did, for `mode_eigenvector` to catch.
-        F = lu(cache.A)
+        # Factor once: the shift is fixed, so every iteration solves against the same matrix. The
+        # factorization copies `cache.A` into the workspace, leaving it for `return_finite_diff_matrix!`
+        # to restore. A singular matrix throws `SingularException` here, for `mode_eigenvector` to catch.
+        F = shifted_lu!(ws, cache.A)
         for ii in 1:50 # We typically don't need more than 50 iterations
-            ldiv!(w1, F, w0)
-            m = last(findmax(abs, w1))
-            kr_new = w0[m] / w1[m] + kr_try
-            normalize!(w1)
+            shifted_ldiv!(copyto!(w1, w0), F)
+            # One sweep for both `‖w1‖` and `w0 ⋅ w1`. Both iterates then have unit norm, so their
+            # distance up to sign is `√(2 - 2|cosθ|)` and needs no sweep of its own.
+            ν, c = norm_and_dot(w1, w0)
+            w1 ./= ν
             # Converged when the direction stops changing, up to sign. A root converged to only 1e-6
             # can put the shift on the far side of the eigenvalue, and then every solve flips the
             # sign of an already-converged vector. The componentwise test this replaces read exactly
             # 2 on every pass and ran all 50 iterations for 33 of Munk's 102 modes at 50 Hz.
-            s = dot(w0, w1) < 0 ? -one(eltype(w1)) : one(eltype(w1))
-            converged = norm(w1 .- s .* w0) < reltol # Default is 1%, in the 2-norm of unit vectors
-            w0 .= w1
+            converged = sqrt(max(2 - 2 * abs(primal_value(c) / primal_value(ν)), 0.0)) < reltol # Default is 1%, 2-norm of unit vectors
+            if converged || ii == 50
+                # The iteration's own eigenvalue estimate, from the largest component, on the last
+                # pass only: it is the one returned. `ν * w1` is the solve's unnormalized output.
+                m = argmax_abs(w1)
+                kr_new = w0[m] / (ν * w1[m]) + kr_try
+            end
+            w0, w1 = w1, w0 # the new iterate becomes `w0`; the old buffer is overwritten next pass
             converged && break
         end
     finally
         return_finite_diff_matrix!(kr_try, env, props, cache) # Reset the cache
     end
-    return kr_new, w0
+    return kr_new, copy(w0)
+end
+
+"""
+    eigen_workspace(T, N)
+
+Scratch vectors of element type `T` for [`iterate_eigenvector`](@ref), sized for an `N`-point mesh.
+
+One set per element type is kept in `task_local_storage()` and resized as the mesh changes, so
+consecutive modes and solves reuse it. Before this, each mode allocated 253 KiB here (Munk at
+50 Hz: 25 MiB of a solve's 68 MiB), and repeated solves spent about half their time in the garbage
+collector. Task-local storage keeps concurrent tasks from sharing buffers. Automatic
+differentiation never sees them: `mode_eigenvector` carries its own rule for every backend, and a
+ForwardDiff `Dual` is a different `T`, so it gets its own set.
+"""
+function eigen_workspace(::Type{T}, N) where {T}
+    ws = get!(() -> EigenWorkspace{T}(), task_local_storage(), (:kraken_eigen_workspace, T))::EigenWorkspace{T}
+    resize!(ws.dl, max(N - 1, 0))
+    resize!(ws.du, max(N - 1, 0))
+    resize!(ws.du2, max(N - 2, 0))
+    resize!(ws.swap, max(N - 1, 0))
+    foreach(v -> resize!(v, N), (ws.d, ws.dinv, ws.w0, ws.w1))
+    return ws
+end
+
+# `shifted_lu!`'s factors (`dl`, `d`, `du`, `du2`, `dinv`, `swap`) and the two iterates `w0`, `w1`.
+struct EigenWorkspace{T}
+    dl::Vector{T}
+    d::Vector{T}
+    du::Vector{T}
+    du2::Vector{T}
+    dinv::Vector{T}
+    swap::Vector{Bool}
+    w0::Vector{T}
+    w1::Vector{T}
+end
+EigenWorkspace{T}() where {T} = EigenWorkspace{T}(T[], T[], T[], T[], T[], Bool[], T[], T[])
+
+# The starting vector for inverse iteration, written into `w`: uniform, or, between two rigid
+# boundaries, a decaying profile that is not orthogonal to the plane-wave mode.
+initial_mode_guess!(w, ::BoundaryCondition, ::BoundaryCondition) = fill!(w, inv(sqrt(eltype(w)(length(w)))))
+function initial_mode_guess!(w, ::RigidBoundary, ::RigidBoundary)
+    N = length(w)
+    w .= exp.(-(0:(N - 1)) ./ N)
+    return normalize!(w)
+end
+
+# The index of `w`'s largest-magnitude entry. `findmax(abs, w)` gives the same index but took a third
+# of `mode_eigenvector`'s time (Munk, 3125 points), through its generic NaN-aware comparisons.
+function argmax_abs(w)
+    m = firstindex(w)
+    best = abs(primal_value(w[m]))
+    @inbounds for i in eachindex(w)
+        a = abs(primal_value(w[i]))
+        if a > best
+            best = a
+            m = i
+        end
+    end
+    return m
+end
+
+# `(‖x‖₂, y ⋅ x)` in one sweep.
+function norm_and_dot(x, y)
+    n2 = zero(real(eltype(x)))
+    d = zero(promote_type(eltype(x), eltype(y)))
+    @inbounds for i in eachindex(x, y)
+        n2 += abs2(x[i])
+        d += y[i] * x[i]
+    end
+    return sqrt(n2), d
+end
+
+"""
+    shifted_lu!(ws::EigenWorkspace, A::Tridiagonal)
+
+LU factorization of the shifted finite-difference matrix, with partial pivoting, into the workspace
+`ws`, for [`iterate_eigenvector`](@ref)'s repeated solves. Returns the factors for
+[`shifted_ldiv!`](@ref). `A` is not modified.
+
+This is LAPACK's `gttrf`, the algorithm `LinearAlgebra.lu(::Tridiagonal)` also runs, with two
+differences: it stores reciprocal pivots, so the back substitution multiplies where it would divide,
+and it writes into preallocated storage. On Munk's 3125-point matrix at 50 Hz a solve takes 23.8 µs
+against 31.8 µs for `ldiv!` on `lu`'s result, and the solution differs by 2.2e-13 relative.
+
+Pivoting is kept. The shift sits within roundoff of an eigenvalue, and an unpivoted `LDLᵀ`
+(`ldlt(::SymTridiagonal)`, 12.8 µs per solve) loses accuracy without warning when a pivot
+partway down comes out small. Fortran KRAKEN's `InverseIteration` and LAPACK's `dstein` pivot for
+the same reason. An exactly zero pivot throws `SingularException`, as `lu` does.
+"""
+function shifted_lu!(ws::EigenWorkspace, A::Tridiagonal)
+    dl, d, du, du2, dinv, swap = ws.dl, ws.d, ws.du, ws.du2, ws.dinv, ws.swap
+    copyto!(dl, A.dl)
+    copyto!(d, A.d)
+    copyto!(du, A.du)
+    fill!(du2, zero(eltype(du2)))
+    fill!(swap, false)
+    N = length(d)
+    @inbounds for i in 1:(N - 1)
+        if abs(d[i]) >= abs(dl[i])
+            iszero(d[i]) && throw(SingularException(i))
+            fact = dl[i] / d[i]
+            dl[i] = fact
+            d[i + 1] -= fact * du[i]
+        else
+            fact = d[i] / dl[i]
+            d[i] = dl[i]
+            dl[i] = fact
+            tmp = du[i]
+            du[i] = d[i + 1]
+            d[i + 1] = tmp - fact * d[i + 1]
+            if i < N - 1
+                du2[i] = du[i + 1]
+                du[i + 1] = -fact * du[i + 1]
+            end
+            swap[i] = true
+        end
+    end
+    iszero(d[N]) && throw(SingularException(N))
+    dinv .= inv.(d)
+    return (dl=dl, dinv=dinv, du=du, du2=du2, swap=swap)
+end
+
+"""
+    shifted_ldiv!(b, F)
+
+Overwrite `b` with the solution of `A x = b`, for `F = shifted_lu(A)`: LAPACK's `gttrs`.
+"""
+function shifted_ldiv!(b, F)
+    (; dl, dinv, du, du2, swap) = F
+    N = length(dinv)
+    @inbounds for i in 1:(N - 1)
+        if swap[i]
+            tmp = b[i]
+            b[i] = b[i + 1]
+            b[i + 1] = tmp - dl[i] * b[i + 1]
+        else
+            b[i + 1] -= dl[i] * b[i]
+        end
+    end
+    @inbounds b[N] *= dinv[N]
+    @inbounds N > 1 && (b[N - 1] = (b[N - 1] - du[N - 1] * b[N]) * dinv[N - 1])
+    @inbounds for i in (N - 2):-1:1
+        b[i] = (b[i] - du[i] * b[i + 1] - du2[i] * b[i + 2]) * dinv[i]
+    end
+    return b
 end
 
 """
@@ -1956,7 +2246,12 @@ true
 ```
 """
 function normalize_mode(v, kr, env::UnderwaterEnv, props::AcousticProblemProperties)
-    amp1 = mode_energy(v, env, props) # Amplitude of the waveguide, integrated medium by medium
+    return normalize_mode(v, kr, env, props, mode_energy_weights(env, props))
+end
+
+# `w` from `mode_energy_weights(env, props)`, so a caller normalizing many modes on one mesh builds it once.
+function normalize_mode(v, kr, env::UnderwaterEnv, props::AcousticProblemProperties, w::AbstractVector)
+    amp1 = mode_energy(v, w) # Amplitude of the waveguide, integrated medium by medium
     amp2 = bottom_energy(env.bottom_bc, v, kr, env, props) # Same for the bottom half-space, if any
     return v ./ sqrt(amp1 + amp2)
 end
@@ -2150,8 +2445,7 @@ julia> size(modes)
 function inverse_iteration(
     kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; reltol=0.01
 )
-    kr_new, v = mode_eigenvector(kr, env, props, cache; reltol=reltol)
-    return kr_new, normalize_mode(v, kr_new, env, props)
+    return normalized_eigenpair(kr, env, props, cache, mode_energy_weights(env, props); reltol=reltol)
 end
 
 function inverse_iteration(
@@ -2161,9 +2455,16 @@ function inverse_iteration(
         return kr_vec, Matrix{eltype(kr_vec)}(undef, length(cache.a_vec), 0)
     end
     # `map` plus `reduce(hcat, ...)` rather than filling a preallocated matrix: this method is on the
-    # seam, and writing columns into a buffer is exactly the mutation reverse mode cannot follow.
-    solved = map(kr -> inverse_iteration(kr, env, props, cache; kws...), kr_vec)
+    # seam, and writing columns into a buffer is exactly the mutation reverse mode cannot follow. The
+    # energy weights are the same for every mode on this mesh, so they are built once, outside it.
+    w = mode_energy_weights(env, props)
+    solved = map(kr -> normalized_eigenpair(kr, env, props, cache, w; kws...), kr_vec)
     return first.(solved), reduce(hcat, last.(solved))
+end
+
+function normalized_eigenpair(kr, env, props, cache, w; reltol=0.01)
+    kr_new, v = mode_eigenvector(kr, env, props, cache; reltol=reltol)
+    return kr_new, normalize_mode(v, kr_new, env, props, w)
 end
 
 ### Full KRAKEN solve with Richardson's Extrapolation
@@ -2212,7 +2513,7 @@ function propagating_count(kr2, env, freq)
 end
 
 """
-    kraken_jl(env, freq; n_meshes=5, rmax=10_000, method=Brent(), dont_break=false, abstol=1e-10, reltol=1e-10)
+    kraken_jl(env, freq; n_meshes=5, rmax=10_000, method=SafeguardedNewton(), dont_break=false, abstol=1e-10, reltol=1e-10)
 
 Solve the normal-mode problem for environment `env` at frequency `freq` (Hz). Top-level entry point.
 
@@ -2229,14 +2530,14 @@ Returns an empty solution when the environment supports no trapped modes at this
 - `n_meshes`: maximum number of mesh refinement levels to extrapolate across.
 - `rmax`: maximum range of interest (m). Sets the convergence criterion: refinement stops once the
   wavenumber change would shift phase by less than one radian over `rmax`.
-- `method`: bracketing solver passed to `IntervalNonlinearProblem`.
+- `method`: the root solver, [`SafeguardedNewton`](@ref) by default, or any bracketing solver
+  accepted by `IntervalNonlinearProblem`. Each finer mesh starts from the previous mesh's roots.
 - `dont_break`: run all `n_meshes` levels even after convergence. Useful for studying mesh error.
-- `abstol`, `reltol`: root-solver tolerances on the first mesh; the finer meshes use the solver's own
-  defaults. The first-mesh roots set the mode shapes and the base of the extrapolation, so their
-  error carries into both. At the old default of 1e-6, `Brent()` stops close to that tolerance:
-  wavenumbers on Munk at 50 Hz were 1.3e-6 from `kraken.exe` and the analytic rigid-bottom mode
-  shapes were off by 1.2e-6. At 1e-10 those are 3.7e-8 and 6.5e-11, and the solve is no slower,
-  because inverse iteration converges in fewer passes from a better root.
+- `abstol`, `reltol`: first-mesh tolerances for a NonlinearSolve `method`; the finer meshes use that
+  solver's own defaults, and `SafeguardedNewton()` converges to 16 ulps and ignores both. The
+  first-mesh roots set the mode shapes and the base of the extrapolation, so their error carries
+  into both: with `Brent()` at 1e-6, Munk's wavenumbers at 50 Hz were 1.3e-6 from `kraken.exe` and
+  the analytic rigid-bottom mode shapes were off by 1.2e-6; at 1e-10 those were 3.7e-8 and 6.5e-11.
 
 # Differentiability
 
@@ -2277,7 +2578,9 @@ julia> kraken_jl(UnderwaterEnv(pekeris_env(; αb=0.5)...), 100.0)   # lossy: com
 NormalModeSolution{ComplexF64}(5 modes)
 ```
 """
-function kraken_jl(env, freq; n_meshes=5, rmax=10_000, method=Brent(), dont_break=false, abstol=1e-10, reltol=1e-10)
+function kraken_jl(
+    env, freq; n_meshes=5, rmax=10_000, method=SafeguardedNewton(), dont_break=false, abstol=1e-10, reltol=1e-10
+)
     # convert frequency to float if needed
     if freq isa Int
         freq = float(freq)
@@ -2319,7 +2622,8 @@ function kraken_jl(env, freq; n_meshes=5, rmax=10_000, method=Brent(), dont_brea
         factor = 2^(i_power - 1)
         props_new = AcousticProblemProperties(env, freq; factor=factor)
         cache = AcousticProblemCache(env, props_new)
-        krs_new = find_kr(env, props_new, cache; method=method)
+        # The previous level's roots start Newton on this one; see `solve_for_kr`'s `guess`.
+        krs_new = find_kr(env, props_new, cache; method=method, guesses=krs_old)
         if length(krs_new) < M
             M = length(krs_new)
         end
@@ -2349,7 +2653,10 @@ function kraken_jl(env, freq; n_meshes=5, rmax=10_000, method=Brent(), dont_brea
         krs_old = krs_new
     end
 
-    return NormalModeSolution(add_attenuation(rich_krs[1:M], modes[:, 1:M], env, props), modes[:, 1:M], env, props)
+    # Slice the modes only when some were dropped: each `modes[:, 1:M]` copies the whole matrix
+    # (2.4 MiB for Munk at 50 Hz), and this line used to make two such copies on every call.
+    kept_modes = M == size(modes, 2) ? modes : modes[:, 1:M]
+    return NormalModeSolution(add_attenuation(rich_krs[1:M], kept_modes, env, props), kept_modes, env, props)
 end
 
 """

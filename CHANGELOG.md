@@ -8,24 +8,36 @@ All notable changes to Kraken.jl are documented here. The format follows
 
 ### Changed
 
-- **`kraken_jl` is 2.7 to 4.6 times faster** on the five benchmark cases, most where there are many
-  modes: Munk at 50 Hz (102 modes) went from 355 ms to 78 ms, against 36 ms for `kraken.exe`'s own
-  solve, and Pekeris at 500 Hz from 12.9 ms to 2.9 ms, against 3.7 ms.
-  `test/benchmark_vs_fortran.jl` measures this. Three changes did it:
-  - Inverse iteration tests convergence up to sign. A shift on the far side of the eigenvalue flips
-    an already-converged vector on every solve, and the old componentwise test never passed: 33 of
-    Munk's 102 modes ran the full 50 iterations. The matrix is also factored once per mode, not once
-    per iteration.
-  - The default root solver is `Brent()`, not `ITP()`. On these brackets ITP's steps are almost all
-    bisections: 28.5 determinant calls per mode on the second Munk mesh, against Brent's 12.1. Each
-    root then takes one Newton step, so its error no longer depends on the tolerance; without it a
-    root left 2.5e-11 off moved `∂kᵣ/∂ρ` by 2.4e-4 relative.
-  - `det_sturm` multiplies by its rescaling factor only when the factor is not 1. The result is bit
-    for bit the same, and a 6250-point call takes 18.7 µs instead of 41.
-- **`kraken_jl`'s default `abstol` and `reltol` are `1e-10`, not `1e-6`.** They set the first mesh's
-  roots, which the mode shapes and the extrapolation are built from. At `1e-6` with `Brent()`, Munk's
-  wavenumbers were 1.3e-6 from `kraken.exe`; at `1e-10` they are 3.7e-8, at no extra cost.
-  `compare_with_fortran`'s defaults follow.
+- **`kraken_jl` is 4.9 to 11.8 times faster than in 0.4.0, and faster than Fortran `kraken.exe` on
+  every benchmark case.** Munk at 50 Hz (102 modes) went from 355 ms to 30.1 ms, against 31.4 ms for
+  a local gfortran build of `kraken.exe` with its process launch subtracted; Pekeris at 500 Hz from
+  12.9 ms to 1.31 ms, against 3.6 ms. Allocation per Munk solve fell from 67.9 to 10.2 MiB.
+  `test/benchmark_vs_fortran.jl` measures all of this. The changes:
+  - **Inverse iteration** tests convergence up to sign. A shift on the far side of the eigenvalue
+    flips an already-converged vector on every solve, and the old componentwise test never passed:
+    33 of Munk's 102 modes ran the full 50 iterations. The matrix is factored once per mode, by a
+    `gttrf`-style LU with reciprocal pivots into reused task-local buffers, and the convergence test
+    takes one sweep instead of three.
+  - **The default root solver is `SafeguardedNewton()`**: Newton's method on the Sturm determinant
+    inside the bisection bracket, bisecting whenever a step would leave it. On the first Munk mesh
+    it takes 7.6 determinant evaluations a mode, against 10.4 for `Brent()` and about 30 for `ITP()`,
+    whose steps on these brackets are almost all bisections. Each finer mesh starts from the
+    previous mesh's roots (`find_kr`'s new `guesses` keyword), and then takes 3.9.
+  - **Normalization** is a dot product with weights computed once per mesh (`mode_energy_weights`),
+    instead of resampling the density and rebuilding the medium meshes for every mode: 107 to 9.6
+    µs a mode.
+  - **`det_sturm` and `sturm_and_slope`** multiply by the rescaling factor only when it is not 1, and
+    handle the bottom row outside the loop. Both results are bit for bit the same; on a 6250-point
+    mesh `det_sturm` went from 41 to 18.7 µs and `sturm_and_slope` from 38.3 to 21.9 µs.
+  - `kraken_jl` no longer copies the mode matrix twice on return.
+- **`kraken_jl`'s default `abstol` and `reltol` are `1e-10`, not `1e-6`.** They apply only to a
+  NonlinearSolve `method`; `SafeguardedNewton()` converges to 16 ulps. With `Brent()` at `1e-6`,
+  Munk's wavenumbers were 1.3e-6 from `kraken.exe`; at `1e-10`, 3.7e-8. `compare_with_fortran`'s
+  defaults follow.
+- **The solver's branches compare plain values**, through `primal_value`, so a ForwardDiff solve
+  makes the same decisions as the plain one. ForwardDiff's `<` breaks ties between equal values by
+  the partials; on Pekeris at 184 Hz that sent the two down different paths and mode 9 came out
+  3e-15 apart.
 
 ## [0.4.0] — 2026-10-16
 

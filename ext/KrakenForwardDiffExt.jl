@@ -36,6 +36,8 @@ nesting(::Type) = 0
 innermost(x::Dual) = innermost(value(x))
 innermost(x) = x
 
+Kraken.primal_value(x::Dual) = innermost(x)
+
 function Kraken.implicit_root(::Type{D}, kr, env, props, cache) where {D<:Dual}
     k = convert(D, kr)
     D0 = nothing
