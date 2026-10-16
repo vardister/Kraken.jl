@@ -115,7 +115,7 @@ three [`BoundaryCondition`](@ref)s, passed as the `top_bc` and `bottom_bc` keywo
 |---|---|---|---|---|
 | [`PressureRelease`](@ref) | `V` | pressure vanishes: a free surface or a vacuum | default | ✓ |
 | [`RigidBoundary`](@ref) | `R` | normal velocity vanishes | ✓ | ✓ |
-| [`AcousticHalfspace`](@ref) | `A` | a homogeneous fluid below, from `sspHS` | — | default |
+| [`AcousticHalfspace`](@ref) | `A` | a homogeneous fluid below, from `sspHS` | refused | default |
 
 ```@example env
 rigid = UnderwaterEnv(pekeris_env()...; bottom_bc=RigidBoundary())
@@ -140,8 +140,8 @@ pressure-release surface, and an ice cover is elastic, which Kraken.jl does not 
 ## Sound-speed interpolation
 
 Between the samples of the `ssp` table the sound speed is interpolated in one of three ways, chosen
-with the `ssp_interp` keyword. The choice is not cosmetic: on a coarsely sampled profile, the
-options give wavenumbers that differ in the fourth significant digit.
+with the `ssp_interp` keyword. On a coarsely sampled profile, the three options give wavenumbers that
+differ in the fourth significant digit.
 
 | `ssp_interp` | KRAKEN option | Interpolated quantity |
 |---|---|---|
@@ -174,17 +174,17 @@ fig
 ```
 
 C-linear and n²-linear differ by a fraction of a m/s between samples, too little to see at this
-scale. It is still enough to move `kᵣ` by about 1e-4, which the
-[Validation](@ref validation) page measures. All three agree at the samples. The spline is the one KRAKEN's `CSPLINE` computes, with the same
-not-a-knot end conditions. That differs from a natural spline by enough, near the ends of a coarse
-profile, to show up in `kᵣ`.
+scale. It is still enough to move `kᵣ` by about 1e-4, which the [Validation](@ref validation) page
+measures. All three agree at the samples. The spline is the one KRAKEN's `CSPLINE` computes, with
+the same not-a-knot end conditions; a natural spline would differ from it near the ends of a coarse
+profile by enough to change `kᵣ`.
 
 Density and attenuation are interpolated linearly under every option.
 
 !!! warning "The spline is limited to a single medium"
     KRAKEN splines each medium separately. Kraken.jl builds one interpolant for the whole column, and
-    a spline through the doubled sample at an interface would be badly wrong, so `:cubic_spline`
-    refuses a profile with more than one medium rather than returning a wrong answer.
+    a spline through the doubled sample at an interface would overshoot on both sides of it, so
+    `:cubic_spline` refuses a profile with more than one medium rather than returning a wrong answer.
 
 ## [Attenuation](@id env-attenuation)
 
@@ -225,7 +225,7 @@ env.atten_units, is_lossy(env)
 Four of the six depend on frequency, so an environment stores the value you gave it and converts it
 only once a frequency is known. [`attenuation_nepers_per_m`](@ref) does the conversion.
 
-### How it is computed, and where the approximation runs out
+### Perturbation method and its accuracy limits
 
 Kraken.jl follows `kraken.exe`: it solves the **real** eigenproblem and adds the loss as a first-order
 perturbation of the eigenvalue,
@@ -245,8 +245,8 @@ of the mode spectrum.
 
 **1. The perturbation is first order in ``v = 2\omega a_b/(c_b\gamma^2)``, not in ``a_b``.** Since
 ``\gamma \to 0`` at the bottom cutoff, `v` grows without bound for the *least*-trapped mode, so a
-strongly attenuating half-space degrades the top of the mode spectrum first. This is inherent to the
-method; only the full complex solve fixes it. Put the loss in the water or a sediment layer
+strongly attenuating half-space degrades the top of the mode spectrum first. A full complex solve
+avoids this error; no refinement of the perturbation does. Put the loss in the water or a sediment layer
 (`α0`, or `α1` in [`one_layer_env`](@ref)) when its accuracy matters.
 
 **2. Everything else is ordinary discretization, at second order.** The energy normalization and the

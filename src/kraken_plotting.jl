@@ -249,7 +249,7 @@ for f in (
         Base.get_extension(@__MODULE__, :KrakenMakieExt) === nothing || throw(MethodError($f, args))
         return error(
             $("`" * string(f) * "` needs a Makie backend, which is a weak dependency of Kraken.jl. ") *
-            "Run `using CairoMakie` (or `using GLMakie`) first — that loads Makie and activates " *
+            "Run `using CairoMakie` (or `using GLMakie`) first; that loads Makie and activates " *
             "Kraken's plotting extension.",
         )
     end

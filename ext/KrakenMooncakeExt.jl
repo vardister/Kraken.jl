@@ -1,29 +1,28 @@
 """
 Mooncake support for the reverse-mode rules in `src/kraken_ad.jl`.
 
-Mooncake does not read `ChainRulesCore.rrule`s on its own — it derives its own rules from the IR
-unless a signature is declared a primitive. Left to itself it walks straight into the solver's
+Mooncake does not read `ChainRulesCore.rrule`s on its own; it derives its own rules from the IR
+unless a signature is declared a primitive. Left to itself it walks into the solver's
 `range`/`TwicePrecision` arithmetic and stops with a `bitcast` error, and even if it got past that it
-would be taping the bracketing solver and the inverse iteration, which is exactly what this milestone
-exists to avoid. So every signature that carries a rule in `kraken_ad.jl` is declared a Mooncake
-primitive here, and `Mooncake.@from_rrule` reuses the ChainRules rule behind it. Nothing in this file
-states a derivative; it is a translation layer, and `test/reverse_ad_tests.jl` checks Mooncake against
+would be taping the bracketing solver and the inverse iteration, which the rules exist to avoid. So
+every signature that carries a rule in `kraken_ad.jl` is declared a Mooncake primitive here, and
+`Mooncake.@from_rrule` reuses the ChainRules rule behind it. Nothing in this file states a derivative; it is a translation layer, and `test/reverse_ad_tests.jl` checks Mooncake against
 ForwardDiff on the same targets as Zygote.
 
 # The tangent bridge
 
 `@from_rrule` converts between Mooncake's tangent representation and ChainRules' on every call, and
 the conversion it ships covers scalars, arrays and tuples but not `ChainRulesCore.Tangent`s over
-composite types — which is what all three of this package's rules return, since their arguments are
+composite types, which is what all three of this package's rules return, since their arguments are
 `UnderwaterEnv`, `AcousticProblemProperties`, `AcousticProblemCache` and the two sampled profiles.
 The `increment_and_get_rdata!` methods below add that case. They are a mechanical field-by-field
 recursion, but they do reach into Mooncake's `FData`/`RData`/`MutableTangent` split, which is
-internal — hence the `Mooncake = "0.5"` compat bound in `Project.toml`.
+internal, hence the `Mooncake = "0.5"` compat bound in `Project.toml`.
 
 Mooncake splits a tangent in two: `fdata` is the part that is mutated in place during the reverse
 pass (arrays), and `rdata` is the part that is returned and accumulated (scalars). A struct therefore
 has *both*, keyed by field: `UnderwaterEnv`'s `h_vec` lives in fdata while its `cb` lives in rdata.
-A ChainRules `Tangent` has neither split nor, necessarily, every field — `Tangent{E}(; cb=…, ρb=…)`
+A ChainRules `Tangent` has neither split nor, necessarily, every field: `Tangent{E}(; cb=…, ρb=…)`
 names only two, and `getproperty` returns `ZeroTangent()` for the rest. So the recursion walks the
 *Mooncake* side's field list, pulls the matching ChainRules field, and lets the existing
 `ZeroTangent`/`NoTangent` methods absorb everything the rule left out.

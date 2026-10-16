@@ -12,7 +12,7 @@ export PekerisUnderwaterEnv, find_kr, get_modal_function, pressure_f, find_spans
     PekerisUnderwaterEnv(c1, cb, ρ1, ρb, depth)
 
 The Pekeris waveguide in closed form: an isovelocity water layer over a homogeneous fluid half-space.
-This is the separate, analytic solve path — [`find_kr`](@ref) on one of these solves the dispersion
+This is the separate, analytic solve path: [`find_kr`](@ref) on one of these solves the dispersion
 relation directly instead of going through the finite-difference machinery, which makes it the
 reference the general solver is checked against. It is lossless.
 
@@ -113,7 +113,7 @@ end
 """
     find_spans(func, x)
 
-The consecutive pairs `(x[i], x[i+1])` across which `func` goes from positive to negative — the
+The consecutive pairs `(x[i], x[i+1])` across which `func` goes from positive to negative, the
 brackets `find_kr(::PekerisUnderwaterEnv, freq)` refines. Returns a lazy generator of tuples, or an
 empty vector when there are none.
 

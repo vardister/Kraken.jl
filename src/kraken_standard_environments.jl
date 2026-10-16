@@ -13,9 +13,9 @@ Canonical Pekeris waveguide: one isovelocity water layer over a homogeneous flui
 Returns `(ssp, layers, sspHS)` in the KRAKEN `.env` record layout, ready for
 [`UnderwaterEnv`](@ref). `ssp` columns are `[z, cp, cs, ρ, αp, αs]`.
 
-This is the environment with a closed-form solution — see [`PekerisUnderwaterEnv`](@ref) and
-`find_kr(::PekerisUnderwaterEnv, freq)` — which makes it the reference for checking the
-finite-difference solver. Note that the closed-form solution is *lossless*: give this environment an
+This is the environment with a closed-form solution ([`PekerisUnderwaterEnv`](@ref) and
+`find_kr(::PekerisUnderwaterEnv, freq)`), which makes it the reference for checking the
+finite-difference solver. The closed-form solution is *lossless*: give this environment an
 attenuation and only the finite-difference path models it.
 
 # Arguments
@@ -23,7 +23,7 @@ attenuation and only the finite-difference path models it.
 - `cb`, `ρb`: bottom half-space sound speed and density. `cb` must exceed `c0` for trapped modes.
 - `depth`: water depth (m), i.e. the interface with the half-space.
 - `α0`, `αb`: compressional attenuation in the water column and the half-space. **Units are the
-  environment's, not this function's** — `UnderwaterEnv` defaults to dB/wavelength and takes an
+  environment's, not this function's**: `UnderwaterEnv` defaults to dB/wavelength and takes an
   `atten_units` keyword. Both default to zero, which leaves the waveguide lossless and every
   wavenumber real.
 
@@ -103,7 +103,7 @@ of the bottom-cutoff blow-up that a large `αb` suffers.
 
 `α1` makes the integrand *discontinuous* at the top of the sediment, which is why
 [`modal_attenuation`](@ref) and [`normalize_mode`](@ref) integrate medium by medium rather than with
-one trapezoid over the whole mesh — a single straddled interval there is enough to cost an order of
+one trapezoid over the whole mesh: a single straddled interval there is enough to cost an order of
 convergence. With that, `α1 = 0.4` dB/λ agrees with `kraken.exe` to 2.9e-3 at the default mesh and
 converges at second order; a flat trapezoid gave 8.1e-2 and first order.
 
@@ -300,7 +300,7 @@ c(z) = 1500 \\, [1 + ε (ẑ - 1 + e^{-ẑ})], \\quad ẑ = 2(z - 1300)/1300, \\
 ```
 
 so its minimum is exactly 1500.0 m/s at the 1300 m sound channel axis, where `ẑ = 0`. That value and
-location are the defining property of the profile — the environment tests assert both.
+location are the defining property of the profile, and the environment tests assert both.
 
 It takes no arguments.
 

@@ -12,7 +12,7 @@ iteration, and Richardson extrapolation over successively finer meshes. It is ch
 unmodified Fortran KRAKEN on every push.
 
 What it adds is **differentiability**. The whole solve, from the environment through the modes to the
-pressure field, can be differentiated in forward or reverse mode. So group speeds, sensitivities, and
+pressure field, can be differentiated in forward or reverse mode, so group speeds, sensitivities, and
 gradient-based inversion come from the same code that computes the field.
 
 ## Installation
@@ -47,9 +47,9 @@ It does not model leaky modes, elastic media, or range dependence. The
 
 ## Where to go next
 
-- [Getting started](@ref) — from an environment to modes, a field, a pulse, and group speeds.
-- [Environments](@ref environments) — the matrix layout and every option an environment takes.
-- [Automatic differentiation](@ref) — forward and reverse mode, what each costs, and two worked
+- [Getting started](@ref): from an environment to modes, a field, a pulse, and group speeds.
+- [Environments](@ref environments): the matrix layout and every option an environment takes.
+- [Automatic differentiation](@ref): forward and reverse mode, what each costs, and two worked
   inversions.
-- [Validation](@ref validation) — agreement with Fortran KRAKEN, computed when these docs are built.
-- [API reference](@ref) — every exported function and type.
+- [Validation](@ref validation): agreement with Fortran KRAKEN, computed when these docs are built.
+- [API reference](@ref): every exported function and type.

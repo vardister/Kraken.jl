@@ -63,7 +63,7 @@ the mesh leaves out.
 boundary whose value the boundary condition already fixes: a pressure-release surface has no `z = 0`
 sample and a vacuum bottom has no `z = D` sample, because in both cases `φ = 0` there and the
 finite-difference system has no unknown to solve for. Interpolating without them would extrapolate
-across the very region where the mode goes to zero, so they are put back here.
+across the region where the mode goes to zero, so they are put back here.
 
 Returns the depth vector and a mode matrix with one column per mode, both with the same number of
 rows.
@@ -122,7 +122,7 @@ end
 
 Evaluate the mode shapes of `sol` at the depths `z` (metres, positive downwards).
 
-Returns a `length(z) × nmodes` matrix — row per depth, column per mode — for a vector `z`, and a
+Returns a `length(z) × nmodes` matrix (row per depth, column per mode) for a vector `z`, and a
 `1 × nmodes` matrix for a scalar one. Interpolation is linear between mesh points; below the last
 mesh point the mode continues as `φ(D)·exp(-γ(z - D))` into the bottom half-space, which is what
 KRAKEN's `ReadOneMode` does. Depths below a rigid or vacuum bottom are an error, as is a negative
@@ -159,8 +159,8 @@ as_vector(x) = collect(x)
     SUMMATION_MODES
 
 The mode-summation conventions [`acoustic_field`](@ref) accepts: `:coherent` and `:incoherent`,
-matching `field.exe`'s `.flp` task codes `C` (or blank) and `I`. There is no third one — see the
-note at the top of `kraken_field.jl` for why `:semicoherent` is not among them.
+matching `field.exe`'s `.flp` task codes `C` (or blank) and `I`. There is no third; the note at the
+top of `kraken_field.jl` explains why `:semicoherent` is not among them.
 """
 const SUMMATION_MODES = (:coherent, :incoherent)
 
@@ -173,7 +173,7 @@ function summation_mode(mode::Symbol)
             "incoherent TL weighted by the Lloyd-mirror source pattern, which is indexed by ray " *
             "take-off angle. A mode sum has no take-off angle, and the surface image is already " *
             "inside φ(zₛ), so the weight would double-count. `field.exe` has no such option " *
-            "either — it accepts only C/blank and I. Use :coherent or :incoherent.",
+            "either; it accepts only C/blank and I. Use :coherent or :incoherent.",
         ),
     )
     return throw(ArgumentError("`mode = :$mode` is not a summation mode; expected one of $SUMMATION_MODES"))
@@ -189,7 +189,7 @@ mode_sum(::Val{:incoherent}, Q, terms) = complex(abs(Q) * sqrt(sum(abs2, terms))
 The complex acoustic pressure field of the normal-mode solution `sol` for a point source at depth
 `zs`, on the grid of `ranges` (metres) and receiver depths `zr` (metres).
 
-Returns a `length(zr) × length(ranges)` matrix — depth down the rows, range across the columns —
+Returns a `length(zr) × length(ranges)` matrix (depth down the rows, range across the columns)
 always, including when `ranges` or `zr` is a single number. `transmission_loss` is the same field in
 dB.
 
@@ -203,11 +203,11 @@ dB.
 - `nmodes`: how many modes to sum, from the first (largest `kᵣ`). Defaults to all of them; the
   solution has already discarded everything that is not propagating.
 - `mode`: `:coherent` or `:incoherent`, matching `field.exe`'s `.flp` task codes `C` (or blank) and
-  `I`. A coherent sum adds the modes as complex amplitudes and so shows the interference structure —
+  `I`. A coherent sum adds the modes as complex amplitudes and so shows the interference structure:
   the nulls a real receiver sees at one frequency. An incoherent sum adds their intensities,
-  `√(Σ|term|²)`, which discards the phase and leaves the smooth mean level: what you want when the
-  interference pattern is unresolved, unknown, or about to be averaged away anyway. `:semicoherent`
-  is deliberately absent; ask for it and the error says why.
+  `√(Σ|term|²)`, which discards the phase and leaves the smooth mean level, for when the
+  interference pattern is unresolved, unknown, or about to be averaged away. `:semicoherent` is not
+  offered; asking for it raises an error that explains why.
 
 # Conventions
 
@@ -217,8 +217,8 @@ the `exp(-iωt)` convention used in Jensen et al. See the comments at the top of
 where each factor comes from.
 
 An incoherent field has thrown its phase away by construction, so what comes back is a magnitude
-carried in a complex number for a uniform return type — real, non-negative, and not a pressure you
-can interfere with anything. Only `:coherent` returns a genuine complex pressure.
+carried in a complex number for a uniform return type: real, non-negative, and not a pressure that
+can be added to another field. Only `:coherent` returns a complex pressure with its phase.
 
 The field is the far-field mode sum, which is singular at `r = 0` and inaccurate within a wavelength
 or so of the source; zero and negative ranges are rejected rather than returned as `Inf`.
@@ -258,8 +258,8 @@ end
 """
     transmission_loss(sol, ranges, zs, zr; nmodes=length(sol.kr), mode=:coherent)
 
-Transmission loss in dB, `-20log10|p|`, for the field described by [`acoustic_field`](@ref) — same
-arguments, same `length(zr) × length(ranges)` layout, same conventions.
+Transmission loss in dB, `-20log10|p|`, for the field described by [`acoustic_field`](@ref), with the
+same arguments, the same `length(zr) × length(ranges)` layout and the same conventions.
 
 The reference is the pressure a point source of the same strength would produce at 1 m in free
 space, which is the normalization built into the field itself, so nothing further is subtracted
@@ -318,18 +318,17 @@ export broadband_field, synthesize_pulse
 
 Solve `env` at every frequency in `freqs` and evaluate the field at each, for pulse synthesis.
 
-Returns a `length(freqs) × length(zr) × length(ranges)` array of complex pressure — frequency down
+Returns a `length(freqs) × length(zr) × length(ranges)` array of complex pressure: frequency down
 the first axis, then the same depth × range layout [`acoustic_field`](@ref) returns. Extra `kwargs`
 go to [`kraken_jl`](@ref).
 
 A frequency that supports no trapped modes contributes zeros rather than an error, and `f = 0` is
-zero by definition; both are normal at the low end of a band, and both are what the transform wants
-there anyway.
+zero by definition; both are normal at the low end of a band, and zero is the value the transform
+needs there.
 
-Each frequency is an independent solve, which is the whole reason this is worth having as its own
-function: the loop below is a `map` over `freqs` precisely so that turning it into a threaded map is
-the entire change needed to parallelize it. That is deliberately not done yet — a parallel version
-of a wrong answer is still wrong, and task 7.4 is what confirms the serial one.
+Each frequency is an independent solve, so the loop is a `map` over `freqs`: turning it into a
+threaded map is the only change needed to parallelize it. That has not been done here; a parallel
+version of a wrong answer is still wrong, and task 7.4 is what confirms the serial one.
 
 # Arguments
 - `env`: the [`UnderwaterEnv`](@ref) to solve.
@@ -383,8 +382,8 @@ conv_symbol(::Val{S}) where {S} = S
 
 Transform a complex spectrum `P` sampled at `freqs` into a real time series at `times`.
 
-`P` is indexed by frequency along its first axis — a vector for one receiver, or the array
-[`broadband_field`](@ref) returns — and the result replaces that axis with one of length
+`P` is indexed by frequency along its first axis (a vector for one receiver, or the array
+[`broadband_field`](@ref) returns), and the result replaces that axis with one of length
 `length(times)`. `freqs` must be evenly spaced; the spacing is the `Δf` of the transform.
 
 # Keyword arguments

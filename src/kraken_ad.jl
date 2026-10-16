@@ -42,9 +42,9 @@ using ChainRulesCore
 Reverse-mode rule for one layer's mesh.
 
 [`layer_mesh`](@ref) is `collect(range(z_top, z_bot, Nz))`, and `range` is the one thing on the seam
-that cannot simply be rewritten: its `StepRangeLen` carries `Base.TwicePrecision` fields that
-reverse mode has no adjoint for, while any hand-rolled replacement shifts interior points by a few
-ulp — enough, measured, to break the cross-validation tolerances the solver is held to. So the
+that cannot be rewritten: its `StepRangeLen` carries `Base.TwicePrecision` fields that reverse mode
+has no adjoint for, while any hand-rolled replacement shifts interior points by a few ulp, which was
+measured to break the cross-validation tolerances the solver is held to. So the
 primal keeps `range` and the derivative is stated here, where it is exact anyway: the mesh is a
 linear interpolation between its endpoints, `z_j = (1 - t_j) z_top + t_j z_bot` with
 `t_j = (j - 1) / (Nz - 1)`.
@@ -86,28 +86,28 @@ scatters `du1`/`dt1` into slot `idx` and `du2`/`dt2` into slot `idx + 1`.
 # Matching the primal rather than re-deriving it
 
 `val` is recomputed here rather than taken from `A(z)` so that the two can be compared: the rule is a
-derivative of the primal only if it selected the same interval, and with duplicated knots — which
-this package uses deliberately, placing `z0` and `z0 + eps(z0)` to represent a discontinuity — the
-interval on either side of a boundary carries a completely different slope. `test/reverse_ad_tests.jl`
-asserts `val == A(z)` bit for bit across every standard environment for exactly that reason.
+derivative of the primal only if it selected the same interval. With duplicated knots (this package
+places `z0` and `z0 + eps(z0)` to represent a discontinuity) the intervals on either side of a
+boundary carry different slopes. `test/reverse_ad_tests.jl` asserts `val == A(z)` bit for bit across
+every standard environment for that reason.
 
 Three cases, all inherited from `DataInterpolations` instead of chosen:
 
-  * **Constant extrapolation** outside `[t₁, t_N]` — the value is the nearer endpoint's, so it carries
+  * **Constant extrapolation** outside `[t₁, t_N]`: the value is the nearer endpoint's, so it carries
     the whole cotangent and the knots and the query point carry none. The comparisons are strict
     (`z < t₁`, `z > t_N`), so *at* the last knot the interior branch runs and `∂val/∂z` is the last
     interval's slope, not zero.
-  * **Coincident knots** (`t_{i+1} == t_i`) — `linear_interpolation_parameters` forces the slope to
+  * **Coincident knots** (`t_{i+1} == t_i`): `linear_interpolation_parameters` forces the slope to
     zero rather than dividing, making `val = u_i` a constant. Every partial but `∂val/∂u_i` is zero.
-  * **Interior** — with `w = (z - t_i)/Δt` and `slope = Δu/Δt`:
+  * **Interior**, with `w = (z - t_i)/Δt` and `slope = Δu/Δt`:
     `∂val/∂u_i = 1 - w`, `∂val/∂u_{i+1} = w`, `∂val/∂t_i = -slope(1 - w)`,
     `∂val/∂t_{i+1} = -slope·w`, `∂val/∂z = slope`.
 
 # A query exactly on a knot takes the interval *ending* there
 
-Which of the two adjoining intervals a knot-coincident query belongs to changes no value — both
+Which of the two adjoining intervals a knot-coincident query belongs to changes no value (both
 branches evaluate to the shared knot's own `u`, bit for bit on every mesh point of every standard
-environment — but it changes the derivative completely, and here it is not a detail: `get_z_vec`
+environment), but it changes the derivative, and here that matters: `get_z_vec`
 ends each layer's mesh exactly on that layer's lower boundary, so *every* interface knot is queried
 exactly. Taking the interval that *starts* at the knot means taking the `eps(z0)`-wide seam this
 package uses to spell a discontinuity, whose slope is ~1e15 and whose two huge partials then have to
@@ -115,11 +115,11 @@ cancel through unrelated paths in reverse mode; on `two_layer_slope_env` that le
 wrong. Taking the interval that ends there gives the water column's own slope, which is the answer
 the physics wants and the one ForwardDiff already produced.
 
-That agreement with ForwardDiff is not a coincidence but it *is* an accident: `searchsortedlast` puts
-a tie in the right-hand interval, and ForwardDiff only lands in the left-hand one because its `isless`
-on `Dual` breaks value ties on the partials, so a `Float64` query compares below an equal-valued
-`Dual` knot. Relying on that would be relying on a comparison ForwardDiff does not document, so the
-side is selected explicitly here — `side = :first, idx_shift = -1`, which is `searchsortedfirst - 1`
+ForwardDiff gets that answer through an undocumented detail. `searchsortedlast` puts a tie in the
+right-hand interval, and ForwardDiff only lands in the left-hand one because its `isless` on `Dual`
+breaks value ties on the partials, so a `Float64` query compares below an equal-valued `Dual` knot.
+Rather than rely on that comparison, the rule selects the side explicitly:
+`side = :first, idx_shift = -1`, which is `searchsortedfirst - 1`
 and identical to `searchsortedlast` at every query that is *not* exactly on a knot.
 """
 function linear_interp_partials(A, z)
@@ -178,7 +178,7 @@ end
 
 The forward half shared by the [`soundspeed`](@ref) and [`density`](@ref) rules: the interpolated
 value at `z`, plus the per-query partials the pullback scatters. `z` may be a number or a vector; the
-value returned follows it, exactly as the primal's does.
+value returned follows it, as the primal's does.
 """
 function profile_partials(prof, z::Number)
     p = linear_interp_partials(prof.f, z)
@@ -400,16 +400,16 @@ Returns a `NamedTuple`:
 
 | Field | Meaning |
 |---|---|
-| `D` | the determinant itself — identical to `first(det_sturm(kr, env, props, cache))` |
+| `D` | the determinant itself, identical to `first(det_sturm(kr, env, props, cache))` |
 | `dkr` | `∂D/∂kr`, including the path through [`get_g`](@ref) |
-| `da`, `de`, `dλ` | `∂D/∂cache.a_vec`, `.e_vec`, `.λ_scaling` — one entry per mesh point |
+| `da`, `de`, `dλ` | `∂D/∂cache.a_vec`, `.e_vec`, `.λ_scaling`, one entry per mesh point |
 | `dcb`, `dρb`, `dfreq` | `∂D/∂` the half-space parameters, via `g` only |
 
 # Why this is written out rather than obtained by nesting AD
 
 The rule below needs `∂D/∂θ` for *every* entry of the three cache vectors, because that is how the
 environment's influence reaches the determinant. Forward-mode over `det_sturm` would cost one sweep
-per entry — O(N²) for an O(N) problem — which would defeat the point of reverse mode entirely. The
+per entry, O(N²) for an O(N) problem, which would defeat the point of reverse mode. The
 Sturm recurrence is a product of 2×2 transfer matrices, so its adjoint is a backward sweep of the
 same length as the forward one, and that is what this does.
 
@@ -418,7 +418,7 @@ same length as the forward one, and that is what this does.
 `det_sturm` multiplies the sequence by `scale_const`'s factor `s` whenever it would overflow or
 underflow. `s` is piecewise constant in both `kr` and the parameters, so it contributes no derivative
 and cancels exactly in the implicit-function ratio: `-(∂(S·D)/∂θ)/(∂(S·D)/∂kr) = -D_θ/D_kr`. The
-forward sweep here records each `s` and the reverse sweep treats it as the constant it is — the
+forward sweep here records each `s` and the reverse sweep treats it as the constant it is. The
 resulting `D` is the *rescaled* determinant, matching `det_sturm` bit for bit, and every derivative
 carries the same `S` factor so the ratio is unaffected.
 """
@@ -495,7 +495,7 @@ Chain a cotangent `dg` on the bottom half-space term [`get_g`](@ref) back onto t
 is built from, returning a `NamedTuple` `(dkr, dcb, dρb, dfreq)`.
 
 `g = √(kr² - q²) / ρb` with `q = 2π·freq/cb` is three scalar expressions, so both rules in this file
-state its derivatives rather than differentiating it — `test/reverse_ad_tests.jl` checks them against
+state its derivatives rather than differentiating it; `test/reverse_ad_tests.jl` checks them against
 ForwardDiff. A rigid or vacuum bottom has no half-space and `g ≡ 0`, so every sensitivity is zero.
 """
 half_space_sensitivities(dg, kr, env, props) = half_space_sensitivities(env.bottom_bc, dg, kr, env, props)
@@ -592,15 +592,15 @@ the discretized problem depends on. Differentiating that identity gives
 
     ∂kr*/∂θ = -D_θ / D_kr
 
-with both partials evaluated at the converged root — so the rule never looks inside the bracketing
+with both partials evaluated at the converged root, so the rule never looks inside the bracketing
 solver, and its cost is one extra pass over the mesh rather than a tape of the iteration.
 
 `θ` reaches `D` by two routes and the rule emits a cotangent for each:
 
   * through `cache.a_vec`, `.e_vec`, `.λ_scaling`, which is where the sound-speed profile, the
     density profile, and the mesh spacing enter. The AD backend carries these on through
-    [`finite_difference_coefficients`](@ref) — that function is on the differentiable seam precisely
-    so this hand-off works.
+    [`finite_difference_coefficients`](@ref), which is on the differentiable seam so that this
+    hand-off works.
   * through `env.cb`, `env.ρb`, and `props.freq`, which enter directly via [`get_g`](@ref)'s
     half-space term and never pass through the cache.
 
@@ -625,12 +625,12 @@ end
 """
     shifted_matrix(kr, env, props, cache)
 
-The finite-difference matrix at wavenumber `kr` — the same `M(kr, θ)` that
+The finite-difference matrix at wavenumber `kr`: the same `M(kr, θ)` that
 `create_finite_diff_matrix!` writes into `cache.A`, assembled here into fresh storage.
 
 The rule below needs this matrix *after* the primal has run, and the primal restores the cache to its
 unshifted state on the way out. Rebuilding costs one O(N) allocation and keeps the pullback from
-mutating state it shares with the rest of the solve — a pullback runs long after the forward pass,
+mutating state it shares with the rest of the solve. A pullback runs long after the forward pass,
 with no guarantee about what has touched the cache in between.
 """
 function shifted_matrix(kr, env, props, cache)
@@ -649,7 +649,7 @@ end
 Reverse-mode rule for a mode shape, by eigenvector perturbation theory.
 
 The primal returns the unit-2-norm eigenvector `v` of the finite-difference matrix `M(kr, θ)`
-belonging to its smallest-magnitude eigenvalue `μ` — which is zero to machine precision when `kr` is
+belonging to its smallest-magnitude eigenvalue `μ`, which is zero to machine precision when `kr` is
 a converged wavenumber, but is treated as an ordinary simple eigenvalue here, because `kr` and `θ`
 are independent arguments and nothing constrains `M` to stay singular when they are perturbed
 separately. Differentiating `M v = μ v` together with `vᵀv = 1` gives
@@ -662,7 +662,7 @@ single solve against that same complement,
     ⟨Δv, dv⟩ = -⟨y, dM v⟩,    y = M⁺ (I - v vᵀ) Δv,
 
 i.e. a cotangent `ΔM = -y vᵀ`, read off on `M`'s tridiagonal sparsity pattern and chained back onto
-`cache.a_vec`, `.e_vec`, `.λ_scaling`, `kr`, and — through [`get_g`](@ref) — `env.cb`, `env.ρb` and
+`cache.a_vec`, `.e_vec`, `.λ_scaling`, `kr`, and, through [`get_g`](@ref), `env.cb`, `env.ρb` and
 `props.freq`. Cost is two tridiagonal solves, O(N), against the iteration's own dozens.
 
 # The bordered solve, and why it is spelled as a projection
@@ -675,9 +675,9 @@ i.e. a cotangent `ΔM = -y vᵀ`, read off on `M`'s tridiagonal sparsity pattern
 whose matrix is nonsingular precisely because `v` spans `M`'s null space. Solving it as written would
 give up the tridiagonal structure, so it is solved instead as *project, solve, project*: remove the
 `v` component from the right-hand side, solve the (numerically nonsingular, since `μ ≈ 1e-13‖M‖`,
-but very ill-conditioned in that one direction) tridiagonal system, and remove the `v` component the
-solve's roundoff amplified back into the answer. One step of iterative refinement — again inside the
-complement — cleans up what the amplification costs in the remaining directions.
+but ill-conditioned in that one direction) tridiagonal system, and remove the `v` component the
+solve's roundoff amplified back into the answer. One step of iterative refinement, again inside the
+complement, cleans up what the amplification costs in the remaining directions.
 
 # What the normalization is not
 
@@ -685,7 +685,7 @@ complement — cleans up what the amplification costs in the remaining direction
 [`normalize_mode`](@ref), which is on the differentiable seam and traced by the backend; it depends on
 the density profile and the mesh coordinates, and pulling it inside this rule would mean carrying an
 adjoint for the density interpolant that the backend already has. The sign fix (`v[1] ≥ 0`) is
-piecewise constant in the parameters and contributes nothing — the relations above hold for `-v` just
+piecewise constant in the parameters and contributes nothing: the relations above hold for `-v` just
 as they do for `v`.
 """
 function ChainRulesCore.rrule(::typeof(mode_eigenvector), kr, env, props, cache; reltol=0.01)

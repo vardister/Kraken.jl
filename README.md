@@ -141,9 +141,9 @@ end
 grad = Zygote.gradient(modal_sum, c)[1]   # all 50 derivatives in one pass
 ```
 
-At 50 profile points reverse mode is already several times faster than forward mode, and the gap
-grows linearly with the number of points. The [AD page](https://vardister.github.io/Kraken.jl/dev/ad/)
-has the measurements, a worked inversion that recovers a sound-speed profile, and the one caveat: the
+In the package's benchmark, reverse mode is 4.4× faster than forward mode at 50 profile points and
+47× faster at 500. The [AD page](https://vardister.github.io/Kraken.jl/dev/ad/) has the
+measurements, a worked inversion that recovers a sound-speed profile, and the main caveat: the
 top-level derivative is conditional on the depth mesh, which is chosen from the frequency and
 changes in integer steps.
 
@@ -182,5 +182,5 @@ $ julia --project=examples examples/dispersion.jl
 
 ## Contributing
 
-Contributions are welcome. Please open an issue first for major changes. `test/README.md` explains
+Open an issue before starting a major change. `test/README.md` explains
 how to run the suite, including against a local Acoustics Toolbox build.
