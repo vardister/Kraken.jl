@@ -146,15 +146,15 @@ function mode_integral(envf, θ; freq=100.0, mode=1)
 end
 
 """
-The tolerances the top-level tests below run `kraken_jl` at, and the reason they are not the defaults.
+The tolerances the top-level tests below run `kraken_jl` at. They equal `kraken_jl`'s default, and are
+spelled out so these tests keep measuring the rules if that default moves.
 
-`kraken_jl`'s default `abstol = reltol = 1e-6` is *looser* than what `find_kr` gets on the refinement
-meshes, which are left to NonlinearSolve's own (much tighter) defaults — so at the default the level-1
-roots carry ~1e-6 of truncation and everything downstream inherits it. Unlike the isolated
-`solve_for_kr` case above, that moves the *rule's* answer too, by 4.6e-6: the implicit-function
-derivative is tolerance-independent at a fixed root, but here the root itself has moved. ForwardDiff
-shifts by 6.7e-6 over the same change. Tightening to 1e-10 removes both effects and lets the
-comparison measure the rules rather than the root solver.
+The tolerance applies to the level-1 roots only; the refinement meshes use NonlinearSolve's own
+defaults. At the previous default of `abstol = reltol = 1e-6` the level-1 roots carried ~1e-6 of
+truncation and everything downstream inherited it. Unlike the isolated `solve_for_kr` case above,
+that moved the *rule's* answer too, by 4.6e-6: the implicit-function derivative is
+tolerance-independent at a fixed root, but here the root itself had moved. ForwardDiff shifted by
+6.7e-6 over the same change. At 1e-10 both effects are gone.
 """
 const TOL = (abstol=1e-10, reltol=1e-10)
 

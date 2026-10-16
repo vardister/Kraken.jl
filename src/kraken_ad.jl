@@ -562,9 +562,9 @@ function theorem rather than from the bracketing solver's iterations.
 
 For plain numbers this returns `kr` unchanged. The method that does the work is in
 `ext/KrakenForwardDiffExt.jl`, for problems that carry ForwardDiff `Dual`s anywhere `det_sturm` reads
-them: the cache, `cb`, `ρb` or `freq`. Without it, a `Dual` wavenumber's partials are whatever
-ITP's last step left there. That is usually close, but it comes from a secant across a bracket a few
-ulps wide, and it was up to 1.6% off in group speed (plan task 6.11).
+them: the cache, `cb`, `ρb` or `freq`. Without it, a `Dual` wavenumber's partials are whatever the
+bracketing solver's last step left there. With `ITP()`, the default before `Brent()`, that step was a
+secant across a bracket a few ulps wide, and it was up to 1.6% off in group speed (plan task 6.11).
 """
 implicit_root(kr, env, props, cache) = implicit_root(root_numtype(kr, env, props, cache), kr, env, props, cache)
 implicit_root(::Type, kr, env, props, cache) = kr
@@ -606,7 +606,7 @@ solver, and its cost is one extra pass over the mesh rather than a tape of the i
 
 `span` gets a `ZeroTangent`: it selects *which* root is found, not where that root sits.
 """
-function ChainRulesCore.rrule(::typeof(solve_for_kr), span, env, props, cache; method=ITP(), kwargs...)
+function ChainRulesCore.rrule(::typeof(solve_for_kr), span, env, props, cache; method=Brent(), kwargs...)
     kr = solve_for_kr(span, env, props, cache; method=method, kwargs...)
     s = sturm_sensitivities(kr, env, props, cache)
 

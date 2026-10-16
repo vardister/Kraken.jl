@@ -63,9 +63,10 @@ KR.fortran_available() ||
 
 const BUDGET = parse(Float64, get(ENV, "KRAKEN_BENCH_SECONDS", "2"))
 
-# Root tolerances for every gradient below. `kraken_jl`'s default 1e-6 leaves enough truncation in
-# the coarse-mesh roots to move the derivative by a few 1e-6; see the TOL docstring in
-# test/reverse_ad_tests.jl. The forward benchmark uses the defaults, since that is what a user runs.
+# Root tolerances for every gradient below. They equal `kraken_jl`'s default and are spelled out so
+# the gradients do not move if it changes: at 1e-6 the coarse-mesh roots carry enough truncation to
+# shift the derivative by a few 1e-6 (the TOL docstring in test/reverse_ad_tests.jl). The forward
+# benchmark uses the defaults, since that is what a user runs.
 const TOL = (abstol=1e-10, reltol=1e-10)
 
 println("Kraken.jl  ", pkgversion(Kraken), "  at ", pathof(Kraken))
@@ -308,7 +309,7 @@ for case in gradient_cases
     # ~1e-9. The two finite differences are judged against it on the parameters they can measure.
     g_ref = only(r.g for r in rows if r.method == "Zygote")
 
-    println("\n4. GRADIENT — $(case.name): N = $N parameters, L = Σ kᵣ over K = $(s.K) modes, mesh $(s.nmesh)")
+    println("\n4. GRADIENT, $(case.name): N = $N parameters, L = Σ kᵣ over K = $(s.K) modes, mesh $(s.nmesh)")
     @printf("   %-22s %12s %12s %10s %14s\n", "method", "median ms", "× primal", "first s", "max rel err")
     for r in rows
         err = if r.g === nothing

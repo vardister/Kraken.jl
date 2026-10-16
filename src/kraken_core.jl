@@ -1429,50 +1429,49 @@ julia> det_sturm(0.41, env, props, cache).mode_num
 ```
 """
 function det_sturm(kr, env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; scale=true)
-    local p2, p1, p0, λ
     mode_count = 0
     g = get_g(kr, env, props)
     ζ = bottom_row_factor(env.bottom_bc)
+    a_vec, e_vec, λ_scaling = cache.a_vec, cache.e_vec, cache.λ_scaling
+    N = sum(props.Nz_vec)
+    kr2 = kr^2
 
-    # Calculate the Sturm Sequence.
-    k = 1
+    # The Sturm sequence over the flattened mesh. Every interior row has the same form, so the loop
+    # runs over them without a per-row test, and the bottom row, which carries the boundary
+    # condition, is done once afterwards. Each step's arithmetic is exactly what `sturm_sensitivities`
+    # in `src/kraken_ad.jl` repeats, so the two return bit-identical determinants.
+    #
+    # The rescaling multiplies only when `s != 1`. Multiplying by 1.0 is exact, so this changes no
+    # value, but it takes a multiply off the step-to-step dependency chain: each step waits on the
+    # previous `p1`, and this one change took a 6250-point call from 41 to 18.7 µs. Fortran's
+    # `AcousticLayers` rescales the same way, only when `|p2|` passes its threshold.
     p0 = 0.0
     p1 = 1.0
-    for i in eachindex(props.Nz_vec)
-        Nz = props.Nz_vec[i]
-        for j in 1:Nz
-            a = cache.a_vec[k]
-            e = cache.e_vec[k]
-            λ = kr^2 * cache.λ_scaling[k]
-            k += 1
-            # If we reached the last element of the last layer
-            if (i == length(props.Nz_vec)) && (j == Nz)
-                p2 = (λ - (ζ * a - g)) * p1 - e^2 * p0
-                if scale
-                    s = scale_const(p1, p2)
-                    p1 *= s
-                    p2 *= s
-                end
-                if p1 * p2 < 0
-                    mode_count += 1
-                end
-            else
-                # Else, we're in the middle of the layers
-                p2 = (λ - a) * p1 - e^2 * p0
-                # rescale the sequence
-                if scale
-                    s = scale_const(p1, p2)
-                    p1 *= s
-                    p2 *= s
-                end
-                # count the modes
-                if p1 * p2 < 0
-                    mode_count += 1
-                end
-                p0 = p1
-                p1 = p2
+    @inbounds for k in 1:(N - 1)
+        p2 = (kr2 * λ_scaling[k] - a_vec[k]) * p1 - e_vec[k]^2 * p0
+        if scale
+            s = scale_const(p1, p2)
+            if s != 1
+                p1 *= s
+                p2 *= s
             end
         end
+        if p1 * p2 < 0
+            mode_count += 1
+        end
+        p0 = p1
+        p1 = p2
+    end
+    p2 = @inbounds (kr2 * λ_scaling[N] - (ζ * a_vec[N] - g)) * p1 - e_vec[N]^2 * p0
+    if scale
+        s = scale_const(p1, p2)
+        if s != 1
+            p1 *= s
+            p2 *= s
+        end
+    end
+    if p1 * p2 < 0
+        mode_count += 1
     end
     return (det=p2, mode_num=mode_count)
 end
@@ -1576,7 +1575,7 @@ function bisection(env::UnderwaterEnv, props::AcousticProblemProperties, cache::
 end
 
 """
-    find_kr(env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; method=ITP(), kwargs...)
+    find_kr(env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; method=Brent(), kwargs...)
 
 Find every trapped-mode wavenumber of the finite-difference system on one mesh, in descending order:
 [`bisection`](@ref) brackets them and [`solve_for_kr`](@ref) refines each bracket. Returns an empty
@@ -1588,6 +1587,9 @@ calls this on several meshes and extrapolates.
 # Arguments
 - `env`, `props`, `cache`: the environment, its mesh, and the system assembled on it.
 - `method`: any bracketing solver from NonlinearSolve.jl accepted by `IntervalNonlinearProblem`.
+  The default `Brent()` takes 12.1 determinant evaluations per mode on the second Munk mesh at 50 Hz;
+  `ITP()` takes 28.5 there and plain bisection 31.2, because the determinant is a high-degree
+  polynomial across these brackets and ITP's interpolation steps rarely beat its bisection steps.
 - `kwargs...`: passed to `solve`, e.g. `abstol` and `reltol`.
 
 For the closed-form Pekeris model, see `find_kr(::PekerisUnderwaterEnv, freq)`.
@@ -1608,7 +1610,7 @@ julia> round.(find_kr(env, props, AcousticProblemCache(env, props)); digits=4)
 ```
 """
 function find_kr(
-    env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; method=ITP(), kwargs...
+    env::UnderwaterEnv, props::AcousticProblemProperties, cache::AcousticProblemCache; method=Brent(), kwargs...
 )
     kr_spans = bisection(env, props, cache)
     if isnothing(kr_spans)
@@ -1621,7 +1623,7 @@ function find_kr(
 end
 
 """
-    solve_for_kr(span, env, props, cache; method=ITP(), kwargs...)
+    solve_for_kr(span, env, props, cache; method=Brent(), kwargs...)
 
 Refine one mode's wavenumber: the root of [`det_sturm`](@ref) inside the bracket `span`.
 
@@ -1649,13 +1651,31 @@ julia> round(solve_for_kr(spans[1, :], env, props, cache); digits=4)
 0.4179
 ```
 """
-function solve_for_kr(span, env, props, cache; method=ITP(), kwargs...)
+function solve_for_kr(span, env, props, cache; method=Brent(), kwargs...)
     function f(u, p)
         return first(det_sturm(u, env, props, cache))
     end
     prob = IntervalNonlinearProblem{false}(f, span)
     sol = solve(prob, method; kwargs...)
-    return implicit_root(sol.u, env, props, cache)
+    return implicit_root(newton_polish(sol.u, span, env, props, cache), env, props, cache)
+end
+
+"""
+    newton_polish(kr, span, env, props, cache)
+
+One Newton step on a bracketed root of [`det_sturm`](@ref), kept only if it lands inside `span`.
+
+The implicit-function derivative of `kr` is exact at the root and carries an error the size of the
+root error anywhere else. `Brent()` stops close to the tolerance it is given: at `1e-10` it left
+Pekeris mode 1 at 250 Hz 2.5e-11 from the root, and `∂kr/∂ρ0` moved by 2.4e-4 relative. One step
+from there reaches machine precision, so the gradient no longer depends on the tolerance. The step
+costs one pass of `sturm_and_slope`, about twice a `det_sturm` call.
+"""
+function newton_polish(kr, span, env, props, cache)
+    D, dD = sturm_and_slope(kr, env, props, cache)
+    kr_new = kr - D / dD
+    lo, hi = minmax(span[1], span[2])
+    return isfinite(kr_new) && lo <= kr_new <= hi ? kr_new : kr
 end
 
 ### Inverse Iteration
@@ -1824,7 +1844,8 @@ exactly as it was found.
 # Arguments
 - `kr`: a converged wavenumber, e.g. from [`find_kr`](@ref). The iteration shifts slightly below it.
 - `env`, `props`, `cache`: the environment, its mesh, and the system assembled on it.
-- `reltol`: stop once successive iterates differ by less than this, relatively (1%).
+- `reltol`: stop once successive unit-norm iterates differ by less than this in the 2-norm, up to
+  sign (1%).
 
 # Example
 ```jldoctest
@@ -1870,16 +1891,23 @@ function iterate_eigenvector(kr_try, env, props, cache, N, reltol)
     w1 = similar(w0)
     create_finite_diff_matrix!(kr_try, env, props, cache) # Generate the tridigonal finite-diff matrix with the new kr
     try
+        # Factor once: the shift is fixed, so every iteration solves against the same matrix. `lu`
+        # copies, leaving `cache.A` for `return_finite_diff_matrix!` to restore. A singular matrix
+        # throws `SingularException` here, as `\` did, for `mode_eigenvector` to catch.
+        F = lu(cache.A)
         for ii in 1:50 # We typically don't need more than 50 iterations
-            w1 .= cache.A \ w0
-            m = argmax(abs.(w1))
+            ldiv!(w1, F, w0)
+            m = last(findmax(abs, w1))
             kr_new = w0[m] / w1[m] + kr_try
             normalize!(w1)
-            if relative_error(w0, w1) < reltol # Default is 1% relative tolerance
-                w0 .= w1
-                break # If the relative error is small enough, we're done with inverse iteration
-            end
+            # Converged when the direction stops changing, up to sign. A root converged to only 1e-6
+            # can put the shift on the far side of the eigenvalue, and then every solve flips the
+            # sign of an already-converged vector. The componentwise test this replaces read exactly
+            # 2 on every pass and ran all 50 iterations for 33 of Munk's 102 modes at 50 Hz.
+            s = dot(w0, w1) < 0 ? -one(eltype(w1)) : one(eltype(w1))
+            converged = norm(w1 .- s .* w0) < reltol # Default is 1%, in the 2-norm of unit vectors
             w0 .= w1
+            converged && break
         end
     finally
         return_finite_diff_matrix!(kr_try, env, props, cache) # Reset the cache
@@ -2184,7 +2212,7 @@ function propagating_count(kr2, env, freq)
 end
 
 """
-    kraken_jl(env, freq; n_meshes=5, rmax=10_000, method=ITP(), dont_break=false, abstol=1e-6, reltol=1e-6)
+    kraken_jl(env, freq; n_meshes=5, rmax=10_000, method=Brent(), dont_break=false, abstol=1e-10, reltol=1e-10)
 
 Solve the normal-mode problem for environment `env` at frequency `freq` (Hz). Top-level entry point.
 
@@ -2203,7 +2231,12 @@ Returns an empty solution when the environment supports no trapped modes at this
   wavenumber change would shift phase by less than one radian over `rmax`.
 - `method`: bracketing solver passed to `IntervalNonlinearProblem`.
 - `dont_break`: run all `n_meshes` levels even after convergence. Useful for studying mesh error.
-- `abstol`, `reltol`: tolerances forwarded to the root solver.
+- `abstol`, `reltol`: root-solver tolerances on the first mesh; the finer meshes use the solver's own
+  defaults. The first-mesh roots set the mode shapes and the base of the extrapolation, so their
+  error carries into both. At the old default of 1e-6, `Brent()` stops close to that tolerance:
+  wavenumbers on Munk at 50 Hz were 1.3e-6 from `kraken.exe` and the analytic rigid-bottom mode
+  shapes were off by 1.2e-6. At 1e-10 those are 3.7e-8 and 6.5e-11, and the solve is no slower,
+  because inverse iteration converges in fewer passes from a better root.
 
 # Differentiability
 
@@ -2244,7 +2277,7 @@ julia> kraken_jl(UnderwaterEnv(pekeris_env(; αb=0.5)...), 100.0)   # lossy: com
 NormalModeSolution{ComplexF64}(5 modes)
 ```
 """
-function kraken_jl(env, freq; n_meshes=5, rmax=10_000, method=ITP(), dont_break=false, abstol=1e-6, reltol=1e-6)
+function kraken_jl(env, freq; n_meshes=5, rmax=10_000, method=Brent(), dont_break=false, abstol=1e-10, reltol=1e-10)
     # convert frequency to float if needed
     if freq isa Int
         freq = float(freq)

@@ -234,7 +234,7 @@ meshes, different sign conventions and different normalizations, so they are com
 [`mode_correlation`](@ref).
 """
 function compare_with_fortran(
-    env, freq; nmodes=nothing, atol=1e-6, rtol=1e-6, group_speeds::Bool=false, complex::Bool=false, kwargs...
+    env, freq; nmodes=nothing, atol=1e-10, rtol=1e-10, group_speeds::Bool=false, complex::Bool=false, kwargs...
 )
     freq = Float64(freq)
     sol = kraken_jl(env, freq; abstol=atol, reltol=rtol)

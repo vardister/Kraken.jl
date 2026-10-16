@@ -4,6 +4,29 @@ All notable changes to Kraken.jl are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/) — in 0.x, a minor bump may be breaking.
 
+## [Unreleased]
+
+### Changed
+
+- **`kraken_jl` is 2.7 to 4.6 times faster** on the five benchmark cases, most where there are many
+  modes: Munk at 50 Hz (102 modes) went from 355 ms to 78 ms, against 36 ms for `kraken.exe`'s own
+  solve, and Pekeris at 500 Hz from 12.9 ms to 2.9 ms, against 3.7 ms.
+  `test/benchmark_vs_fortran.jl` measures this. Three changes did it:
+  - Inverse iteration tests convergence up to sign. A shift on the far side of the eigenvalue flips
+    an already-converged vector on every solve, and the old componentwise test never passed: 33 of
+    Munk's 102 modes ran the full 50 iterations. The matrix is also factored once per mode, not once
+    per iteration.
+  - The default root solver is `Brent()`, not `ITP()`. On these brackets ITP's steps are almost all
+    bisections: 28.5 determinant calls per mode on the second Munk mesh, against Brent's 12.1. Each
+    root then takes one Newton step, so its error no longer depends on the tolerance; without it a
+    root left 2.5e-11 off moved `∂kᵣ/∂ρ` by 2.4e-4 relative.
+  - `det_sturm` multiplies by its rescaling factor only when the factor is not 1. The result is bit
+    for bit the same, and a 6250-point call takes 18.7 µs instead of 41.
+- **`kraken_jl`'s default `abstol` and `reltol` are `1e-10`, not `1e-6`.** They set the first mesh's
+  roots, which the mode shapes and the extrapolation are built from. At `1e-6` with `Brent()`, Munk's
+  wavenumbers were 1.3e-6 from `kraken.exe`; at `1e-10` they are 3.7e-8, at no extra cost.
+  `compare_with_fortran`'s defaults follow.
+
 ## [0.4.0] — 2026-10-16
 
 Everything since 0.3.0 is new capability: reverse-mode AD, attenuation, the boundary conditions and

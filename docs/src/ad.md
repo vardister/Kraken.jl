@@ -406,11 +406,10 @@ declares each one a Mooncake primitive.
   it avoids.
 * **Only the wavenumbers are Richardson-extrapolated**; mode shapes come from the coarsest mesh. So a
   mode-shape gradient from `kraken_jl` is the level-1 solve's.
-* **Tighten the solver tolerance for top-level gradients.** `kraken_jl`'s default
-  `abstol = reltol = 1e-6` leaves ~1e-6 of truncation in the level-1 roots, and both AD modes then
-  differentiate a slightly wrong root. This is the one place the implicit rule's tolerance
-  independence does *not* save you, because the root it is evaluated at is itself a solver output. At
-  `1e-10` the two modes agree to `1e-10`.
+* **Do not loosen the solver tolerance for top-level gradients.** The implicit rule is evaluated at
+  the level-1 root, which is itself a solver output, so here its tolerance independence does not
+  apply: a root converged to `abstol = reltol = 1e-6` moved the rule's gradient by 4.6e-6 and
+  ForwardDiff's by 6.7e-6. `kraken_jl`'s default is `1e-10`, at which the two modes agree to `1e-10`.
 * **A lossy environment makes `kr` complex, which narrows what you may differentiate.** The rule is
   the standard one: real parameters in, real loss out, complex only in between. `sum(imag, sol.kr)`,
   `sum(real, sol.kr)` and `sum(abs2, sol.kr)` are all fine and every backend agrees on them. A

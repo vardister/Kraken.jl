@@ -377,7 +377,7 @@ using FiniteDiff
     # to 2.1e-7 and 3.4e-8. The single-frequency checks above happened to land on good frequencies.
     #
     # Two things the reference has to avoid, both properties of the primal rather than the rule:
-    #  * The sweeps pass `abstol = reltol = 1e-12`. At `kraken_jl`'s default 1e-6 the coarse-mesh root
+    #  * The sweeps pass `abstol = reltol = 1e-12`. At a tolerance of 1e-6 the coarse-mesh root
     #    is only converged that far, so the primal curve that central differences sample is itself
     #    rough at that level. That is a separate knob (plan 4.4).
     #  * A frequency where the mesh gains a point inside the stencil is skipped. The mesh is chosen

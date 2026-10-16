@@ -345,10 +345,11 @@ end
 #   * Only the wavenumbers are extrapolated; the mode shapes come from the coarsest mesh. So a
 #     mode-shape gradient here is the level-1 solve's.
 #
-# Note the tightened tolerance. `kraken_jl`'s default `abstol = reltol = 1e-6` leaves ~1e-6 of
-# truncation in the level-1 roots, and both AD modes then differentiate a slightly-wrong root — this
-# is one place where the implicit-function rule's tolerance independence does NOT save you, because
-# the root it is evaluated at is itself a solver output. At 1e-10 the two modes agree to 1e-10.
+# Note the tolerance, spelled out although it equals `kraken_jl`'s default of 1e-10. A looser one
+# leaves truncation in the level-1 roots, and both AD modes then differentiate a slightly wrong root.
+# This is one place where the implicit-function rule's tolerance independence does NOT save you,
+# because the root it is evaluated at is itself a solver output. At 1e-6 the gradients moved by a few
+# 1e-6; at 1e-10 the two modes agree to 1e-10.
 
 function kraken_jl_sum(θ; freq=100.0)
     env = UnderwaterEnv(pekeris_env(; c0=θ[1], cb=θ[2], ρ0=θ[3], ρb=θ[4], depth=θ[5])...)
