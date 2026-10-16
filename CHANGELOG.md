@@ -4,7 +4,7 @@ All notable changes to Kraken.jl are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/) — in 0.x, a minor bump may be breaking.
 
-## [0.4.0] — unreleased
+## [0.4.0] — 2026-10-16
 
 Everything since 0.3.0 is new capability: reverse-mode AD, attenuation, the boundary conditions and
 profile interpolations KRAKEN offers, the pressure field, a documentation site, and plotting. Each is
