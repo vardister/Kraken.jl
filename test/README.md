@@ -184,7 +184,8 @@ noise, and those testsets assert a generous absolute ceiling plus the mode count
 
 | File | Description |
 |------|-------------|
-| `timings_vs_fortran.jl` | Manual timing comparisons (requires DrWatson; calls the removed `EnvKRAKEN` API, so it does not currently run) |
+| `benchmark_vs_fortran.jl` | Forward-run and gradient benchmarks against `kraken.exe`, in `#%%` cells: `kraken_jl` vs the binary, then ForwardDiff, Zygote, Mooncake and finite differences of both solvers, then cost against parameter count. `julia --project=test test/benchmark_vs_fortran.jl` |
+| `timings_vs_fortran.jl` | Manual timing comparisons (requires DrWatson; calls the removed `EnvKRAKEN` API, so it does not currently run; superseded by `benchmark_vs_fortran.jl`) |
 
 ### Fortran cross-validation
 
