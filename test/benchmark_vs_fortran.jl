@@ -50,15 +50,16 @@ using BenchmarkTools
 using DifferentiationInterface
 using Printf
 using Statistics
-import FiniteDiff
-import ForwardDiff
-import Mooncake
-import Zygote
+using FiniteDiff: FiniteDiff
+using ForwardDiff: ForwardDiff
+using Mooncake: Mooncake
+using Zygote: Zygote
 
 include(joinpath(@__DIR__, "reference", "KrakenReference.jl"))
 const KR = KrakenReference
 
-KR.fortran_available() || error("No Fortran KRAKEN binary found. Check AcousticsToolbox_jll, or set KRAKEN_FORTRAN_BIN.")
+KR.fortran_available() ||
+    error("No Fortran KRAKEN binary found. Check AcousticsToolbox_jll, or set KRAKEN_FORTRAN_BIN.")
 
 const BUDGET = parse(Float64, get(ENV, "KRAKEN_BENCH_SECONDS", "2"))
 
@@ -196,8 +197,9 @@ end
 
 pekeris_θ(θ) = UnderwaterEnv(pekeris_env(; c0=θ[1], cb=θ[2], ρ0=θ[3], ρb=θ[4], depth=θ[5])...)
 
-onelayer_θ(θ) =
-    UnderwaterEnv(one_layer_env(; c0=θ[1], c1=θ[2], cb=θ[3], ρ0=θ[4], ρ1=θ[5], ρb=θ[6], h0=θ[7], h1=θ[8])...)
+function onelayer_θ(θ)
+    return UnderwaterEnv(one_layer_env(; c0=θ[1], c1=θ[2], cb=θ[3], ρ0=θ[4], ρ1=θ[5], ρb=θ[6], h0=θ[7], h1=θ[8])...)
+end
 
 # Munk as a function of the five numbers that define it, θ = [c_ref, ε, z_axis, cb, ρb]; at the
 # values below it reproduces `munk_env()`. Copied from test/reverse_ad_tests.jl. The knot depths are
