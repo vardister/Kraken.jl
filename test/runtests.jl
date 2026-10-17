@@ -108,6 +108,7 @@ end
 
     # Include standard @testset-based tests
     include_suite("numerical_methods_tests.jl")
+    include_suite("solver_internals_tests.jl")
     include_suite("automatic_differentiation_tests.jl")
     include_suite("reverse_ad_tests.jl")
 

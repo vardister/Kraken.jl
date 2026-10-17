@@ -99,23 +99,175 @@ ms(t) = 1e3 * t
 # reports: the `.prt`'s ten printed digits where it lists the mode, the single-precision `.mod`
 # otherwise. Agreement to ~1e-6 relative is what the cross-validation tests assert.
 
+"""
+    swellex96_env()
+
+The SWellEx-96 shallow-water environment off Point Loma, San Diego, as published for its event S5:
+216.5 m of water over a 23.5 m sediment layer and an 800 m mudstone layer, on a 5200 m/s half-space.
+
+Sources, read 2026-10-16 through the Internet Archive because swellex96.ucsd.edu refused connections:
+- geoacoustic model: <https://swellex96.ucsd.edu/environment.htm>
+- water depth at the vertical array, 216.5 m: <https://swellex96.ucsd.edu/vla.htm>
+- the profile is CTD cast `i9606.prn` (station 6, 10 May 1996, 21:05 PST), the one the S5 page
+  <https://swellex96.ucsd.edu/s5.htm> names; data in `ctds.tar.gz` on the environment page, and in
+  the UCSD Library collection <https://library.ucsd.edu/dc/collection/bb3312136z>.
+
+The cast is sampled every 0.5 m to 167 m. The 48 points below are the fewest that reproduce all 335
+samples within 0.05 m/s under linear interpolation (Douglas–Peucker); below 167 m the last measured
+speed is continued to the bottom. Attenuations are in dB/(km·Hz), KRAKEN's `'F'`.
+"""
+function swellex96_env()
+    z_ctd = [
+        0.0,
+        1.5,
+        2.5,
+        3.5,
+        4.0,
+        5.0,
+        5.5,
+        6.5,
+        7.0,
+        8.5,
+        10.0,
+        12.0,
+        15.5,
+        17.5,
+        19.0,
+        19.5,
+        21.0,
+        23.0,
+        28.5,
+        31.0,
+        34.5,
+        38.0,
+        43.5,
+        45.5,
+        52.0,
+        57.0,
+        62.0,
+        75.0,
+        81.5,
+        87.5,
+        98.5,
+        103.0,
+        104.5,
+        106.0,
+        108.5,
+        110.5,
+        116.0,
+        119.0,
+        123.5,
+        139.5,
+        142.0,
+        146.0,
+        146.5,
+        152.0,
+        156.0,
+        160.0,
+        162.5,
+        167.0,
+    ]
+    c_ctd = [
+        1522.024,
+        1521.894,
+        1521.659,
+        1521.271,
+        1521.001,
+        1520.269,
+        1519.751,
+        1518.54,
+        1517.858,
+        1515.568,
+        1512.997,
+        1509.303,
+        1505.138,
+        1502.852,
+        1501.286,
+        1500.844,
+        1500.012,
+        1499.191,
+        1497.508,
+        1496.396,
+        1495.22,
+        1494.313,
+        1493.26,
+        1492.786,
+        1491.573,
+        1491.118,
+        1490.505,
+        1489.585,
+        1488.982,
+        1488.714,
+        1487.773,
+        1487.719,
+        1487.768,
+        1487.92,
+        1488.372,
+        1488.639,
+        1488.987,
+        1489.047,
+        1488.974,
+        1488.997,
+        1488.803,
+        1488.071,
+        1488.052,
+        1488.569,
+        1488.391,
+        1487.974,
+        1487.815,
+        1488.088,
+    ]
+    D, h_sed, h_mud = 216.5, 23.5, 800.0
+    z_sed, z_mud = D + h_sed, D + h_sed + h_mud
+    n = length(z_ctd)
+    # Columns are [z, cp, cs, ρ, αp, αs]; densities in kg/m³ (the page gives g/cm³).
+    water = [hcat(z_ctd, c_ctd, zeros(n), fill(1000.0, n), zeros(n), zeros(n)); D c_ctd[end] 0.0 1000.0 0.0 0.0]
+    ssp = [
+        water
+        D+eps(D) 1572.368 0.0 1760.0 0.2 0.0
+        z_sed 1593.016 0.0 1760.0 0.2 0.0
+        z_sed+eps(z_sed) 1881.0 0.0 2060.0 0.06 0.0
+        z_mud 3245.0 0.0 2060.0 0.06 0.0
+    ]
+    layers = [0.0 0.0 D; 0.0 0.0 z_sed; 0.0 0.0 z_mud]
+    sspHS = [0.0 343.0 0.0 0.00121 0.0 0.0; z_mud 5200.0 0.0 2660.0 0.02 0.0]
+    return UnderwaterEnv(ssp, layers, sspHS; atten_units=:dB_per_kmHz)
+end
+
 forward_cases = [
     (name="Pekeris 100 Hz", env=UnderwaterEnv(pekeris_env()...), freq=100.0),
     (name="Pekeris 500 Hz", env=UnderwaterEnv(pekeris_env()...), freq=500.0),
     (name="One layer 100 Hz", env=UnderwaterEnv(one_layer_env()...), freq=100.0),
     (name="Two sloped layers 100 Hz", env=UnderwaterEnv(two_layer_slope_env()...), freq=100.0),
     (name="Munk 50 Hz", env=UnderwaterEnv(munk_env()...), freq=50.0),
+    (name="SWellEx-96 500 Hz", env=swellex96_env(), freq=500.0),
 ]
 
+# The attenuation columns compare Im(kᵣ), which comes from the `.mod` only, over the modes where
+# Fortran's |Im(kᵣ)| exceeds 1e-10. Below that both codes return noise: a mode trapped in the water
+# column of SWellEx-96 gets about 1e-33 from `kraken.exe` and 1e-55 from Kraken.jl, and the ratio of
+# two such numbers means nothing.
 println("\n2. AGREEMENT (default kraken_jl tolerances, Fortran automatic mesh)")
-@printf("   %-26s %8s %8s %14s\n", "case", "Julia M", "Fortran M", "max rel Δkr")
+@printf("   %-26s %8s %9s %13s %13s %13s\n", "case", "Julia M", "Fortran M", "max rel Δkr", "median Δα/α", "max Δα/α")
 for c in forward_cases
     sol = kraken_jl(c.env, c.freq)
-    kr_f = KR._best_fortran_kr(KR.run_fortran_kraken(c.env, c.freq))
+    ref = KR.run_fortran_kraken(c.env, c.freq)
+    kr_f = KR._best_fortran_kr(ref)
     n = min(length(sol.kr), length(kr_f))
     worst = maximum(relerr(real(sol.kr[m]), kr_f[m]) for m in 1:n)
-    @printf("   %-26s %8d %8d %14.2e\n", c.name, length(sol.kr), length(kr_f), worst)
+    lossy = [relerr(imag(sol.kr[m]), imag(ref.kᵣ[m])) for m in 1:n if abs(imag(ref.kᵣ[m])) > 1e-10]
+    α_cols = isempty(lossy) ? ("n/a", "n/a") : (@sprintf("%.2e", median(lossy)), @sprintf("%.2e", maximum(lossy)))
+    @printf("   %-26s %8d %9d %13.2e %13s %13s\n", c.name, length(sol.kr), length(kr_f), worst, α_cols...)
 end
+println("""
+   SWellEx-96 is the outlier, and two things in Kraken.jl are behind it, not the comparison:
+   * Mesh. Every layer's mesh is sized from the half-space speed (5200 m/s), which leaves the water
+     column at about 6 points per wavelength. kraken.exe sizes each medium from its own sound speed
+     and rejects that mesh as too coarse if given it. So the timing below is not like for like, and
+     the coarse first mesh is why Kraken.jl runs all 5 refinement levels where kraken.exe runs 3.
+   * Attenuation near the half-space cutoff. On a mesh at 20 points per water wavelength the median
+     Δα/α falls to about 4%, but modes with phase speeds near 5200 m/s still differ by up to ~80%.
+     That is open; see "Known issues" in CHANGELOG.md.""")
 
 #%% ---------------------------------------------------------------------------------------------
 # 3. Forward run

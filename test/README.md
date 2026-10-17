@@ -89,6 +89,7 @@ of dependency precompilation on the first run after a `Manifest.toml` change.
 | `environment_tests.jl` | TestItems | Environment creation, sound speed/density profiles |
 | `integration_tests.jl` | TestItems | Full `kraken_jl` workflow, physics validation |
 | `numerical_methods_tests.jl` | Test | Core algorithms: `det_sturm`, `bisection`, `find_kr`, `inverse_iteration` |
+| `solver_internals_tests.jl` | Test | The pieces behind `kraken_jl`'s speed, each against an independent reference: `SafeguardedNewton` against `Brent()`, `find_kr`'s `guesses`, `mode_energy_weights` against the per-medium trapezoid, `mode_energy`'s rule, `shifted_lu!`/`shifted_ldiv!` against `lu`, `sturm_and_slope` against `det_sturm` and ForwardDiff, `primal_value`, and allocation bounds |
 | `automatic_differentiation_tests.jl` | Test | ForwardDiff compatibility, group speed calculations |
 | `reverse_ad_tests.jl` | Test | The `ChainRulesCore` rules in `src/kraken_ad.jl` as gradients of compositions: each rule's content in isolation, then Zygote and Mooncake against ForwardDiff and central differences across three environments and three targets, every boundary condition and interpolation mode, attenuation, and the pressure field |
 | `rrule_tests.jl` | Test | The same rules through `ChainRulesTestUtils.test_rrule`: one pullback against finite differences over *every* argument at once. Split out of `reverse_ad_tests.jl` because its `solve_for_kr` case is 373 s of compilation on a cold session |
@@ -115,6 +116,7 @@ timed on its own) and is ~22 minutes now. **The absolute numbers are stale; the 
 | `environment_tests.jl` | 27 s | |
 | `integration_tests.jl` | 13 s | |
 | `numerical_methods_tests.jl` | 10 s | |
+| `solver_internals_tests.jl` | 10 s | |
 
 The Fortran cross-validation is the obvious suspect and is **not** the problem. Most of the wall
 time is Mooncake and Zygote compiling AD rules, which is compilation, not computation.

@@ -38,6 +38,27 @@ All notable changes to Kraken.jl are documented here. The format follows
   makes the same decisions as the plain one. ForwardDiff's `<` breaks ties between equal values by
   the partials; on Pekeris at 184 Hz that sent the two down different paths and mode 9 came out
   3e-15 apart.
+- **`SafeguardedNewton()` also stops once Newton has stalled at the determinant's rounding noise.**
+  On SWellEx-96's 32032-point finest mesh at 500 Hz the steps settled between 28 and 50 ulps, never
+  met the 16-ulp test, and every mode ran 200 iterations: the solve took 9.34 s, now 0.75 s.
+
+### Added
+
+- `test/solver_internals_tests.jl`: unit tests for the pieces above, each against an independent
+  reference (270 assertions, about 10 s).
+- The SWellEx-96 environment at 500 Hz (432 modes) in `test/benchmark_vs_fortran.jl`, from the
+  experiment's published geoacoustic model and CTD cast `i9606`.
+
+### Known issues (found with SWellEx-96, 2026-10-16)
+
+- **Mesh sizing.** Every layer's mesh spacing is `c_b / (20 f)`, from the half-space speed. With a
+  5200 m/s half-space under 1488 m/s water that is about 6 points per water wavelength; `kraken.exe`
+  sizes each medium from its own sound speed and refuses this mesh as too coarse. Wavenumbers still
+  agree to 7.7e-5, but Kraken.jl needs 5 refinement levels where `kraken.exe` needs 3, and is 2.9
+  times slower on this case (0.75 s against 0.26 s).
+- **Attenuation near the half-space cutoff.** `Im(kᵣ)` differs from `kraken.exe` by a median of 7%
+  on the default mesh and 4% at 20 points per water wavelength, and by up to about 80% for modes
+  with phase speeds near the 5200 m/s cutoff. The cause is not yet identified.
 
 ## [0.4.0] — 2026-10-16
 

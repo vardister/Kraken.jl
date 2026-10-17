@@ -1747,19 +1747,28 @@ function bracketed_newton(span, env, props, cache; guess=nothing, maxiter=200)
     # from the midpoint on the first mesh, 37 of 102 modes needed it.
     # The rescaling in `det_sturm` multiplies by positive factors only, so the sign is the true one.
     lo_negative = nothing
+    previous_step = Inf
     for _ in 1:maxiter
         D, dD = sturm_and_slope(kr, env, props, cache)
         iszero(pv(D)) && return kr
         lo_negative === nothing || ((pv(D) < 0) == lo_negative ? (lo = kr) : (hi = kr))
         kr_next = kr - D / dD
-        if !(isfinite(pv(kr_next)) && pv(lo) < pv(kr_next) < pv(hi))
+        newton = isfinite(pv(kr_next)) && pv(lo) < pv(kr_next) < pv(hi)
+        if !newton
             if lo_negative === nothing
                 lo_negative = pv(first(det_sturm(lo, env, props, cache))) < 0
                 (pv(D) < 0) == lo_negative ? (lo = kr) : (hi = kr)
             end
             kr_next = (lo + hi) / 2
         end
-        abs(pv(kr_next) - pv(kr)) <= 16 * eps(Float64) * abs(pv(kr)) && return kr_next
+        step = abs(pv(kr_next) - pv(kr)) / abs(pv(kr))
+        step <= 16 * eps(Float64) && return kr_next
+        # Also stop once Newton has stalled at the determinant's own rounding noise: the step is
+        # tiny and no longer shrinking quadratically. On SWellEx-96's 32032-point mesh at 500 Hz the
+        # steps went 1.3e-9, 6.3e-15, then bounced between 3.8e-15 and 6.8e-15 (28 to 50 ulps) for
+        # good. A 16-ulp test alone never fired there, and every mode ran to `maxiter`.
+        newton && step <= 1e-10 && step > previous_step / 4 && return kr_next
+        previous_step = newton ? step : Inf
         kr = kr_next
     end
     return kr
